@@ -9,7 +9,7 @@ export const messagingComponents: ComponentEntry[] = [
     id: 'messaging-settings-page',
     name: 'Messaging Settings Page',
     category: 'Messaging',
-    description: 'Telegram + WhatsApp settings page with inline bindings',
+    description: 'Telegram + WhatsApp + WeChat settings page with inline bindings',
     component: MessagingSettingsPagePreview,
     layout: 'full',
     props: [
@@ -22,6 +22,12 @@ export const messagingComponents: ComponentEntry[] = [
       {
         name: 'whatsappConnected',
         description: 'Whether the WhatsApp adapter is connected',
+        control: { type: 'boolean' },
+        defaultValue: false,
+      },
+      {
+        name: 'weixinConnected',
+        description: 'Whether the WeChat adapter is connected',
         control: { type: 'boolean' },
         defaultValue: false,
       },
@@ -42,19 +48,19 @@ export const messagingComponents: ComponentEntry[] = [
     variants: [
       {
         name: 'Both disconnected',
-        props: { telegramConnected: false, whatsappConnected: false, bindings: 'none' },
+        props: { telegramConnected: false, whatsappConnected: false, weixinConnected: false, bindings: 'none' },
       },
       {
         name: 'Telegram only',
-        props: { telegramConnected: true, whatsappConnected: false, bindings: 'none' },
+        props: { telegramConnected: true, whatsappConnected: false, weixinConnected: false, bindings: 'none' },
       },
       {
-        name: 'Both connected, no bindings',
-        props: { telegramConnected: true, whatsappConnected: true, bindings: 'none' },
+        name: 'All connected, no bindings',
+        props: { telegramConnected: true, whatsappConnected: true, weixinConnected: true, bindings: 'none' },
       },
       {
-        name: 'Both connected, 3 bindings',
-        props: { telegramConnected: true, whatsappConnected: true, bindings: 'many' },
+        name: 'All connected, 3 bindings',
+        props: { telegramConnected: true, whatsappConnected: true, weixinConnected: true, bindings: 'many' },
       },
     ],
   },
@@ -62,7 +68,7 @@ export const messagingComponents: ComponentEntry[] = [
     id: 'messaging-pairing-code-dialog',
     name: 'Pairing Code Dialog',
     category: 'Messaging',
-    description: '6-digit pairing code modal (Telegram + WhatsApp)',
+    description: '6-digit pairing code modal (Telegram + WhatsApp + WeChat)',
     component: PairingCodeDialogPreview,
     layout: 'centered',
     props: [
@@ -74,6 +80,7 @@ export const messagingComponents: ComponentEntry[] = [
           options: [
             { label: 'Telegram', value: 'telegram' },
             { label: 'WhatsApp', value: 'whatsapp' },
+            { label: 'WeChat', value: 'weixin' },
           ],
         },
         defaultValue: 'telegram',
@@ -118,6 +125,16 @@ export const messagingComponents: ComponentEntry[] = [
         name: 'WhatsApp',
         props: {
           platform: 'whatsapp',
+          code: '482193',
+          expiresInSeconds: 300,
+          botUsername: '',
+          error: '',
+        },
+      },
+      {
+        name: 'WeChat',
+        props: {
+          platform: 'weixin',
           code: '482193',
           expiresInSeconds: 300,
           botUsername: '',
@@ -218,19 +235,25 @@ export const messagingComponents: ComponentEntry[] = [
         control: { type: 'boolean' },
         defaultValue: true,
       },
+      {
+        name: 'weixinConnected',
+        description: 'Whether the WeChat adapter is connected (changes flow)',
+        control: { type: 'boolean' },
+        defaultValue: true,
+      },
     ],
     variants: [
       {
         name: 'Both connected',
-        props: { telegramConnected: true, whatsappConnected: true },
+        props: { telegramConnected: true, whatsappConnected: true, weixinConnected: true },
       },
       {
         name: 'Nothing connected',
-        props: { telegramConnected: false, whatsappConnected: false },
+        props: { telegramConnected: false, whatsappConnected: false, weixinConnected: false },
       },
       {
         name: 'WhatsApp only',
-        props: { telegramConnected: false, whatsappConnected: true },
+        props: { telegramConnected: false, whatsappConnected: true, weixinConnected: false },
       },
     ],
   },

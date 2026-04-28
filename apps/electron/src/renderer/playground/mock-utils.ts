@@ -4,6 +4,7 @@ import type {
   PermissionMode,
   MessagingPlatformRuntimeInfo,
   WhatsAppUiEvent,
+  WeixinUiEvent,
 } from '../../shared/types'
 import type { MessagingBinding } from '../atoms/messaging'
 
@@ -25,6 +26,7 @@ type PlatformStatusListener = (
 ) => void
 type BindingListener = (workspaceId: string) => void
 type WhatsAppEventListener = (payload: { workspaceId: string; event: WhatsAppUiEvent }) => void
+type WeixinEventListener = (payload: { workspaceId: string; event: WeixinUiEvent }) => void
 
 const PLAYGROUND_WORKSPACE_ID = 'playground-workspace'
 
@@ -32,14 +34,16 @@ interface MessagingMockState {
   runtime: {
     telegram: MessagingPlatformRuntimeInfo
     whatsapp: MessagingPlatformRuntimeInfo
+    weixin: MessagingPlatformRuntimeInfo
   }
   bindings: MessagingBinding[]
   platformStatusListeners: Set<PlatformStatusListener>
   bindingListeners: Set<BindingListener>
   waEventListeners: Set<WhatsAppEventListener>
+  wxEventListeners: Set<WeixinEventListener>
 }
 
-function defaultRuntime(platform: 'telegram' | 'whatsapp'): MessagingPlatformRuntimeInfo {
+function defaultRuntime(platform: 'telegram' | 'whatsapp' | 'weixin'): MessagingPlatformRuntimeInfo {
   return {
     platform,
     configured: false,
@@ -53,14 +57,16 @@ const messagingMockState: MessagingMockState = {
   runtime: {
     telegram: defaultRuntime('telegram'),
     whatsapp: defaultRuntime('whatsapp'),
+    weixin: defaultRuntime('weixin'),
   },
   bindings: [],
   platformStatusListeners: new Set(),
   bindingListeners: new Set(),
   waEventListeners: new Set(),
+  wxEventListeners: new Set(),
 }
 
-function emitPlatformStatus(platform: 'telegram' | 'whatsapp') {
+function emitPlatformStatus(platform: 'telegram' | 'whatsapp' | 'weixin') {
   const status = messagingMockState.runtime[platform]
   for (const listener of messagingMockState.platformStatusListeners) {
     try { listener(PLAYGROUND_WORKSPACE_ID, platform, status) } catch (err) { console.error(err) }
@@ -79,13 +85,21 @@ function emitWhatsAppEvent(event: WhatsAppUiEvent) {
   }
 }
 
+function emitWeixinEvent(event: WeixinUiEvent) {
+  for (const listener of messagingMockState.wxEventListeners) {
+    try { listener({ workspaceId: PLAYGROUND_WORKSPACE_ID, event }) } catch (err) { console.error(err) }
+  }
+}
+
 export interface PlaygroundMessagingHandle {
   /** Snapshot of current state (for debugging from DevTools). */
   state: MessagingMockState
   setTelegramConnected: (connected: boolean, identity?: string) => void
   setWhatsAppConnected: (connected: boolean, identity?: string) => void
+  setWeixinConnected: (connected: boolean, identity?: string) => void
   setBindings: (bindings: MessagingBinding[]) => void
   fireWAEvent: (event: WhatsAppUiEvent) => void
+  fireWXEvent: (event: WeixinUiEvent) => void
   reset: () => void
 }
 
@@ -113,6 +127,17 @@ export const playgroundMessagingHandle: PlaygroundMessagingHandle = {
     }
     emitPlatformStatus('whatsapp')
   },
+  setWeixinConnected(connected, identity) {
+    messagingMockState.runtime.weixin = {
+      platform: 'weixin',
+      configured: connected,
+      connected,
+      state: connected ? 'connected' : 'disconnected',
+      identity,
+      updatedAt: Date.now(),
+    }
+    emitPlatformStatus('weixin')
+  },
   setBindings(bindings) {
     messagingMockState.bindings = bindings
     emitBindingChanged()
@@ -120,12 +145,17 @@ export const playgroundMessagingHandle: PlaygroundMessagingHandle = {
   fireWAEvent(event) {
     emitWhatsAppEvent(event)
   },
+  fireWXEvent(event) {
+    emitWeixinEvent(event)
+  },
   reset() {
     messagingMockState.runtime.telegram = defaultRuntime('telegram')
     messagingMockState.runtime.whatsapp = defaultRuntime('whatsapp')
+    messagingMockState.runtime.weixin = defaultRuntime('weixin')
     messagingMockState.bindings = []
     emitPlatformStatus('telegram')
     emitPlatformStatus('whatsapp')
+    emitPlatformStatus('weixin')
     emitBindingChanged()
   },
 }
@@ -312,7 +342,7 @@ export const mockElectronAPI = {
   },
 
   // ------------------------------------------------------------------
-  // Messaging Gateway (Telegram + WhatsApp)
+  // Messaging Gateway (Telegram + WhatsApp + WeChat)
   // ------------------------------------------------------------------
 
   getMessagingConfig: async () => {
@@ -322,10 +352,12 @@ export const mockElectronAPI = {
       platforms: {
         telegram: { enabled: true },
         whatsapp: { enabled: true },
+        weixin: { enabled: true },
       },
       runtime: {
         telegram: messagingMockState.runtime.telegram,
         whatsapp: messagingMockState.runtime.whatsapp,
+        weixin: messagingMockState.runtime.weixin,
       },
     }
   },
@@ -352,12 +384,14 @@ export const mockElectronAPI = {
     console.log('[Playground] disconnectMessagingPlatform called:', platform)
     if (platform === 'telegram') playgroundMessagingHandle.setTelegramConnected(false)
     if (platform === 'whatsapp') playgroundMessagingHandle.setWhatsAppConnected(false)
+    if (platform === 'weixin') playgroundMessagingHandle.setWeixinConnected(false)
   },
 
   forgetMessagingPlatform: async (platform: string) => {
     console.log('[Playground] forgetMessagingPlatform called:', platform)
     if (platform === 'telegram') playgroundMessagingHandle.setTelegramConnected(false)
     if (platform === 'whatsapp') playgroundMessagingHandle.setWhatsAppConnected(false)
+    if (platform === 'weixin') playgroundMessagingHandle.setWeixinConnected(false)
     // Drop bindings for that platform
     playgroundMessagingHandle.setBindings(
       messagingMockState.bindings.filter((b) => b.platform !== platform),
@@ -442,6 +476,26 @@ export const mockElectronAPI = {
     messagingMockState.waEventListeners.add(callback)
     return () => {
       messagingMockState.waEventListeners.delete(callback)
+    }
+  },
+
+  startWeixinConnect: async () => {
+    console.log('[Playground] startWeixinConnect called')
+    setTimeout(() => {
+      emitWeixinEvent({
+        type: 'qr',
+        qr: 'playground://weixin/qr/' + Math.random().toString(36).slice(2),
+      })
+    }, 400)
+    return { success: true }
+  },
+
+  onWeixinEvent: (
+    callback: (payload: { workspaceId: string; event: WeixinUiEvent }) => void,
+  ) => {
+    messagingMockState.wxEventListeners.add(callback)
+    return () => {
+      messagingMockState.wxEventListeners.delete(callback)
     }
   },
 }

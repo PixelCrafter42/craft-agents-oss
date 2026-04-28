@@ -75,4 +75,10 @@ export function registerMessagingHandlers(server: RpcServer, deps: HandlerDeps):
     await registry.submitWhatsAppPhone(ctx.workspaceId, phoneNumber)
     return { success: true }
   })
+
+  server.handle(RPC_CHANNELS.messaging.WX_START_CONNECT, async (ctx) => {
+    if (!ctx.workspaceId) throw new Error('Missing workspaceId')
+    await registry.startWeixinConnect(ctx.workspaceId)
+    return { success: true }
+  })
 }

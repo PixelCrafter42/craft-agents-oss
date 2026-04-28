@@ -20,6 +20,9 @@ const PI_AGENT_SERVER_OUTPUT = join(PI_AGENT_SERVER_DIR, "dist/index.js");
 const WA_WORKER_DIR = join(ROOT_DIR, "packages/messaging-whatsapp-worker");
 const WA_WORKER_SOURCE = join(WA_WORKER_DIR, "src/worker.ts");
 const WA_WORKER_OUTPUT = join(WA_WORKER_DIR, "dist/worker.cjs");
+const WX_WORKER_DIR = join(ROOT_DIR, "packages/messaging-weixin-worker");
+const WX_WORKER_SOURCE = join(WX_WORKER_DIR, "src/worker.ts");
+const WX_WORKER_OUTPUT = join(WX_WORKER_DIR, "dist/worker.cjs");
 
 // Load .env file if it exists
 function loadEnvFile(): void {
@@ -310,6 +313,34 @@ async function buildWhatsAppWorker(): Promise<void> {
   console.log("✅ WhatsApp worker built successfully");
 }
 
+async function buildWeixinWorker(): Promise<void> {
+  if (!existsSync(WX_WORKER_SOURCE)) {
+    console.log("Weixin worker skipped (package not found)");
+    return;
+  }
+
+  console.log("Building Weixin worker...");
+  const proc = spawn({
+    cmd: ["bun", "run", "scripts/build-weixin-worker.ts"],
+    cwd: ROOT_DIR,
+    stdout: "inherit",
+    stderr: "inherit",
+  });
+
+  const exitCode = await proc.exited;
+  if (exitCode !== 0) {
+    console.error("Weixin worker build failed with exit code", exitCode);
+    process.exit(exitCode);
+  }
+
+  if (!existsSync(WX_WORKER_OUTPUT)) {
+    console.error("Weixin worker output not found at", WX_WORKER_OUTPUT);
+    process.exit(1);
+  }
+
+  console.log("Weixin worker built successfully");
+}
+
 async function main(): Promise<void> {
   loadEnvFile();
 
@@ -333,6 +364,7 @@ async function main(): Promise<void> {
 
   // Build WhatsApp worker (Baileys subprocess — optional package)
   await buildWhatsAppWorker();
+  await buildWeixinWorker();
 
   const buildDefines = getBuildDefines();
 

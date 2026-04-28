@@ -69,5 +69,7 @@ export interface BroadcastEventMap {
 
   // Messaging gateway broadcasts
   [RPC_CHANNELS.messaging.BINDING_CHANGED]: [workspaceId: string]
-  [RPC_CHANNELS.messaging.PLATFORM_STATUS]: [workspaceId: string, platform: string, connected: boolean]
+  [RPC_CHANNELS.messaging.PLATFORM_STATUS]: [workspaceId: string, platform: string, status: unknown]
+  [RPC_CHANNELS.messaging.WA_UI_EVENT]: [payload: unknown]
+  [RPC_CHANNELS.messaging.WX_UI_EVENT]: [payload: unknown]
 }

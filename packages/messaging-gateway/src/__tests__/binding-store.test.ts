@@ -105,6 +105,12 @@ describe('BindingStore', () => {
     expect(binding.config.approvalChannel).toBe('app')
   })
 
+  it('forces WeChat bindings to use desktop-only approvals', () => {
+    const store = new BindingStore(dir)
+    const binding = store.bind('ws1', 'sess', 'weixin', 'c2')
+    expect(binding.config.approvalChannel).toBe('app')
+  })
+
   it('fires change listener after mutation', () => {
     const store = new BindingStore(dir)
     let calls = 0

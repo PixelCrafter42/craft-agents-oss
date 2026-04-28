@@ -9,7 +9,7 @@
 // Platform types
 // ---------------------------------------------------------------------------
 
-export type PlatformType = 'telegram' | 'whatsapp'
+export type PlatformType = 'telegram' | 'whatsapp' | 'weixin'
 
 // ---------------------------------------------------------------------------
 // Logger
@@ -217,7 +217,7 @@ export const DEFAULT_BINDING_CONFIG: BindingConfig = {
 export function getDefaultBindingConfig(platform: PlatformType): BindingConfig {
   return {
     ...DEFAULT_BINDING_CONFIG,
-    approvalChannel: platform === 'whatsapp' ? 'app' : DEFAULT_BINDING_CONFIG.approvalChannel,
+    approvalChannel: platform === 'whatsapp' || platform === 'weixin' ? 'app' : DEFAULT_BINDING_CONFIG.approvalChannel,
   }
 }
 
@@ -234,7 +234,9 @@ export function normalizeBindingConfig(
     ...base,
     ...config,
     responseMode: resolvedResponseMode,
-    approvalChannel: platform === 'whatsapp' ? 'app' : (config?.approvalChannel ?? base.approvalChannel),
+    approvalChannel: platform === 'whatsapp' || platform === 'weixin'
+      ? 'app'
+      : (config?.approvalChannel ?? base.approvalChannel),
   }
 }
 
@@ -270,6 +272,9 @@ export interface MessagingConfig {
        * the expected UX for new users.
        */
       selfChatMode?: boolean
+    }
+    weixin?: {
+      enabled: boolean
     }
   }
 }

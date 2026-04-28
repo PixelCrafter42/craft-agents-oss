@@ -662,6 +662,11 @@ app.whenReady().then(async () => {
                 : join(process.cwd(), 'packages', 'messaging-whatsapp-worker', 'dist', 'worker.cjs'),
               pairingMode: 'qr',
             },
+            weixin: {
+              workerEntry: app.isPackaged
+                ? join(process.resourcesPath, 'messaging-weixin-worker', 'worker.cjs')
+                : join(process.cwd(), 'packages', 'messaging-weixin-worker', 'dist', 'worker.cjs'),
+            },
           })
           return {
             sessionManager: sm,

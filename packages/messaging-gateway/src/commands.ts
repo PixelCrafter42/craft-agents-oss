@@ -343,7 +343,7 @@ export class Commands {
   }
 
   private async handleHelp(adapter: PlatformAdapter, msg: IncomingMessage): Promise<void> {
-    const bindLine = adapter.platform === 'whatsapp'
+    const bindLine = adapter.platform === 'whatsapp' || adapter.platform === 'weixin'
       ? '/bind — list recent sessions (then use /bind <number>)\n'
       : '/bind — pick from recent sessions\n'
 

@@ -5,7 +5,7 @@
  *   - Telegram + short plan: single sendButtons with inline content
  *   - Telegram + long plan: sendButtons with summary + sendFile attachment
  *   - Telegram without token registry: falls back to plain text
- *   - WhatsApp: keeps the legacy plain-text pointer (no buttons, no file)
+ *   - WhatsApp/WeChat: keeps the plain-text pointer (no buttons, no file)
  *   - recordPlanMessage callback fires for Telegram buttons only
  */
 
@@ -163,6 +163,19 @@ describe('Renderer — plan_submitted', () => {
     const renderer = new Renderer({ planTokens: tokens })
     const adapter = makeAdapter('whatsapp')
     const binding = makeBinding('whatsapp')
+
+    await renderer.handle(planEvent('# Plan'), binding, adapter)
+
+    expect(adapter.calls).toHaveLength(1)
+    expect(adapter.calls[0]?.kind).toBe('sendText')
+    expect(adapter.calls[0]?.text).toContain('Open the desktop app')
+  })
+
+  it('WeChat: plain-text pointer, no buttons, no file', async () => {
+    const tokens = new PlanTokenRegistry()
+    const renderer = new Renderer({ planTokens: tokens })
+    const adapter = makeAdapter('weixin')
+    const binding = makeBinding('weixin')
 
     await renderer.handle(planEvent('# Plan'), binding, adapter)
 

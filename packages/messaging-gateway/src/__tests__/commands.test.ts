@@ -6,7 +6,7 @@ import type { Session } from '@craft-agent/shared/protocol'
 import type { ISessionManager } from '@craft-agent/server-core/handlers'
 import { BindingStore } from '../binding-store'
 import { Commands } from '../commands'
-import type { IncomingMessage, PlatformAdapter, SentMessage } from '../types'
+import type { IncomingMessage, PlatformAdapter, PlatformType, SentMessage } from '../types'
 
 function makeSession(id: string, name: string, lastMessageAt: number): Session {
   return {
@@ -22,18 +22,21 @@ function makeSession(id: string, name: string, lastMessageAt: number): Session {
   } as unknown as Session
 }
 
-function makeSessionManager(sessions: Session[]): ISessionManager {
+function makeSessionManager(sessions: Session[], created?: Session): ISessionManager {
   return {
     getSessions: () => sessions,
     getSession: async (sessionId: string) => sessions.find((session) => session.id === sessionId) ?? null,
-    createSession: async () => { throw new Error('not implemented') },
+    createSession: async (_workspaceId: string, options?: { name?: string }) => {
+      if (!created) throw new Error('not implemented')
+      return { ...created, name: options?.name ?? created.name }
+    },
     sendMessage: async () => {},
     cancelProcessing: async () => {},
     respondToPermission: () => true,
   } as unknown as ISessionManager
 }
 
-function makeAdapter(platform: 'telegram' | 'whatsapp', inlineButtons: boolean): PlatformAdapter & { sent: string[] } {
+function makeAdapter(platform: PlatformType, inlineButtons: boolean): PlatformAdapter & { sent: string[] } {
   const sent: string[] = []
   return {
     platform,
@@ -67,9 +70,9 @@ function makeAdapter(platform: 'telegram' | 'whatsapp', inlineButtons: boolean):
   }
 }
 
-function makeMessage(text: string): IncomingMessage {
+function makeMessage(text: string, platform: PlatformType = 'whatsapp'): IncomingMessage {
   return {
-    platform: 'whatsapp',
+    platform,
     channelId: 'chan-1',
     messageId: 'm1',
     senderId: 'u1',
@@ -118,6 +121,34 @@ describe('Commands', () => {
     const adapter = makeAdapter('whatsapp', false)
 
     await commands.handleCommand(adapter, makeMessage('/bind'))
+
+    expect(adapter.sent[0]).toContain('1. Beta (sess-2)')
+    expect(adapter.sent[0]).toContain('/bind <number>')
+  })
+
+  it('creates and binds a new WeChat session with /new', async () => {
+    const created = makeSession('sess-new', 'Created from WeChat', 300)
+    const store = makeStore()
+    const commands = new Commands(makeSessionManager([], created), store, 'ws1')
+    const adapter = makeAdapter('weixin', false)
+
+    await commands.handleCommand(adapter, makeMessage('/new WeChat project', 'weixin'))
+
+    expect(store.findByChannel('weixin', 'chan-1')?.sessionId).toBe('sess-new')
+    expect(store.findByChannel('weixin', 'chan-1')?.config.approvalChannel).toBe('app')
+    expect(adapter.sent.at(-1)).toContain('WeChat project')
+  })
+
+  it('lists numbered recent sessions with usable /bind instructions on WeChat', async () => {
+    const sessions = [
+      makeSession('sess-1', 'Alpha', 100),
+      makeSession('sess-2', 'Beta', 200),
+    ]
+    const store = makeStore()
+    const commands = new Commands(makeSessionManager(sessions), store, 'ws1')
+    const adapter = makeAdapter('weixin', false)
+
+    await commands.handleCommand(adapter, makeMessage('/bind', 'weixin'))
 
     expect(adapter.sent[0]).toContain('1. Beta (sess-2)')
     expect(adapter.sent[0]).toContain('/bind <number>')

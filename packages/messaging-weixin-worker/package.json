@@ -1,0 +1,22 @@
+{
+  "name": "@craft-agent/messaging-weixin-worker",
+  "version": "0.8.12",
+  "license": "Apache-2.0",
+  "description": "Weixin worker subprocess for Craft Agent (weixin-agent-sdk-based, unofficial API)",
+  "type": "module",
+  "main": "src/worker.ts",
+  "exports": {
+    ".": "./src/protocol.ts",
+    "./worker": "./src/worker.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "weixin-agent-sdk": "0.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.8.2"
+  }
+}

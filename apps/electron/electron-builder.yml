@@ -109,6 +109,9 @@ mac:
     # WhatsApp worker subprocess (self-contained; Baileys bundled in).
     - from: ../../packages/messaging-whatsapp-worker/dist/worker.cjs
       to: messaging-whatsapp-worker/worker.cjs
+    # Weixin worker subprocess (self-contained; weixin-agent-sdk bundled in).
+    - from: ../../packages/messaging-weixin-worker/dist/worker.cjs
+      to: messaging-weixin-worker/worker.cjs
   # Exclude binaries for other platforms
   files:
     - "!**/vendor/codex/linux-*/**"
@@ -190,6 +193,9 @@ win:
     # WhatsApp worker subprocess (self-contained; Baileys bundled in).
     - from: ../../packages/messaging-whatsapp-worker/dist/worker.cjs
       to: messaging-whatsapp-worker/worker.cjs
+    # Weixin worker subprocess (self-contained; weixin-agent-sdk bundled in).
+    - from: ../../packages/messaging-weixin-worker/dist/worker.cjs
+      to: messaging-weixin-worker/worker.cjs
 
 nsis:
   oneClick: true
@@ -218,6 +224,9 @@ linux:
     # WhatsApp worker subprocess (self-contained; Baileys bundled in).
     - from: ../../packages/messaging-whatsapp-worker/dist/worker.cjs
       to: messaging-whatsapp-worker/worker.cjs
+    # Weixin worker subprocess (self-contained; weixin-agent-sdk bundled in).
+    - from: ../../packages/messaging-weixin-worker/dist/worker.cjs
+      to: messaging-weixin-worker/worker.cjs
   # Exclude binaries for other platforms
   files:
     - "!**/vendor/codex/darwin-*/**"

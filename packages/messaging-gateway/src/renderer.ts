@@ -454,7 +454,7 @@ export class Renderer {
       state.lastEditedLength = 0
     }
 
-    if (binding.platform === 'whatsapp') {
+    if (binding.platform === 'whatsapp' || binding.platform === 'weixin') {
       await adapter.sendText(
         binding.channelId,
         `⏸ Permission required: ${request.description}
@@ -483,7 +483,6 @@ Approve in the desktop app to continue.`,
     binding: ChannelBinding,
     adapter: PlatformAdapter,
   ): Promise<void> {
-    if (binding.platform !== 'whatsapp') return
     await adapter.sendText(
       binding.channelId,
       '🔐 Credentials are required to continue. Open the desktop app to review and submit them securely.',
@@ -496,15 +495,13 @@ Approve in the desktop app to continue.`,
     adapter: PlatformAdapter,
   ): Promise<void> {
     // WhatsApp: no interactive buttons yet — keep the generic pointer.
-    if (binding.platform === 'whatsapp') {
+    if (binding.platform !== 'telegram') {
       await adapter.sendText(
         binding.channelId,
         '📝 A plan is ready for review. Open the desktop app to inspect and approve it.',
       )
       return
     }
-
-    if (binding.platform !== 'telegram') return
 
     // Token registry is optional for backwards compatibility; without it we
     // degrade to the generic pointer so Telegram still sees *something*.

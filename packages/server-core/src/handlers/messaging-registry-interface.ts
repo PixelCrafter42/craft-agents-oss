@@ -74,4 +74,10 @@ export interface IMessagingGatewayRegistry {
    * code. Must be called after startWhatsAppConnect.
    */
   submitWhatsAppPhone(workspaceId: string, phoneNumber: string): Promise<void>
+
+  /**
+   * Start the Weixin connect flow (spawns the worker, emits QR/status prompts
+   * via WX_UI_EVENT). Throws if Weixin support is not configured.
+   */
+  startWeixinConnect(workspaceId: string): Promise<void>
 }

@@ -395,4 +395,6 @@ export const CHANNEL_MAP = {
   startWhatsAppConnect: invoke(RPC_CHANNELS.messaging.WA_START_CONNECT),
   submitWhatsAppPhone: invoke(RPC_CHANNELS.messaging.WA_SUBMIT_PHONE),
   onWhatsAppEvent: listener(RPC_CHANNELS.messaging.WA_UI_EVENT),
+  startWeixinConnect: invoke(RPC_CHANNELS.messaging.WX_START_CONNECT),
+  onWeixinEvent: listener(RPC_CHANNELS.messaging.WX_UI_EVENT),
 } satisfies ChannelMap

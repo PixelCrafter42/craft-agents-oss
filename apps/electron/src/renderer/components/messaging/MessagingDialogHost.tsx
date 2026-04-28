@@ -9,13 +9,14 @@ import { useAtom } from 'jotai'
 import { messagingDialogAtom } from '@/atoms/messaging'
 import { PairingCodeDialog } from './PairingCodeDialog'
 import { WhatsAppConnectDialog } from './WhatsAppConnectDialog'
+import { WeixinConnectDialog } from './WeixinConnectDialog'
 
 export function MessagingDialogHost() {
   const [state, setState] = useAtom(messagingDialogAtom)
 
   const close = () => setState({ kind: 'closed' })
 
-  const openPairing = async (sessionId: string, platform: 'telegram' | 'whatsapp') => {
+  const openPairing = async (sessionId: string, platform: 'telegram' | 'whatsapp' | 'weixin') => {
     setState({
       kind: 'pairing',
       platform,
@@ -53,6 +54,14 @@ export function MessagingDialogHost() {
     close()
   }
 
+  const handleWeixinConnected = () => {
+    if (state.kind === 'wx_connect' && state.continueToPairingSessionId) {
+      void openPairing(state.continueToPairingSessionId, 'weixin')
+      return
+    }
+    close()
+  }
+
   return (
     <>
       <PairingCodeDialog
@@ -68,6 +77,11 @@ export function MessagingDialogHost() {
         open={state.kind === 'wa_connect'}
         onOpenChange={(o) => { if (!o) close() }}
         onConnected={handleWhatsAppConnected}
+      />
+      <WeixinConnectDialog
+        open={state.kind === 'wx_connect'}
+        onOpenChange={(o) => { if (!o) close() }}
+        onConnected={handleWeixinConnected}
       />
     </>
   )

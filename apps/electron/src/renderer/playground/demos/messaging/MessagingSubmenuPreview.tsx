@@ -26,6 +26,7 @@ import { playgroundMessagingHandle } from '../../mock-utils'
 export interface MessagingSubmenuPreviewProps {
   telegramConnected: boolean
   whatsappConnected: boolean
+  weixinConnected: boolean
 }
 
 const PLAYGROUND_SESSION_ID = 'playground-session-xyz'
@@ -33,6 +34,7 @@ const PLAYGROUND_SESSION_ID = 'playground-session-xyz'
 export function MessagingSubmenuPreview({
   telegramConnected,
   whatsappConnected,
+  weixinConnected,
 }: MessagingSubmenuPreviewProps) {
   const { t } = useTranslation()
 
@@ -51,6 +53,13 @@ export function MessagingSubmenuPreview({
       whatsappConnected ? 'Gyula' : undefined,
     )
   }, [whatsappConnected])
+
+  React.useEffect(() => {
+    playgroundMessagingHandle.setWeixinConnected(
+      weixinConnected,
+      weixinConnected ? 'WeChat User' : undefined,
+    )
+  }, [weixinConnected])
 
   return (
     <div className="flex flex-col items-start gap-4 p-6">

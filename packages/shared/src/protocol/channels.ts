@@ -405,6 +405,10 @@ export const RPC_CHANNELS = {
     WA_SUBMIT_PHONE: 'messaging:wa:submitPhone',
     /** Broadcast to UI clients: QR string, pairing code, status, unavailable, error. */
     WA_UI_EVENT: 'messaging:wa:uiEvent',
+    // UI -> Server — Weixin QR connection flow.
+    WX_START_CONNECT: 'messaging:wx:startConnect',
+    /** Broadcast to UI clients: QR string, status, unavailable, error. */
+    WX_UI_EVENT: 'messaging:wx:uiEvent',
   },
 } as const
 

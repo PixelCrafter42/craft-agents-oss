@@ -14,7 +14,7 @@ import * as React from 'react'
 import { PairingCodeDialog } from '../../../components/messaging/PairingCodeDialog'
 
 export interface PairingCodeDialogPreviewProps {
-  platform: 'telegram' | 'whatsapp'
+  platform: 'telegram' | 'whatsapp' | 'weixin'
   code: string
   expiresInSeconds: number
   botUsername: string

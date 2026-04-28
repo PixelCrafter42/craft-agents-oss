@@ -53,7 +53,7 @@ export function MessagingSessionMenuItem({
   const setMessagingDialog = useSetAtom(messagingDialogAtom)
   const { MenuItem, Sub, SubTrigger, SubContent } = useMenuComponents()
 
-  const handleConnectMessaging = async (platform: 'telegram' | 'whatsapp') => {
+  const handleConnectMessaging = async (platform: 'telegram' | 'whatsapp' | 'weixin') => {
     // First-run check — avoid hitting the server if the platform is not
     // connected. Failure to read config is treated as "unknown" and falls
     // through to attempting pairing so the server surfaces a real error.
@@ -64,6 +64,8 @@ export function MessagingSessionMenuItem({
       if (!isConnected) {
         if (platform === 'whatsapp') {
           setMessagingDialog({ kind: 'wa_connect', continueToPairingSessionId: sessionId })
+        } else if (platform === 'weixin') {
+          setMessagingDialog({ kind: 'wx_connect', continueToPairingSessionId: sessionId })
         } else if (onTelegramNotConfigured) {
           onTelegramNotConfigured()
         } else {
@@ -117,6 +119,9 @@ export function MessagingSessionMenuItem({
         </MenuItem>
         <MenuItem onClick={() => handleConnectMessaging('whatsapp')}>
           <span>WhatsApp</span>
+        </MenuItem>
+        <MenuItem onClick={() => handleConnectMessaging('weixin')}>
+          <span>WeChat</span>
         </MenuItem>
       </SubContent>
     </Sub>

@@ -41,6 +41,7 @@ import { SettingsSection, SettingsCard } from '@/components/settings'
 import { MessagingPlatformIcon } from '@/components/messaging/MessagingPlatformIcon'
 import { TelegramConnectDialog } from '@/components/messaging/TelegramConnectDialog'
 import { WhatsAppConnectDialog } from '@/components/messaging/WhatsAppConnectDialog'
+import { WeixinConnectDialog } from '@/components/messaging/WeixinConnectDialog'
 import { useActiveWorkspace } from '@/context/AppShellContext'
 import { useNavigation } from '@/contexts/NavigationContext'
 import {
@@ -101,6 +102,9 @@ export default function MessagingSettingsPage() {
             <SettingsCard>
               <PlatformRow platform="whatsapp" workspaceId={activeWorkspace.id} />
             </SettingsCard>
+            <SettingsCard>
+              <PlatformRow platform="weixin" workspaceId={activeWorkspace.id} />
+            </SettingsCard>
           </SettingsSection>
         </div>
       </ScrollArea>
@@ -112,16 +116,18 @@ export default function MessagingSettingsPage() {
 // Platform row
 // ---------------------------------------------------------------------------
 
-type Platform = 'telegram' | 'whatsapp'
+type Platform = 'telegram' | 'whatsapp' | 'weixin'
 
 const PLATFORM_LABEL_KEYS: Record<Platform, string> = {
   telegram: 'settings.messaging.telegram.title',
   whatsapp: 'settings.messaging.whatsapp.title',
+  weixin: 'settings.messaging.weixin.title',
 }
 
 const PLATFORM_API_DESCRIPTION: Record<Platform, string> = {
   telegram: 'Bot API',
   whatsapp: 'Unofficial Web API',
+  weixin: 'Unofficial Weixin API',
 }
 
 function PlatformRow({ platform, workspaceId }: { platform: Platform; workspaceId: string }) {
@@ -259,16 +265,16 @@ function PlatformRow({ platform, workspaceId }: { platform: Platform; workspaceI
                   <>
                     <StyledDropdownMenuItem onClick={() => runAfterMenuClose(handleConnect)}>
                       <RefreshCcw className="h-3.5 w-3.5" />
-                      <span>{t('settings.messaging.whatsapp.reconnect')}</span>
+                      <span>{t(`settings.messaging.${platform}.reconnect`)}</span>
                     </StyledDropdownMenuItem>
                     <StyledDropdownMenuItem onClick={handleDisconnect}>
                       <PowerOff className="h-3.5 w-3.5" />
-                      <span>{t('settings.messaging.whatsapp.disable')}</span>
+                      <span>{t(`settings.messaging.${platform}.disable`)}</span>
                     </StyledDropdownMenuItem>
                     <StyledDropdownMenuSeparator />
                     <StyledDropdownMenuItem onClick={handleForget} variant="destructive">
                       <Trash2 className="h-3.5 w-3.5" />
-                      <span>{t('settings.messaging.whatsapp.forget')}</span>
+                      <span>{t(`settings.messaging.${platform}.forget`)}</span>
                     </StyledDropdownMenuItem>
                   </>
                 )}
@@ -335,6 +341,9 @@ function PlatformRow({ platform, workspaceId }: { platform: Platform; workspaceI
       {platform === 'whatsapp' && (
         <WhatsAppConnectDialog open={connectOpen} onOpenChange={setConnectOpen} />
       )}
+      {platform === 'weixin' && (
+        <WeixinConnectDialog open={connectOpen} onOpenChange={setConnectOpen} />
+      )}
     </>
   )
 }
@@ -349,8 +358,8 @@ function buildDescription(
   t: (key: string, opts?: Record<string, unknown>) => string,
 ): string {
   if (runtime.connected) {
-    if (platform === 'whatsapp' && runtime.identity) {
-      return t('dialog.whatsapp.connectedAs', { name: runtime.identity })
+    if ((platform === 'whatsapp' || platform === 'weixin') && runtime.identity) {
+      return t(`dialog.${platform}.connectedAs`, { name: runtime.identity })
     }
     if (platform === 'telegram' && runtime.identity) {
       return t('settings.messaging.telegram.validBot', { username: runtime.identity })
@@ -358,7 +367,7 @@ function buildDescription(
     return t(`settings.messaging.${platform}.connected`, { defaultValue: 'Connected' })
   }
   if (runtime.state === 'connecting') {
-    return t('dialog.whatsapp.starting', { defaultValue: 'Connecting…' })
+    return t(`dialog.${platform}.starting`, { defaultValue: 'Connecting…' })
   }
   if (runtime.state === 'error' && runtime.lastError) {
     return runtime.lastError

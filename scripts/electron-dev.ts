@@ -215,6 +215,21 @@ async function buildWaWorker(): Promise<void> {
   }
 }
 
+async function buildWeixinWorker(): Promise<void> {
+  console.log("Building Weixin worker...");
+  const proc = spawn({
+    cmd: ["bun", "run", "scripts/build-weixin-worker.ts"],
+    cwd: ROOT_DIR,
+    stdout: "inherit",
+    stderr: "inherit",
+  });
+  const exitCode = await proc.exited;
+  if (exitCode !== 0) {
+    console.error("Weixin worker build failed");
+    process.exit(1);
+  }
+}
+
 // Build MCP servers for Codex sessions and Pi agent server (one-time, no watch needed)
 async function buildMcpServers(): Promise<void> {
   console.log("🌉 Building MCP servers and Pi agent server...");
@@ -424,6 +439,7 @@ async function main(): Promise<void> {
 
   // Build WhatsApp worker bundle so the adapter can spawn it on demand
   await buildWaWorker();
+  await buildWeixinWorker();
 
   const vitePort = process.env.CRAFT_VITE_PORT || "5173";
   const oauthDefines = getOAuthDefines();

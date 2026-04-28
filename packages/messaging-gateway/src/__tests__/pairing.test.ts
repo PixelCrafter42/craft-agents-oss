@@ -55,6 +55,12 @@ describe('PairingCodeManager', () => {
     expect(mgr.consume('ws1', 'whatsapp', code)).toBeNull()
   })
 
+  it('supports WeChat pairing codes', () => {
+    const mgr = new PairingCodeManager()
+    const { code } = mgr.generate('ws1', 'sess', 'weixin')
+    expect(mgr.consume('ws1', 'weixin', code)?.sessionId).toBe('sess')
+  })
+
   it('throws RATE_LIMIT after the per-minute cap', () => {
     const mgr = new PairingCodeManager(60_000, 3)
     mgr.generate('ws1', 'sess', 'telegram')

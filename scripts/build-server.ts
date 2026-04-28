@@ -359,7 +359,7 @@ function copyProductionDeps(config: ServerBuildConfig): void {
   // messaging-whatsapp-worker is intentionally OMITTED: Baileys and its transitive deps
   // are bundled directly into packages/messaging-whatsapp-worker/dist/worker.cjs by
   // scripts/build-wa-worker.ts — pulling them into node_modules would duplicate the tree.
-  const SERVER_PACKAGES = ['server', 'server-core', 'shared', 'core', 'session-tools-core', 'session-mcp-server', 'messaging-gateway'];
+  const SERVER_PACKAGES = ['server', 'server-core', 'shared', 'core', 'session-tools-core', 'session-mcp-server', 'messaging-gateway', 'messaging-weixin-worker'];
 
   const allImports = new Set<string>();
   for (const pkg of SERVER_PACKAGES) {
@@ -482,6 +482,7 @@ function copyWorkspacePackages(config: ServerBuildConfig): void {
     'session-mcp-server',
     'messaging-gateway',
     'messaging-whatsapp-worker',
+    'messaging-weixin-worker',
   ];
 
   for (const pkg of packages) {
@@ -880,6 +881,8 @@ async function main(): Promise<void> {
   // The bundle embeds Baileys + transitive deps; see scripts/build-wa-worker.ts.
   console.log('  Building WhatsApp worker bundle...');
   await $`bun run ${join(rootDir, 'scripts', 'build-wa-worker.ts')}`.cwd(rootDir);
+  console.log('  Building Weixin worker bundle...');
+  await $`bun run ${join(rootDir, 'scripts', 'build-weixin-worker.ts')}`.cwd(rootDir);
 
   // Step 5: Assemble resources
   console.log('\n[5/8] Assembling resources...');

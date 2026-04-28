@@ -45,6 +45,15 @@ export interface MessagingBootstrapOptions {
     nodeBin?: string
     pairingMode?: 'qr' | 'code'
   }
+  weixin: {
+    /** Absolute path to the bundled Weixin worker.cjs. */
+    workerEntry: string
+    /**
+     * Node binary to spawn. Defaults to process.execPath in Electron; Bun host
+     * should pass 'node' or an explicit Node >=22 path.
+     */
+    nodeBin?: string
+  }
 }
 
 export interface MessagingBootstrapHandle {
@@ -77,6 +86,10 @@ export function createMessagingBootstrap(opts: MessagingBootstrapOptions): Messa
       nodeBin: opts.whatsapp.nodeBin,
       pairingMode: opts.whatsapp.pairingMode ?? 'qr',
     },
+    weixin: {
+      workerEntry: opts.weixin.workerEntry,
+      nodeBin: opts.weixin.nodeBin,
+    },
     publishEvent: (channel, target, ...args) => {
       publisher?.(channel, target, ...args)
     },
@@ -86,7 +99,9 @@ export function createMessagingBootstrap(opts: MessagingBootstrapOptions): Messa
   log?.info('messaging bootstrap created', {
     event: 'messaging_bootstrap_created',
     workerEntry: opts.whatsapp.workerEntry,
+    weixinWorkerEntry: opts.weixin.workerEntry,
     nodeBin: opts.whatsapp.nodeBin ?? '(host default)',
+    weixinNodeBin: opts.weixin.nodeBin ?? '(host default)',
     pairingMode: opts.whatsapp.pairingMode ?? 'qr',
   })
 

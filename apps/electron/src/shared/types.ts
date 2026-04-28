@@ -673,6 +673,9 @@ export interface ElectronAPI {
   startWhatsAppConnect(): Promise<{ success: boolean }>
   submitWhatsAppPhone(phoneNumber: string): Promise<{ success: boolean }>
   onWhatsAppEvent(callback: (payload: { workspaceId: string; event: WhatsAppUiEvent }) => void): () => void
+  // Weixin (subprocess-based weixin-agent-sdk adapter)
+  startWeixinConnect(): Promise<{ success: boolean }>
+  onWeixinEvent(callback: (payload: { workspaceId: string; event: WeixinUiEvent }) => void): () => void
 }
 
 export interface MessagingPlatformRuntimeInfo {
@@ -691,6 +694,14 @@ export type WhatsAppUiEvent =
   | { type: 'pairing_code'; code: string }
   | { type: 'connected'; jid?: string; name?: string }
   | { type: 'disconnected'; loggedOut: boolean; reason?: string }
+  | { type: 'unavailable'; reason: string; message: string }
+  | { type: 'error'; message: string }
+
+/** Event payloads broadcast from the Weixin subprocess to the UI. */
+export type WeixinUiEvent =
+  | { type: 'qr'; qr: string }
+  | { type: 'connected'; accountId?: string; userId?: string; name?: string }
+  | { type: 'disconnected'; reason?: string }
   | { type: 'unavailable'; reason: string; message: string }
   | { type: 'error'; message: string }
 
