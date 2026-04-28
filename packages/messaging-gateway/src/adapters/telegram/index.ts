@@ -20,7 +20,7 @@ import type {
   ButtonPress,
   MessagingLogger,
 } from '../../types'
-import { formatForTelegram } from './format'
+import { formatForTelegram, formatPlainTextForTelegram } from './format'
 
 /**
  * Hard cap for downloaded attachment size. Matches `MAX_FILE_SIZE` in
@@ -48,6 +48,8 @@ const MIME_EXT_FALLBACK: Record<string, string> = {
   'video/mp4': '.mp4',
   'video/quicktime': '.mov',
 }
+
+const TELEGRAM_PARSE_MODE = 'MarkdownV2' as const
 
 const NOOP_LOGGER: MessagingLogger = {
   info: () => {},
@@ -98,6 +100,46 @@ function describeError(err: unknown, depth = 0): Record<string, unknown> {
   }
   if (err && typeof err === 'object') return { value: String(err), raw: err as object }
   return { value: String(err) }
+}
+
+function collectErrorMessages(err: unknown, depth = 0): string[] {
+  if (depth > 3 || err == null) return []
+
+  if (typeof err === 'string') return [err]
+
+  if (err instanceof Error) {
+    const messages = [err.message]
+    const grammyInner = (err as { error?: unknown }).error
+    const cause = (err as { cause?: unknown }).cause
+    messages.push(...collectErrorMessages(grammyInner, depth + 1))
+    messages.push(...collectErrorMessages(cause, depth + 1))
+    return messages
+  }
+
+  if (typeof err === 'object') {
+    const record = err as Record<string, unknown>
+    const messages: string[] = []
+    for (const key of ['message', 'description', 'error']) {
+      const value = record[key]
+      if (typeof value === 'string') {
+        messages.push(value)
+      } else {
+        messages.push(...collectErrorMessages(value, depth + 1))
+      }
+    }
+    return messages
+  }
+
+  return []
+}
+
+function isTelegramEntityParseError(err: unknown): boolean {
+  return collectErrorMessages(err).some((message) => {
+    const lower = message.toLowerCase()
+    return lower.includes("can't parse entities") ||
+      lower.includes('cant parse entities') ||
+      lower.includes('parse entities')
+  })
 }
 
 /**
@@ -504,7 +546,17 @@ export class TelegramAdapter implements PlatformAdapter {
   async sendText(channelId: string, text: string): Promise<SentMessage> {
     if (!this.bot) throw new Error('Telegram adapter not initialized')
     const formatted = formatForTelegram(text)
-    const sent = await this.bot.api.sendMessage(Number(channelId), formatted)
+    let sent
+    try {
+      sent = await this.bot.api.sendMessage(Number(channelId), formatted, {
+        parse_mode: TELEGRAM_PARSE_MODE,
+      })
+    } catch (err) {
+      if (!isTelegramEntityParseError(err)) throw err
+      sent = await this.bot.api.sendMessage(Number(channelId), formatPlainTextForTelegram(text), {
+        parse_mode: TELEGRAM_PARSE_MODE,
+      })
+    }
     return {
       platform: 'telegram',
       channelId,
@@ -515,7 +567,19 @@ export class TelegramAdapter implements PlatformAdapter {
   async editMessage(channelId: string, messageId: string, text: string): Promise<void> {
     if (!this.bot) throw new Error('Telegram adapter not initialized')
     const formatted = formatForTelegram(text)
-    await this.bot.api.editMessageText(Number(channelId), Number(messageId), formatted)
+    try {
+      await this.bot.api.editMessageText(Number(channelId), Number(messageId), formatted, {
+        parse_mode: TELEGRAM_PARSE_MODE,
+      })
+    } catch (err) {
+      if (!isTelegramEntityParseError(err)) throw err
+      await this.bot.api.editMessageText(
+        Number(channelId),
+        Number(messageId),
+        formatPlainTextForTelegram(text),
+        { parse_mode: TELEGRAM_PARSE_MODE },
+      )
+    }
   }
 
   async sendButtons(channelId: string, text: string, buttons: InlineButton[]): Promise<SentMessage> {
@@ -528,9 +592,20 @@ export class TelegramAdapter implements PlatformAdapter {
       }]),
     }
 
-    const sent = await this.bot.api.sendMessage(Number(channelId), text, {
-      reply_markup: keyboard,
-    })
+    const formatted = formatForTelegram(text)
+    let sent
+    try {
+      sent = await this.bot.api.sendMessage(Number(channelId), formatted, {
+        parse_mode: TELEGRAM_PARSE_MODE,
+        reply_markup: keyboard,
+      })
+    } catch (err) {
+      if (!isTelegramEntityParseError(err)) throw err
+      sent = await this.bot.api.sendMessage(Number(channelId), formatPlainTextForTelegram(text), {
+        parse_mode: TELEGRAM_PARSE_MODE,
+        reply_markup: keyboard,
+      })
+    }
 
     return {
       platform: 'telegram',
@@ -547,8 +622,28 @@ export class TelegramAdapter implements PlatformAdapter {
   async sendFile(channelId: string, file: Buffer, filename: string, caption?: string): Promise<SentMessage> {
     if (!this.bot) throw new Error('Telegram adapter not initialized')
 
-    const inputFile = new InputFile(file, filename)
-    const sent = await this.bot.api.sendDocument(Number(channelId), inputFile, { caption })
+    const sendDocument = (formattedCaption?: string) => {
+      const inputFile = new InputFile(file, filename)
+      return this.bot!.api.sendDocument(
+        Number(channelId),
+        inputFile,
+        formattedCaption
+          ? {
+              caption: formattedCaption,
+              parse_mode: TELEGRAM_PARSE_MODE,
+            }
+          : undefined,
+      )
+    }
+
+    let sent
+    const formattedCaption = caption ? formatForTelegram(caption) : undefined
+    try {
+      sent = await sendDocument(formattedCaption)
+    } catch (err) {
+      if (!caption || !isTelegramEntityParseError(err)) throw err
+      sent = await sendDocument(formatPlainTextForTelegram(caption))
+    }
 
     return {
       platform: 'telegram',
