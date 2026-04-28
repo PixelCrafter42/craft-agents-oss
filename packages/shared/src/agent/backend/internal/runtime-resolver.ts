@@ -139,6 +139,11 @@ function resolveServerPath(hostRuntime: BackendHostRuntimeContext, serverName: s
     return firstExistingPath([
       join(hostRuntime.appRootPath, 'resources', serverName, 'index.js'),
       join(hostRuntime.appRootPath, 'dist', 'resources', serverName, 'index.js'),
+      ...(hostRuntime.resourcesPath ? [
+        join(hostRuntime.resourcesPath, serverName, 'index.js'),
+        join(hostRuntime.resourcesPath, 'app', 'resources', serverName, 'index.js'),
+        join(hostRuntime.resourcesPath, 'app', 'dist', 'resources', serverName, 'index.js'),
+      ] : []),
     ]);
   }
   return resolveUpwards(
@@ -245,4 +250,3 @@ export function applyAnthropicRuntimeBootstrap(
     }
   }
 }
-

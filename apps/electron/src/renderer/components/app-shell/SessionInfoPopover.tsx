@@ -9,6 +9,7 @@ import { SessionFilesSection } from '../right-sidebar/SessionFilesSection'
 
 interface SessionInfoPopoverProps {
   sessionId: string
+  workingDirectory?: string
   sessionFolderPath?: string
   trigger: React.ReactElement
   side?: 'top' | 'right' | 'bottom' | 'left'
@@ -29,6 +30,7 @@ const DEFAULT_DRAWER_CONTENT_CLASS = [
 
 export function SessionInfoPopover({
   sessionId,
+  workingDirectory,
   sessionFolderPath,
   trigger,
   side = 'top',
@@ -67,7 +69,7 @@ export function SessionInfoPopover({
             <DrawerTitle className="text-sm font-medium">Session info</DrawerTitle>
           </DrawerHeader>
           <div className="flex-1 min-h-0 overflow-hidden">
-            <SessionInfoPopoverContent sessionId={sessionId} sessionFolderPath={sessionFolderPath} />
+            <SessionInfoPopoverContent sessionId={sessionId} workingDirectory={workingDirectory} sessionFolderPath={sessionFolderPath} />
           </div>
         </DrawerContent>
       </Drawer>
@@ -91,16 +93,17 @@ export function SessionInfoPopover({
           e.preventDefault()
         }}
       >
-        <SessionInfoPopoverContent sessionId={sessionId} sessionFolderPath={sessionFolderPath} />
+        <SessionInfoPopoverContent sessionId={sessionId} workingDirectory={workingDirectory} sessionFolderPath={sessionFolderPath} />
       </PopoverContent>
     </Popover>
   )
 }
 
-function SessionInfoPopoverContent({ sessionId, sessionFolderPath }: { sessionId: string; sessionFolderPath?: string }) {
+function SessionInfoPopoverContent({ sessionId, workingDirectory, sessionFolderPath }: { sessionId: string; workingDirectory?: string; sessionFolderPath?: string }) {
   const { t } = useTranslation()
   const session = useSession(sessionId)
   const { onRenameSession } = useAppShellContext()
+  const revealWorkingDirectory = workingDirectory ?? session?.workingDirectory
   const [name, setName] = React.useState('')
   const renameTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -150,6 +153,7 @@ function SessionInfoPopoverContent({ sessionId, sessionFolderPath }: { sessionId
       <div className="flex-1 min-h-0 overflow-hidden">
         <SessionFilesSection
           sessionId={sessionId}
+          workingDirectory={revealWorkingDirectory}
           sessionFolderPath={sessionFolderPath}
           hideHeader={false}
           className="h-full min-h-0"

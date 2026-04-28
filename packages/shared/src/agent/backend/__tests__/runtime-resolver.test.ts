@@ -57,6 +57,23 @@ describe('resolveServerPath fallback', () => {
     const paths = resolveBackendRuntimePaths(hostRuntime);
     expect(paths.piServerPath).toBe(join(primaryDir, 'index.js'));
   });
+
+  it('finds server in packaged resourcesPath when it is outside appRootPath', () => {
+    const appRoot = join(tmpBase, 'app3', 'Contents', 'Resources', 'app');
+    const resourcesPath = join(tmpBase, 'app3', 'Contents', 'Resources');
+    const serverDir = join(resourcesPath, 'pi-agent-server');
+    mkdirSync(serverDir, { recursive: true });
+    writeFileSync(join(serverDir, 'index.js'), '// resource path server');
+
+    const hostRuntime: BackendHostRuntimeContext = {
+      appRootPath: appRoot,
+      resourcesPath,
+      isPackaged: true,
+    };
+
+    const paths = resolveBackendRuntimePaths(hostRuntime);
+    expect(paths.piServerPath).toBe(join(serverDir, 'index.js'));
+  });
 });
 
 describe('resolveRipgrepPath', () => {

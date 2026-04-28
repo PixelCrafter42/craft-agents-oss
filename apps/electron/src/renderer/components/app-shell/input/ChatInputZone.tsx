@@ -16,6 +16,7 @@ interface ChatInputZoneProps {
   onPermissionModeChange?: (mode: PermissionMode) => void
   tasks?: BackgroundTask[]
   sessionId: string
+  workingDirectory?: string
   sessionFolderPath?: string
   onKillTask?: (taskId: string) => void
   onInsertMessage?: (text: string) => void
@@ -36,6 +37,7 @@ export function ChatInputZone({
   onPermissionModeChange,
   tasks = [],
   sessionId,
+  workingDirectory,
   sessionFolderPath,
   onKillTask,
   onInsertMessage,
@@ -82,6 +84,7 @@ export function ChatInputZone({
           onPermissionModeChange={onPermissionModeChange}
           tasks={tasks}
           sessionId={sessionId}
+          workingDirectory={workingDirectory}
           sessionFolderPath={sessionFolderPath}
           onKillTask={onKillTask}
           onInsertMessage={onInsertMessage ?? inputProps.onInputChange}

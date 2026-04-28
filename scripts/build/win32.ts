@@ -9,6 +9,7 @@ import { execSync } from 'child_process';
 import { existsSync, mkdirSync, rmSync, readdirSync, statSync, cpSync } from 'fs';
 import { join } from 'path';
 import type { BuildConfig } from './common';
+import { copyRuntimeServersToResources } from '../electron-copy-runtime-servers';
 
 /**
  * Verify SDK is bundled in the packaged Windows app
@@ -197,6 +198,12 @@ export async function buildElectronAppWindows(config: BuildConfig): Promise<void
     rmSync(resourcesDst, { recursive: true, force: true });
   }
   cpSync(resourcesSrc, resourcesDst, { recursive: true });
+  copyRuntimeServersToResources({
+    rootDir,
+    destResourcesDir: resourcesDst,
+    platform: config.platform,
+    arch: config.arch,
+  });
 
   // Copy doc assets (matches electron:build:assets step used by Mac/Linux builds)
   // Without this, loadBundledDocs() can't find the docs and falls back to placeholders

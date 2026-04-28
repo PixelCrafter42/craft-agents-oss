@@ -184,6 +184,16 @@ const api = buildClientApi(client, CHANNEL_MAP, (ch) => client.isChannelAvailabl
 
 ;(api as any).getRuntimeEnvironment = (): 'electron' | 'web' => 'electron'
 
+// Folder picking is a local Electron capability; avoid a server->client dialog
+// callback roundtrip while the renderer is already awaiting this API call.
+;(api as ElectronAPI).openFolderDialog = async (): Promise<string | null> => {
+  const result = await ipcRenderer.invoke('__dialog:showOpenDialog', {
+    properties: ['openDirectory', 'createDirectory'],
+    title: 'Select Working Directory',
+  } satisfies FileDialogSpec)
+  return result.canceled ? null : result.filePaths[0] ?? null
+}
+
 // ---------------------------------------------------------------------------
 // Transport connection state logging (for remote connections)
 // ---------------------------------------------------------------------------

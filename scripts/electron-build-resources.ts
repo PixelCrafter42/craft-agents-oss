@@ -4,6 +4,7 @@
 
 import { existsSync, cpSync } from "fs";
 import { join } from "path";
+import { copyRuntimeServersToResources } from "./electron-copy-runtime-servers.ts";
 
 const ROOT_DIR = join(import.meta.dir, "..");
 const ELECTRON_DIR = join(ROOT_DIR, "apps/electron");
@@ -17,3 +18,8 @@ if (existsSync(srcDir)) {
 } else {
   console.log("⚠️ No resources directory found");
 }
+
+copyRuntimeServersToResources({
+  rootDir: ROOT_DIR,
+  destResourcesDir: destDir,
+});

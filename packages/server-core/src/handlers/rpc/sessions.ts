@@ -268,9 +268,15 @@ export function registerSessionsHandlers(server: RpcServer, deps: HandlerDeps): 
       case 'setLabels':
         return sessionManager.setSessionLabels(sessionId, command.labels)
       case 'showInFinder': {
+        const session = await sessionManager.getSession(sessionId)
         const sessionPath = sessionManager.getSessionPath(sessionId)
-        if (sessionPath) {
-          deps.platform.showItemInFolder?.(sessionPath)
+        const targetPath = session?.workingDirectory || sessionPath
+        if (targetPath) {
+          if (deps.platform.openPath) {
+            await deps.platform.openPath(targetPath)
+          } else {
+            deps.platform.showItemInFolder?.(targetPath)
+          }
         }
         return
       }

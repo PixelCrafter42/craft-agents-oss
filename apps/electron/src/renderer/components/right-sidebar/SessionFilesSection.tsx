@@ -71,7 +71,9 @@ const itemVariants: Variants = {
 export interface SessionFilesSectionProps {
   sessionId?: string
   className?: string
-  /** Absolute session folder path for header actions (e.g. View in Finder) */
+  /** Current working directory for header actions (e.g. View in Finder) */
+  workingDirectory?: string
+  /** Absolute session folder path for header fallback actions */
   sessionFolderPath?: string
   /** Hide section header when embedded inside compact containers (e.g. popovers) */
   hideHeader?: boolean
@@ -420,7 +422,7 @@ function FileTreeItem({
 /**
  * Section displaying session files as a tree
  */
-export function SessionFilesSection({ sessionId, className, sessionFolderPath, hideHeader = false }: SessionFilesSectionProps) {
+export function SessionFilesSection({ sessionId, className, workingDirectory, sessionFolderPath, hideHeader = false }: SessionFilesSectionProps) {
   const { t } = useTranslation()
   const [files, setFiles] = useState<SessionFile[]>([])
   const [isLoading, setIsLoading] = useState(false)
@@ -527,10 +529,16 @@ export function SessionFilesSection({ sessionId, className, sessionFolderPath, h
   // instead of always opening in the file manager / default app.
   const { onOpenFile } = useAppShellContext()
   const fileManagerName = getFileManagerName()
+  const revealFolderPath = workingDirectory || sessionFolderPath
 
   // Reveal a file/folder in the system file manager
   const handleRevealInFileManager = useCallback((path: string) => {
     window.electronAPI.showInFolder(path)
+  }, [])
+
+  const handleOpenDirectoryInFileManager = useCallback((path: string) => {
+    // eslint-disable-next-line craft-links/no-direct-file-open -- this button opens the directory itself, not an in-app preview
+    window.electronAPI.openFile(path)
   }, [])
 
   // Handle file click — preview in-app if possible, open directory in file manager
@@ -577,10 +585,10 @@ export function SessionFilesSection({ sessionId, className, sessionFolderPath, h
       {!hideHeader && (
         <div className="flex items-center justify-between px-4 pt-4 pb-2 shrink-0 select-none">
           <span className="text-xs font-medium text-muted-foreground">{t("chat.sessionFiles")}</span>
-          {sessionFolderPath && (
+          {revealFolderPath && (
             <button
               type="button"
-              onClick={() => window.electronAPI.showInFolder(sessionFolderPath)}
+              onClick={() => handleOpenDirectoryInFileManager(revealFolderPath)}
               className="text-xs text-foreground/50 hover:text-foreground/80 hover:underline underline-offset-2 transition-colors"
             >
               {t("chat.viewInFileManager", { fileManager: fileManagerName })}

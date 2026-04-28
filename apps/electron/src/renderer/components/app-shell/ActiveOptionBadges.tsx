@@ -49,6 +49,8 @@ export interface ActiveOptionBadgesProps {
   tasks?: BackgroundTask[]
   /** Session ID for opening preview windows */
   sessionId?: string
+  /** Current working directory for Files header actions */
+  workingDirectory?: string
   /** Absolute path to the session folder (for Files header actions) */
   sessionFolderPath?: string
   /** Callback when kill button is clicked on a task */
@@ -90,6 +92,7 @@ export function ActiveOptionBadges({
   onPermissionModeChange,
   tasks = [],
   sessionId,
+  workingDirectory,
   sessionFolderPath,
   onKillTask,
   onInsertMessage,
@@ -220,7 +223,7 @@ export function ActiveOptionBadges({
 
       {/* Right side: Files popover button */}
       <div className="shrink-0">
-        <FilesPopoverButton sessionId={sessionId} sessionFolderPath={sessionFolderPath} />
+        <FilesPopoverButton sessionId={sessionId} workingDirectory={workingDirectory} sessionFolderPath={sessionFolderPath} />
       </div>
     </div>
   )
@@ -390,7 +393,7 @@ function StateBadge({
   )
 }
 
-function FilesPopoverButton({ sessionId, sessionFolderPath }: { sessionId?: string; sessionFolderPath?: string }) {
+function FilesPopoverButton({ sessionId, workingDirectory, sessionFolderPath }: { sessionId?: string; workingDirectory?: string; sessionFolderPath?: string }) {
   const { t } = useTranslation()
   const [open, setOpen] = React.useState(false)
 
@@ -399,6 +402,7 @@ function FilesPopoverButton({ sessionId, sessionFolderPath }: { sessionId?: stri
   return (
     <SessionInfoPopover
       sessionId={sessionId}
+      workingDirectory={workingDirectory}
       sessionFolderPath={sessionFolderPath}
       trigger={(
         <button
@@ -515,4 +519,3 @@ function PermissionModeDropdown({ permissionMode, onPermissionModeChange, sessio
     </Popover>
   )
 }
-

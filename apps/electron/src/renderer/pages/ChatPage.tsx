@@ -517,6 +517,7 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
     return (
       <SessionInfoPopover
         sessionId={sessionId}
+        workingDirectory={workingDirectory ?? sessionMeta.workingDirectory}
         sessionFolderPath={session?.sessionFolderPath}
         presentation="drawer"
         trigger={(
@@ -527,7 +528,7 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
         )}
       />
     )
-  }, [isCompactMode, sessionId, session?.sessionFolderPath, sessionMeta])
+  }, [isCompactMode, sessionId, session?.sessionFolderPath, sessionMeta, workingDirectory, t])
 
   const headerActions = isCompactMode ? compactInfoButton : shareButton
 
