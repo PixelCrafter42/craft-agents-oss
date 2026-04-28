@@ -83,6 +83,7 @@ import { initModelRefreshService, getModelRefreshService, setFetcherPlatform } f
 import { setSearchPlatform, setImageProcessor } from '@craft-agent/server-core/services'
 import { createApplicationMenu } from './menu'
 import { WindowManager } from './window-manager'
+import { createAppTray, destroyAppTray } from './tray'
 import { loadWindowState, saveWindowState } from './window-state'
 import { getWorkspaces, getWorkspaceByNameOrId, loadStoredConfig, addWorkspace, saveConfig } from '@craft-agent/shared/config'
 import { getDefaultWorkspacesDir } from '@craft-agent/shared/workspaces'
@@ -298,6 +299,7 @@ if (!gotTheLock) {
       const windows = windowManager.getAllWindows()
       if (windows.length > 0) {
         const win = windows[0].window
+        if (!win.isVisible()) win.show()
         if (win.isMinimized()) win.restore()
         win.focus()
       }
@@ -437,6 +439,7 @@ app.whenReady().then(async () => {
 
     // Create the application menu (needs windowManager for New Window action)
     createApplicationMenu(windowManager)
+    createAppTray(windowManager)
 
     // When CRAFT_SERVER_URL is set, this Electron instance is a thin client —
     // it only creates windows whose preload connects to the remote server.
@@ -1094,8 +1097,8 @@ app.whenReady().then(async () => {
 
 app.on('window-all-closed', () => {
   if (process.env.CRAFT_HEADLESS) return  // headless server stays alive
-  // On macOS, apps typically stay active until explicitly quit
-  if (process.platform !== 'darwin') {
+  // On macOS and Windows tray mode, apps stay active until explicitly quit.
+  if (process.platform !== 'darwin' && process.platform !== 'win32') {
     app.quit()
   }
 })
@@ -1163,6 +1166,8 @@ app.on('before-quit', async (event) => {
         mainLog.error('[messaging] dispose failed:', err)
       }
     }
+
+    destroyAppTray()
 
     // Clean up power manager (release power blocker)
     const { cleanup: cleanupPowerManager } = await import('./power-manager')

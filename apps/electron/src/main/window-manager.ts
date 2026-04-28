@@ -59,6 +59,7 @@ export class WindowManager {
   private keyboardCloseIntents: Set<number> = new Set()  // webContents.id flagged by Cmd/Ctrl+W before close
   private keyboardCloseIntentTimeouts: Map<number, NodeJS.Timeout> = new Map()  // Auto-clear stale keyboard-close intents
   private isAppQuitting = false  // Skip layered close interception during app quit
+  private pendingCloseActions: Map<number, 'destroy' | 'hide-to-tray'> = new Map()
 
   /**
    * Set the event sink and client resolver for pushing events via the RPC server
@@ -364,6 +365,11 @@ export class WindowManager {
           }
         }
 
+        const action = process.platform === 'win32' && source === 'window-button'
+          ? 'hide-to-tray'
+          : 'destroy'
+        this.pendingCloseActions.set(wcId, action)
+
         // Send close request to renderer - it will either close a modal/panel or confirm close.
         this.pushToWindow(window, RPC_CHANNELS.window.CLOSE_REQUESTED, { source })
 
@@ -374,7 +380,14 @@ export class WindowManager {
 
         this.pendingCloseTimeouts.set(wcId, setTimeout(() => {
           this.pendingCloseTimeouts.delete(wcId)
-          if (!window.isDestroyed()) window.destroy()
+          const closeAction = this.pendingCloseActions.get(wcId) ?? 'destroy'
+          this.pendingCloseActions.delete(wcId)
+          if (window.isDestroyed()) return
+          if (closeAction === 'hide-to-tray') {
+            window.hide()
+          } else {
+            window.destroy()
+          }
         }, 3000))
       }
       // If renderer not ready, allow default close behavior
@@ -396,6 +409,7 @@ export class WindowManager {
         this.keyboardCloseIntentTimeouts.delete(webContentsId)
       }
       this.keyboardCloseIntents.delete(webContentsId)
+      this.pendingCloseActions.delete(webContentsId)
 
       nativeTheme.removeListener('updated', themeHandler)
       this.windows.delete(webContentsId)
@@ -486,8 +500,15 @@ export class WindowManager {
 
     const managed = this.windows.get(webContentsId)
     if (managed && !managed.window.isDestroyed()) {
-      // Remove close listener temporarily to avoid infinite loop,
-      // then destroy the window directly
+      const closeAction = this.pendingCloseActions.get(webContentsId) ?? 'destroy'
+      this.pendingCloseActions.delete(webContentsId)
+
+      if (closeAction === 'hide-to-tray') {
+        managed.window.hide()
+        return
+      }
+
+      // Remove close listener temporarily to avoid infinite loop, then destroy the window directly.
       managed.window.destroy()
     }
   }
@@ -502,6 +523,7 @@ export class WindowManager {
       clearTimeout(timeout)
       this.pendingCloseTimeouts.delete(webContentsId)
     }
+    this.pendingCloseActions.delete(webContentsId)
   }
 
   /**
@@ -558,6 +580,9 @@ export class WindowManager {
   focusOrCreateWindow(workspaceId: string): BrowserWindow {
     const existing = this.getWindowByWorkspace(workspaceId)
     if (existing) {
+      if (!existing.isVisible()) {
+        existing.show()
+      }
       if (existing.isMinimized()) {
         existing.restore()
       }
