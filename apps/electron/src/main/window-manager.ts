@@ -265,14 +265,14 @@ export class WindowManager {
 
     // Fallback: if the renderer fails to load (e.g. stale path, disk error),
     // recover gracefully by loading the default state instead of showing a white screen. See #13.
-    // In dev mode, retry the Vite dev server (it may not be ready yet) instead of falling back
-    // to file:// which doesn't exist during development.
+    // In dev mode, keep retrying the Vite dev server. Falling back to dist can load
+    // stale production assets while Vite is still starting.
     let failLoadRetries = 0
     window.webContents.on('did-fail-load', (_event, errorCode, errorDescription) => {
       windowLog.warn('Failed to load renderer:', errorCode, errorDescription)
-      if (VITE_DEV_SERVER_URL && failLoadRetries < 5) {
+      if (VITE_DEV_SERVER_URL) {
         failLoadRetries++
-        windowLog.info(`Retrying Vite dev server (attempt ${failLoadRetries}/5)...`)
+        windowLog.info(`Retrying Vite dev server (attempt ${failLoadRetries})...`)
         setTimeout(() => {
           const params = new URLSearchParams({ workspaceId }).toString()
           window.loadURL(`${VITE_DEV_SERVER_URL}?${params}`)

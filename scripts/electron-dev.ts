@@ -417,6 +417,44 @@ async function waitForFileStable(filePath: string, timeoutMs = 10000): Promise<b
   return false;
 }
 
+async function waitForViteServer(
+  url: string,
+  getExitCode: () => number | null,
+  timeoutMs = 60000
+): Promise<void> {
+  const startTime = Date.now();
+  let lastError: string | undefined;
+
+  while (Date.now() - startTime < timeoutMs) {
+    const exitCode = getExitCode();
+    if (exitCode !== null) {
+      throw new Error(`Vite dev server exited before becoming ready (exit code ${exitCode})`);
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 1000);
+    try {
+      const response = await fetch(url, {
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      if (response.ok) {
+        console.log(`✅ Vite dev server ready at ${url}`);
+        return;
+      }
+      lastError = `HTTP ${response.status}`;
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err);
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    await Bun.sleep(250);
+  }
+
+  throw new Error(`Timed out waiting for Vite dev server at ${url}${lastError ? ` (${lastError})` : ""}`);
+}
+
 async function main(): Promise<void> {
   console.log("🚀 Starting Electron dev environment...\n");
 
@@ -550,6 +588,12 @@ async function main(): Promise<void> {
     env: process.env as Record<string, string>,
   });
   processes.push(viteProc);
+  let viteExitCode: number | null = null;
+  void viteProc.exited.then((code) => {
+    viteExitCode = code;
+  });
+
+  await waitForViteServer(`http://localhost:${vitePort}/`, () => viteExitCode);
 
   // 2. Main process watcher (using esbuild watch API)
   const mainContext = await esbuild.context({
