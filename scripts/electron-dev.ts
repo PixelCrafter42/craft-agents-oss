@@ -291,6 +291,8 @@ function getOAuthDefines(): Record<string, string> {
 // Get environment variables for electron process
 function getElectronEnv(): Record<string, string> {
   const vitePort = process.env.CRAFT_VITE_PORT || "5173";
+  const viteHost = process.env.CRAFT_VITE_HOST || "127.0.0.1";
+  const viteUrlHost = viteHost === "0.0.0.0" ? "127.0.0.1" : viteHost;
 
   // Codex binary path is resolved at runtime by the binary-resolver module.
   // It checks: CODEX_PATH env var > bundled binary > local dev fork > system PATH.
@@ -298,7 +300,7 @@ function getElectronEnv(): Record<string, string> {
 
   return {
     ...process.env as Record<string, string>,
-    VITE_DEV_SERVER_URL: `http://localhost:${vitePort}`,
+    VITE_DEV_SERVER_URL: `http://${viteUrlHost}:${vitePort}`,
     CRAFT_CONFIG_DIR: process.env.CRAFT_CONFIG_DIR || "",
     CRAFT_APP_NAME: process.env.CRAFT_APP_NAME || "Craft Agents",
     CRAFT_DEEPLINK_SCHEME: process.env.CRAFT_DEEPLINK_SCHEME || "craftagents",
@@ -418,7 +420,7 @@ async function waitForFileStable(filePath: string, timeoutMs = 10000): Promise<b
 }
 
 async function waitForViteServer(
-  url: string,
+  urls: string[],
   getExitCode: () => number | null,
   timeoutMs = 60000
 ): Promise<void> {
@@ -431,28 +433,31 @@ async function waitForViteServer(
       throw new Error(`Vite dev server exited before becoming ready (exit code ${exitCode})`);
     }
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 1000);
-    try {
-      const response = await fetch(url, {
-        cache: "no-store",
-        signal: controller.signal,
-      });
-      if (response.ok) {
-        console.log(`✅ Vite dev server ready at ${url}`);
-        return;
+    for (const url of urls) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 1000);
+      try {
+        const response = await fetch(url, {
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        if (response.ok) {
+          console.log(`✅ Vite dev server ready at ${url}`);
+          return;
+        }
+        lastError = `${url}: HTTP ${response.status}`;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        lastError = `${url}: ${message}`;
+      } finally {
+        clearTimeout(timeout);
       }
-      lastError = `HTTP ${response.status}`;
-    } catch (err) {
-      lastError = err instanceof Error ? err.message : String(err);
-    } finally {
-      clearTimeout(timeout);
     }
 
     await Bun.sleep(250);
   }
 
-  throw new Error(`Timed out waiting for Vite dev server at ${url}${lastError ? ` (${lastError})` : ""}`);
+  throw new Error(`Timed out waiting for Vite dev server${lastError ? ` (${lastError})` : ""}`);
 }
 
 async function main(): Promise<void> {
@@ -480,6 +485,7 @@ async function main(): Promise<void> {
   await buildWeixinWorker();
 
   const vitePort = process.env.CRAFT_VITE_PORT || "5173";
+  const viteHost = process.env.CRAFT_VITE_HOST || "127.0.0.1";
   const oauthDefines = getOAuthDefines();
 
   // Kill any existing process on the Vite port
@@ -580,7 +586,17 @@ async function main(): Promise<void> {
 
   // 1. Vite dev server (strictPort ensures we don't silently switch ports)
   const viteProc = spawn({
-    cmd: [VITE_BIN, "dev", "--config", "apps/electron/vite.config.ts", "--port", vitePort, "--strictPort"],
+    cmd: [
+      VITE_BIN,
+      "dev",
+      "--config",
+      "apps/electron/vite.config.ts",
+      "--host",
+      viteHost,
+      "--port",
+      vitePort,
+      "--strictPort",
+    ],
     cwd: ROOT_DIR,
     stdin: "ignore",
     stdout: "inherit",
@@ -593,7 +609,14 @@ async function main(): Promise<void> {
     viteExitCode = code;
   });
 
-  await waitForViteServer(`http://localhost:${vitePort}/`, () => viteExitCode);
+  await waitForViteServer(
+    [
+      `http://127.0.0.1:${vitePort}/`,
+      `http://localhost:${vitePort}/`,
+      `http://[::1]:${vitePort}/`,
+    ],
+    () => viteExitCode
+  );
 
   // 2. Main process watcher (using esbuild watch API)
   const mainContext = await esbuild.context({
