@@ -37,16 +37,16 @@ describe('resolveServerPath fallback', () => {
     expect(paths.piServerPath).toBe(join(serverDir, 'index.js'));
   });
 
-  it('prefers resources/ over dist/resources/ when both exist', () => {
+  it('prefers dist/resources/ over stale resources/ when both exist', () => {
     const appRoot = join(tmpBase, 'app2');
 
     // Create both paths
-    const primaryDir = join(appRoot, 'resources', 'pi-agent-server');
-    const fallbackDir = join(appRoot, 'dist', 'resources', 'pi-agent-server');
-    mkdirSync(primaryDir, { recursive: true });
-    mkdirSync(fallbackDir, { recursive: true });
-    writeFileSync(join(primaryDir, 'index.js'), '// primary');
-    writeFileSync(join(fallbackDir, 'index.js'), '// fallback');
+    const staleDir = join(appRoot, 'resources', 'pi-agent-server');
+    const buildDir = join(appRoot, 'dist', 'resources', 'pi-agent-server');
+    mkdirSync(staleDir, { recursive: true });
+    mkdirSync(buildDir, { recursive: true });
+    writeFileSync(join(staleDir, 'index.js'), '// stale');
+    writeFileSync(join(buildDir, 'index.js'), '// build');
 
     const hostRuntime: BackendHostRuntimeContext = {
       appRootPath: appRoot,
@@ -55,7 +55,7 @@ describe('resolveServerPath fallback', () => {
     };
 
     const paths = resolveBackendRuntimePaths(hostRuntime);
-    expect(paths.piServerPath).toBe(join(primaryDir, 'index.js'));
+    expect(paths.piServerPath).toBe(join(buildDir, 'index.js'));
   });
 
   it('finds server in packaged resourcesPath when it is outside appRootPath', () => {
