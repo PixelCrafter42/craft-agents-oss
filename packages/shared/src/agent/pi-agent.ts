@@ -79,8 +79,9 @@ import { getPermissionModeDiagnostics } from './mode-manager.ts';
 import type { McpClientPool } from '../mcp/mcp-pool.ts';
 
 // Path utilities
-import { join } from 'path';
+import { dirname, join, resolve } from 'path';
 import { homedir } from 'os';
+import { existsSync } from 'fs';
 
 // Session storage (plans folder path)
 import { getSessionDataPath, getSessionPath, getSessionPlansPath } from '../sessions/storage.ts';
@@ -109,6 +110,30 @@ export const PI_BACKEND_SESSION_TOOL_NAMES = new Set<string>([
   'spawn_session',
   'browser_tool',
 ]);
+
+function hasPiPackageDocs(packageDir: string): boolean {
+  return existsSync(join(packageDir, 'docs', 'skills.md'));
+}
+
+function findPiPackageDirFrom(baseDir: string): string | undefined {
+  let dir = resolve(baseDir);
+  for (let depth = 0; depth <= 8; depth++) {
+    const candidate = join(dir, 'node_modules', '@mariozechner', 'pi-coding-agent');
+    if (hasPiPackageDocs(candidate)) return candidate;
+
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return undefined;
+}
+
+export function resolvePiPackageDir(piServerPath: string): string | undefined {
+  const serverDir = dirname(piServerPath);
+  if (hasPiPackageDocs(serverDir)) return serverDir;
+
+  return findPiPackageDirFrom(serverDir) ?? findPiPackageDirFrom(process.cwd());
+}
 
 /**
  * Backend implementation using the Pi coding agent SDK via subprocess.
@@ -342,8 +367,12 @@ export class PiAgent extends BaseAgent {
 
     const nodePath = runtime.paths?.node || process.execPath;
     const cwd = this.resolvedCwd();
+    const piPackageDir = resolvePiPackageDir(piServerPath);
 
     this.debug(`Spawning Pi subprocess: ${nodePath} ${piServerPath}`);
+    this.debug(piPackageDir
+      ? `Using Pi package assets: ${piPackageDir}`
+      : 'Pi package assets not found; subprocess will use Pi SDK defaults');
     this.resetSubprocessErrorDedup();
 
     // Set up ready promise before spawning
@@ -402,6 +431,7 @@ export class PiAgent extends BaseAgent {
         ...getProxyEnvVars(),
         ...this.config.envOverrides,
         ...awsEnv,
+        ...(piPackageDir ? { PI_PACKAGE_DIR: piPackageDir } : {}),
         // Pass session dir for cross-process toolMetadataStore
         ...(sessionDir ? { CRAFT_SESSION_DIR: sessionDir } : {}),
         // Propagate debug mode

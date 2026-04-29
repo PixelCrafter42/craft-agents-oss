@@ -15,6 +15,7 @@ import {
 } from 'fs';
 import { join, dirname } from 'path';
 import { createHash } from 'crypto';
+import { copyPiCodingAgentPackageAssets } from '../electron-copy-runtime-servers';
 
 export type Platform = 'darwin' | 'win32' | 'linux';
 export type Arch = 'x64' | 'arm64';
@@ -464,6 +465,7 @@ export function copyPiAgentServer(config: BuildConfig): void {
 
   // 1. Copy index.js
   copyFileSync(join(piSourceDir, 'index.js'), join(piDestDir, 'index.js'));
+  copyPiCodingAgentPackageAssets(rootDir, piDestDir);
 
   // 2. Copy koffi npm package (external import, resolved via node_modules at runtime)
   const koffiSource = join(rootDir, 'node_modules', 'koffi');

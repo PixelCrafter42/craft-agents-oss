@@ -8,6 +8,38 @@ interface CopyRuntimeServersOptions {
   arch?: string;
 }
 
+const PI_CODING_AGENT_PACKAGE_ASSETS = [
+  'package.json',
+  'README.md',
+  'CHANGELOG.md',
+  'docs',
+  'examples',
+] as const;
+
+export function copyPiCodingAgentPackageAssets(rootDir: string, destDir: string): void {
+  const packageDir = join(rootDir, 'node_modules', '@mariozechner', 'pi-coding-agent');
+  const requiredDoc = join(packageDir, 'docs', 'skills.md');
+
+  if (!existsSync(requiredDoc)) {
+    console.warn(`Warning: Pi coding agent docs not found at ${requiredDoc}. Pi documentation paths may be unavailable.`);
+    return;
+  }
+
+  for (const entry of PI_CODING_AGENT_PACKAGE_ASSETS) {
+    const source = join(packageDir, entry);
+    if (!existsSync(source)) {
+      console.warn(`Warning: Pi coding agent asset not found: ${source}`);
+      continue;
+    }
+
+    const dest = join(destDir, entry);
+    rmSync(dest, { recursive: true, force: true });
+    cpSync(source, dest, { recursive: true, force: true });
+  }
+
+  console.log('Copied Pi coding agent package assets to dist resources');
+}
+
 function copySessionServer(rootDir: string, destResourcesDir: string): void {
   const source = join(rootDir, 'packages', 'session-mcp-server', 'dist', 'index.js');
   const destDir = join(destResourcesDir, 'session-mcp-server');
@@ -40,6 +72,7 @@ function copyPiAgentServer(rootDir: string, destResourcesDir: string, platform: 
   rmSync(destDir, { recursive: true, force: true });
   mkdirSync(destDir, { recursive: true });
   copyFileSync(source, join(destDir, 'index.js'));
+  copyPiCodingAgentPackageAssets(rootDir, destDir);
 
   const koffiSource = join(rootDir, 'node_modules', 'koffi');
   if (!existsSync(koffiSource)) {
