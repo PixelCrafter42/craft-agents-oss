@@ -140,23 +140,6 @@ function Ensure-CopilotVendor {
     Write-Host "Bundled Copilot ready: $dest"
 }
 
-function Ensure-CodexVendor {
-    $dest = Join-Path $ElectronDir "vendor\codex\win32-x64"
-
-    if ($env:CODEX_VENDOR_SOURCE -and (Test-Path -LiteralPath $env:CODEX_VENDOR_SOURCE)) {
-        Copy-DirectoryFresh -Source $env:CODEX_VENDOR_SOURCE -Destination $dest
-        Write-Host "Bundled Codex copied from CODEX_VENDOR_SOURCE: $dest"
-        return
-    }
-
-    if (Test-Path -LiteralPath $dest) {
-        Write-Host "Bundled Codex present: $dest"
-        return
-    }
-
-    Write-Host "Bundled Codex not found at $dest. Set CODEX_VENDOR_SOURCE to include it in the installer." -ForegroundColor Yellow
-}
-
 function Get-BuilderConfigArgs {
     if ($Signed) {
         Write-Host "Signed build requested; using electron-builder signing configuration."
@@ -213,7 +196,6 @@ if (-not $SkipInstall) {
 
 Ensure-BundledBun
 Ensure-CopilotVendor
-Ensure-CodexVendor
 
 Write-Host "Building Electron app via canonical build pipeline..."
 Push-Location $RootDir
