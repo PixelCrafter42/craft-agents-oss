@@ -75,6 +75,7 @@ import {
   CraftSystemPromptResourceLoader,
   createCraftSystemPromptResourceLoader,
 } from './craft-system-prompt-resource-loader.ts';
+import { allowCraftMetadataProperties, stripCraftMetadata } from './craft-metadata-schema.ts';
 
 // ============================================================
 // Types — JSONL Protocol
@@ -742,6 +743,7 @@ function makeErrorResult(message: string): AgentToolResult<any> {
 
 function wrapSingleTool(tool: ToolDefinition<any, any>): ToolDefinition<any, any> {
   const originalExecute = tool.execute;
+  const parameters = allowCraftMetadataProperties(tool.parameters);
 
   const wrappedExecute: ToolDefinition<any, any>['execute'] = async (
     toolCallId,
@@ -764,6 +766,11 @@ function wrapSingleTool(tool: ToolDefinition<any, any>): ToolDefinition<any, any
 
     // Send to main process for permission checking + transforms
     inputObj = await requestPreToolUseApproval(sdkToolName, inputObj, toolCallId);
+
+    // Metadata is for Craft UI only. Keep a final defensive strip here so the
+    // upstream Pi tool implementation always receives clean executable args,
+    // even if a future pre-tool-use path returns `allow` without modification.
+    inputObj = stripCraftMetadata(inputObj);
 
     // Execute original tool with (potentially modified) input
     const result = await originalExecute(toolCallId, inputObj, signal, onUpdate, ctx);
@@ -812,6 +819,7 @@ function wrapSingleTool(tool: ToolDefinition<any, any>): ToolDefinition<any, any
 
   return {
     ...tool,
+    parameters,
     execute: wrappedExecute,
   };
 }
