@@ -5,6 +5,7 @@
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
@@ -13,7 +14,7 @@ import type { Tool } from '@modelcontextprotocol/sdk/types.js';
  * HTTP transport config for remote MCP servers
  */
 export interface HttpMcpClientConfig {
-  transport: 'http';
+  transport: 'http' | 'sse';
   url: string;
   headers?: Record<string, string>;
 }
@@ -95,6 +96,16 @@ export class CraftMcpClient {
         args: config.args,
         env: { ...processEnv, ...config.env },
       });
+    } else if (config.transport === 'sse') {
+      // SSE transport for legacy remote MCP servers.
+      this.transport = new SSEClientTransport(
+        new URL(config.url),
+        {
+          requestInit: {
+            headers: config.headers,
+          },
+        }
+      );
     } else {
       // HTTP transport for remote MCP servers
       this.transport = new StreamableHTTPClientTransport(

@@ -213,10 +213,6 @@ export function createClaudeContext(options: ClaudeContextOptions): SessionToolC
         }
       }
 
-      if (!apiKey && !oauthToken) {
-        return { success: false, error: 'No Claude API key or OAuth token configured' };
-      }
-
       const result = await validateMcpConnectionImpl({
         mcpUrl: config.url,
         mcpTransport: config.transport,

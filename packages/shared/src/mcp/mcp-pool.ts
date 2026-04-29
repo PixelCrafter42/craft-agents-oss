@@ -61,7 +61,7 @@ export interface McpToolResult {
 function sdkConfigToClientConfig(config: SdkMcpServerConfig): McpClientConfig | null {
   if (config.type === 'http' || config.type === 'sse') {
     return {
-      transport: 'http',
+      transport: config.type,
       url: config.url,
       headers: config.headers,
     };

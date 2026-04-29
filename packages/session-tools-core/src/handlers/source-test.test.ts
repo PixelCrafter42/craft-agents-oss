@@ -22,6 +22,10 @@ type ActivateResult = Awaited<
 interface CtxOverrides {
   activateSourceInSession?: (slug: string) => Promise<ActivateResult>;
   validateStdioMcpConnection?: SessionToolContext['validateStdioMcpConnection'];
+  validateMcpConnection?: SessionToolContext['validateMcpConnection'];
+  credentialManager?: SessionToolContext['credentialManager'];
+  isIconUrl?: SessionToolContext['isIconUrl'];
+  downloadSourceIcon?: SessionToolContext['downloadSourceIcon'];
 }
 
 function createCtx(workspacePath: string, overrides: CtxOverrides = {}): SessionToolContext {
@@ -64,6 +68,10 @@ function createCtx(workspacePath: string, overrides: CtxOverrides = {}): Session
     },
     // Stub the MCP validator so connection tests don't hit the network.
     validateStdioMcpConnection: overrides.validateStdioMcpConnection,
+    validateMcpConnection: overrides.validateMcpConnection,
+    credentialManager: overrides.credentialManager,
+    isIconUrl: overrides.isIconUrl,
+    downloadSourceIcon: overrides.downloadSourceIcon,
     activateSourceInSession: overrides.activateSourceInSession,
   } as unknown as SessionToolContext;
   // Expose saved for assertions (test-only — not on real ctx).
@@ -274,5 +282,152 @@ describe('source_test auto-enable', () => {
     expect(text).toContain('turn will auto-restart');
     expect(text).not.toContain('tools available now');
     expect(text).not.toContain('available on your next message');
+  });
+});
+
+describe('source_test icon handling', () => {
+  let tempDir: string;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'source-test-icon-'));
+  });
+
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('treats an icon URL as configured when cache download is unavailable', async () => {
+    writeSource(tempDir, 'dida365', {
+      icon: 'https://dida365.com/favicon.ico',
+    });
+
+    const ctx = createCtx(tempDir, {
+      validateStdioMcpConnection: stubMcpOk(),
+    });
+
+    const result = await handleSourceTest(ctx, { sourceSlug: 'dida365' });
+    const text = result.content[0]?.text ?? '';
+
+    expect(text).toContain('Icon URL configured: https://dida365.com/favicon.ico');
+    expect(text).not.toContain('No icon configured');
+    expect(result.isError).not.toBe(true);
+  });
+
+  it('reports icon cache download failures without saying no icon is configured', async () => {
+    writeSource(tempDir, 'dida365', {
+      icon: 'https://dida365.com/favicon.ico',
+    });
+
+    const ctx = createCtx(tempDir, {
+      validateStdioMcpConnection: stubMcpOk(),
+      downloadSourceIcon: async () => {
+        throw new Error('download failed');
+      },
+    });
+
+    const result = await handleSourceTest(ctx, { sourceSlug: 'dida365' });
+    const text = result.content[0]?.text ?? '';
+
+    expect(text).toContain('Icon URL configured, but cache download failed: download failed');
+    expect(text).not.toContain('No icon configured');
+    expect(result.isError).not.toBe(true);
+  });
+});
+
+describe('source_test MCP auth headers', () => {
+  let tempDir: string;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'source-test-mcp-auth-'));
+  });
+
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  function writeHttpMcpSource(overrides: Partial<SourceConfig> = {}): void {
+    writeSource(tempDir, 'dida365', {
+      type: 'mcp',
+      mcp: {
+        transport: 'http',
+        url: 'https://mcp.dida365.com/',
+        authType: 'oauth',
+      },
+      ...overrides,
+    });
+  }
+
+  function credentialManager(
+    getToken: () => Promise<string | null>,
+    refresh: () => Promise<string | null> = async () => null
+  ): NonNullable<SessionToolContext['credentialManager']> {
+    return {
+      hasValidCredentials: async () => true,
+      getToken: async () => getToken(),
+      refresh: async () => refresh(),
+    };
+  }
+
+  it('injects a stored OAuth token as an Authorization bearer header', async () => {
+    writeHttpMcpSource();
+    let receivedHeaders: Record<string, string> | undefined;
+
+    const ctx = createCtx(tempDir, {
+      credentialManager: credentialManager(async () => 'abc123'),
+      validateMcpConnection: async (config) => {
+        receivedHeaders = config.headers;
+        return { success: true, toolCount: 1, toolNames: ['list_projects'] };
+      },
+    });
+
+    await handleSourceTest(ctx, { sourceSlug: 'dida365' });
+
+    expect(receivedHeaders?.Authorization).toBe('Bearer abc123');
+  });
+
+  it('does not overwrite an explicitly configured Authorization header', async () => {
+    writeHttpMcpSource({
+      mcp: {
+        transport: 'http',
+        url: 'https://mcp.dida365.com/',
+        authType: 'oauth',
+        headers: {
+          Authorization: 'Bearer manually-configured',
+        },
+      },
+    });
+    let receivedHeaders: Record<string, string> | undefined;
+
+    const ctx = createCtx(tempDir, {
+      credentialManager: credentialManager(async () => 'abc123'),
+      validateMcpConnection: async (config) => {
+        receivedHeaders = config.headers;
+        return { success: true, toolCount: 1, toolNames: ['list_projects'] };
+      },
+    });
+
+    await handleSourceTest(ctx, { sourceSlug: 'dida365' });
+
+    expect(receivedHeaders?.Authorization).toBe('Bearer manually-configured');
+  });
+
+  it('refreshes when the stored MCP token is missing', async () => {
+    writeHttpMcpSource();
+    let receivedHeaders: Record<string, string> | undefined;
+
+    const ctx = createCtx(tempDir, {
+      credentialManager: credentialManager(
+        async () => null,
+        async () => 'new-token'
+      ),
+      validateMcpConnection: async (config) => {
+        receivedHeaders = config.headers;
+        return { success: true, toolCount: 1, toolNames: ['list_projects'] };
+      },
+    });
+
+    await handleSourceTest(ctx, { sourceSlug: 'dida365' });
+
+    expect(receivedHeaders?.Authorization).toBe('Bearer new-token');
   });
 });
