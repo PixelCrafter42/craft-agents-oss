@@ -8,12 +8,35 @@ import { mainLog } from './logger'
 
 let tray: Tray | null = null
 
+function supportsAppTray(): boolean {
+  return process.platform === 'win32' || process.platform === 'darwin'
+}
+
 function resolveTrayIconPath(): string | null {
-  const iconName = process.platform === 'win32' ? 'icon.ico' : 'icon.png'
-  return [
-    join(__dirname, 'resources', iconName),
-    join(__dirname, '../resources', iconName),
-  ].find(p => existsSync(p)) ?? null
+  const iconNames = process.platform === 'win32'
+    ? ['icon.ico']
+    : process.platform === 'darwin'
+      ? [join('craft-logos', 'craft_logo_black.png'), 'icon.png']
+      : ['icon.png']
+
+  return iconNames
+    .flatMap(iconName => [
+      join(__dirname, 'resources', iconName),
+      join(__dirname, '../resources', iconName),
+    ])
+    .find(p => existsSync(p)) ?? null
+}
+
+function createTrayIcon(iconPath: string): Electron.NativeImage {
+  const icon = nativeImage.createFromPath(iconPath)
+
+  if (process.platform !== 'darwin') {
+    return icon
+  }
+
+  const menuBarIcon = icon.resize({ width: 18, height: 18 })
+  menuBarIcon.setTemplateImage(true)
+  return menuBarIcon
 }
 
 function showExistingWindow(window: BrowserWindow): void {
@@ -56,7 +79,7 @@ function createNewWindow(windowManager: WindowManager): void {
 }
 
 export function createAppTray(windowManager: WindowManager): Tray | null {
-  if (tray || process.platform !== 'win32') return tray
+  if (tray || !supportsAppTray()) return tray
 
   const iconPath = resolveTrayIconPath()
   if (!iconPath) {
@@ -64,7 +87,12 @@ export function createAppTray(windowManager: WindowManager): Tray | null {
     return null
   }
 
-  const icon = nativeImage.createFromPath(iconPath)
+  const icon = createTrayIcon(iconPath)
+  if (icon.isEmpty()) {
+    mainLog.warn('[tray] App tray icon failed to load', { iconPath })
+    return null
+  }
+
   tray = new Tray(icon)
   tray.setToolTip('Craft Agents')
   tray.setContextMenu(Menu.buildFromTemplate([
@@ -83,9 +111,12 @@ export function createAppTray(windowManager: WindowManager): Tray | null {
     },
   ]))
 
-  tray.on('double-click', () => showOrCreateWindow(windowManager))
-  tray.on('click', () => showOrCreateWindow(windowManager))
-  mainLog.info('[tray] Windows tray initialized')
+  if (process.platform === 'win32') {
+    tray.on('double-click', () => showOrCreateWindow(windowManager))
+    tray.on('click', () => showOrCreateWindow(windowManager))
+  }
+
+  mainLog.info(`[tray] ${process.platform === 'darwin' ? 'macOS menu bar' : 'Windows tray'} initialized`)
   return tray
 }
 

@@ -39,6 +39,12 @@ interface ManagedWindow {
   workspaceId: string
 }
 
+type PendingCloseAction = 'destroy' | 'hide-to-tray'
+
+function shouldHideToTrayOnNativeClose(source: WindowCloseRequestSource): boolean {
+  return source === 'window-button' && (process.platform === 'win32' || process.platform === 'darwin')
+}
+
 export interface CreateWindowOptions {
   /** The workspace to open (empty string for onboarding) */
   workspaceId: string
@@ -59,7 +65,7 @@ export class WindowManager {
   private keyboardCloseIntents: Set<number> = new Set()  // webContents.id flagged by Cmd/Ctrl+W before close
   private keyboardCloseIntentTimeouts: Map<number, NodeJS.Timeout> = new Map()  // Auto-clear stale keyboard-close intents
   private isAppQuitting = false  // Skip layered close interception during app quit
-  private pendingCloseActions: Map<number, 'destroy' | 'hide-to-tray'> = new Map()
+  private pendingCloseActions: Map<number, PendingCloseAction> = new Map()
 
   /**
    * Set the event sink and client resolver for pushing events via the RPC server
@@ -365,7 +371,7 @@ export class WindowManager {
           }
         }
 
-        const action = process.platform === 'win32' && source === 'window-button'
+        const action: PendingCloseAction = shouldHideToTrayOnNativeClose(source)
           ? 'hide-to-tray'
           : 'destroy'
         this.pendingCloseActions.set(wcId, action)

@@ -8,7 +8,7 @@ import type { WindowCloseRequest } from '../../shared/types'
 /**
  * Hook to handle window close requests with source-aware behavior.
  *
- * - `window-button` closes the window directly.
+ * - `window-button` confirms the native close action (which may hide to tray on desktop platforms).
  * - `keyboard-shortcut` (Cmd/Ctrl+W) uses layered dismissal:
  *   1. Close top modal
  *   2. Else close focused panel
@@ -17,7 +17,7 @@ import type { WindowCloseRequest } from '../../shared/types'
  *
  * The main process starts a fallback timeout on each close request.
  * cancelCloseWindow() clears it (window stays open).
- * confirmCloseWindow() clears it and destroys the window.
+ * confirmCloseWindow() clears it and lets the main process apply the pending close action.
  *
  * This hook should be called once at the app root level.
  */

@@ -1076,20 +1076,28 @@ app.whenReady().then(async () => {
     // Continue anyway - the app will show errors in the UI
   }
 
-  // macOS: Re-create window when dock icon is clicked
+  // macOS: Show hidden windows or re-create a window when the dock icon is clicked.
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0 && windowManager) {
-      // Open first workspace or last focused
-      const workspaces = getWorkspaces()
-      if (workspaces.length > 0) {
-        const savedState = loadWindowState()
-        const wsId = savedState?.lastFocusedWorkspaceId || workspaces[0].id
-        // Verify workspace still exists
-        if (workspaces.some(ws => ws.id === wsId)) {
-          windowManager.createWindow({ workspaceId: wsId })
-        } else {
-          windowManager.createWindow({ workspaceId: workspaces[0].id })
-        }
+    if (!windowManager) return
+
+    const existing = windowManager.getLastActiveWindow()
+    if (existing) {
+      if (!existing.isVisible()) existing.show()
+      if (existing.isMinimized()) existing.restore()
+      existing.focus()
+      return
+    }
+
+    // Open first workspace or last focused
+    const workspaces = getWorkspaces()
+    if (workspaces.length > 0) {
+      const savedState = loadWindowState()
+      const wsId = savedState?.lastFocusedWorkspaceId || workspaces[0].id
+      // Verify workspace still exists
+      if (workspaces.some(ws => ws.id === wsId)) {
+        windowManager.createWindow({ workspaceId: wsId })
+      } else {
+        windowManager.createWindow({ workspaceId: workspaces[0].id })
       }
     }
   })

@@ -1,5 +1,6 @@
 import { Menu, app, shell, BrowserWindow } from 'electron'
 import { i18n } from '@craft-agent/shared/i18n'
+import { getWorkspaces } from '@craft-agent/shared/config'
 import { RPC_CHANNELS, type BroadcastEventMap } from '../shared/types'
 import { EDIT_MENU, VIEW_MENU, WINDOW_MENU } from '../shared/menu-schema'
 import type { MenuItem } from '../shared/menu-schema'
@@ -115,12 +116,16 @@ export async function rebuildMenu(): Promise<void> {
           registerAccelerator: false,  // Action registry handles the keyboard shortcut
           click: () => {
             const focused = BrowserWindow.getFocusedWindow()
-            if (focused) {
-              const workspaceId = windowManager.getWorkspaceForWindow(focused.webContents.id)
-              if (workspaceId) {
-                windowManager.createWindow({ workspaceId })
-              }
-            }
+            const focusedWorkspaceId = focused
+              ? windowManager.getWorkspaceForWindow(focused.webContents.id)
+              : null
+            const lastActive = windowManager.getLastActiveWindow()
+            const lastActiveWorkspaceId = lastActive
+              ? windowManager.getWorkspaceForWindow(lastActive.webContents.id)
+              : null
+            const fallbackWorkspaceId = getWorkspaces()[0]?.id
+            const workspaceId = focusedWorkspaceId ?? lastActiveWorkspaceId ?? fallbackWorkspaceId
+            if (workspaceId) windowManager.createWindow({ workspaceId })
           }
         },
         { type: 'separator' as const },
