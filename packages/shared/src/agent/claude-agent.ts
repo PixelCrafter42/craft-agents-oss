@@ -34,7 +34,7 @@ import {
   getSessionPlansDir,
   getLastPlanFilePath,
   clearPlanFileState,
-  registerSessionScopedToolCallbacks,
+  mergeSessionScopedToolCallbacks,
   unregisterSessionScopedToolCallbacks,
   getSessionScopedTools,
   cleanupSessionScopedTools,
@@ -609,8 +609,8 @@ export class ClaudeAgent extends BaseAgent {
       },
     });
 
-    // Register session-scoped tool callbacks
-    registerSessionScopedToolCallbacks(sessionId, {
+    // Merge session-scoped tool callbacks so gateway/browser callbacks survive agent startup.
+    mergeSessionScopedToolCallbacks(sessionId, {
       onPlanSubmitted: (planPath) => {
         this.onDebug?.(`[ClaudeAgent] onPlanSubmitted received: ${planPath}`);
         this.onPlanSubmitted?.(planPath);

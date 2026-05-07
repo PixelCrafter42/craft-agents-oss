@@ -72,3 +72,7 @@ export { handleGetSessionInfo } from './get-session-info.ts';
 export type { GetSessionInfoArgs } from './get-session-info.ts';
 export { handleListSessions } from './list-sessions.ts';
 export type { ListSessionsArgs } from './list-sessions.ts';
+
+// Messaging Gateway
+export { handleSendMessagingFile } from './send-messaging-file.ts';
+export type { SendMessagingFileArgs } from './send-messaging-file.ts';

@@ -335,6 +335,9 @@ export interface SessionToolContext {
   /** Send a message to another session. Injected by backend (SessionManager). */
   sendAgentMessage?(sessionId: string, message: string, attachments?: Array<{ path: string; name?: string }>): Promise<void>;
 
+  /** Send a local file to a messaging channel bound to this session. Injected by messaging gateway. */
+  sendMessagingFile?(request: SendMessagingFileRequest): Promise<SendMessagingFileResult>;
+
   /**
    * Activate a source in the running session: add to enabledSourceSlugs,
    * build its MCP/API servers, apply to the agent.
@@ -387,6 +390,26 @@ export interface SessionToolContext {
    * Used by transform_data and render_template for output files.
    */
   dataPath?: string;
+}
+
+export type MessagingFilePlatform = 'telegram' | 'weixin' | 'lark' | 'whatsapp';
+
+export interface SendMessagingFileRequest {
+  path: string;
+  name?: string;
+  caption?: string;
+  platform?: MessagingFilePlatform;
+  channelId?: string;
+  /** Telegram supergroup forum topic id. Required to disambiguate topic-bound bindings sharing one channelId. */
+  threadId?: number;
+}
+
+export interface SendMessagingFileResult {
+  platform: MessagingFilePlatform;
+  channelId: string;
+  messageId: string;
+  fileName: string;
+  threadId?: number;
 }
 
 // ============================================================

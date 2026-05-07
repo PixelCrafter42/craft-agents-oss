@@ -13,7 +13,11 @@
 import type { LLMQueryRequest, LLMQueryResult } from './llm-tool.ts';
 import type { SpawnSessionFn } from './spawn-session-tool.ts';
 import type { BrowserPaneFns } from './browser-tools.ts';
-import type { AuthRequest } from '@craft-agent/session-tools-core';
+import type {
+  AuthRequest,
+  SendMessagingFileRequest,
+  SendMessagingFileResult,
+} from '@craft-agent/session-tools-core';
 import { debug } from '../utils/debug.ts';
 
 /**
@@ -65,6 +69,8 @@ export interface SessionScopedToolCallbacks {
   resolveStatusFn?: (status: string) => import('@craft-agent/session-tools-core').ResolvedStatusResult;
   /** Send a message to another session (inter-session messaging). */
   sendAgentMessageFn?: (sessionId: string, message: string, attachments?: Array<{ path: string; name?: string }>) => Promise<void>;
+  /** Send a local file to a messaging channel bound to this session. */
+  sendMessagingFileFn?: (request: SendMessagingFileRequest) => Promise<SendMessagingFileResult>;
   /**
    * Activate a source in the running session (source_test auto-enable flow).
    * Wired by SessionManager to the per-session onSourceActivationRequest callback

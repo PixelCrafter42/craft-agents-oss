@@ -85,6 +85,14 @@ export function attachSessionSelfManagementBindings(
     enumerable: true,
   });
 
+  Object.defineProperty(context, 'sendMessagingFile', {
+    get() {
+      return getSessionScopedToolCallbacks(sessionId)?.sendMessagingFileFn;
+    },
+    configurable: true,
+    enumerable: true,
+  });
+
   Object.defineProperty(context, 'activateSourceInSession', {
     get() {
       return getSessionScopedToolCallbacks(sessionId)?.activateSourceInSessionFn;

@@ -17,6 +17,7 @@
     "@craft-agent/messaging-weixin-worker": "workspace:*",
     "@craft-agent/messaging-whatsapp-worker": "workspace:*",
     "@craft-agent/server-core": "workspace:*",
+    "@craft-agent/session-tools-core": "workspace:*",
     "@craft-agent/shared": "workspace:*",
     "@larksuiteoapi/node-sdk": "^1.62.1",
     "grammy": "^1.35.0"

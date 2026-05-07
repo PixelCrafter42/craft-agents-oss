@@ -132,6 +132,9 @@ export type {
   ListSessionsResult,
   ResolvedLabelsResult,
   ResolvedStatusResult,
+  MessagingFilePlatform,
+  SendMessagingFileRequest,
+  SendMessagingFileResult,
 } from './context.ts';
 
 export { createNodeFileSystem } from './context.ts';
@@ -165,6 +168,8 @@ export {
   handleRenderTemplate,
   // Send Developer Feedback
   handleSendDeveloperFeedback,
+  // Messaging Gateway
+  handleSendMessagingFile,
 } from './handlers/index.ts';
 
 export type {
@@ -183,6 +188,7 @@ export type {
   ScriptSandboxArgs,
   RenderTemplateArgs,
   SendDeveloperFeedbackArgs,
+  SendMessagingFileArgs,
 } from './handlers/index.ts';
 
 // Tool definitions — single source of truth
@@ -200,6 +206,7 @@ export {
   TransformDataSchema,
   ScriptSandboxSchema,
   RenderTemplateSchema,
+  SendMessagingFileSchema,
   // Browser tool schema
   BrowserToolSchema,
   // Developer feedback schema

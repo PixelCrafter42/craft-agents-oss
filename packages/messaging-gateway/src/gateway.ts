@@ -5,7 +5,19 @@
  * renderer, and binding store together. One instance per workspace.
  */
 
-import type { ISessionManager } from '@craft-agent/server-core/handlers'
+import { readFile, stat } from 'node:fs/promises'
+import { basename } from 'node:path'
+import {
+  getWorkspaceAllowedDirs,
+  sanitizeFilename,
+  validateFilePath,
+} from '@craft-agent/server-core/handlers/utils'
+import type { ISessionManager } from '@craft-agent/server-core/handlers/session-manager-interface'
+import type {
+  SendMessagingFileRequest,
+  SendMessagingFileResult,
+} from '@craft-agent/session-tools-core'
+import { mergeSessionScopedToolCallbacks } from '@craft-agent/shared/agent/session-scoped-tool-callback-registry'
 import type { PushTarget } from '@craft-agent/shared/protocol'
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
 import {
@@ -27,7 +39,11 @@ import type {
   MessagingConfig,
   MessagingLogger,
   PlatformOwner,
+  ChannelBinding,
 } from './types'
+
+const MAX_MESSAGING_FILE_BYTES = 20 * 1024 * 1024
+const MESSAGING_FILE_PLATFORM_PRIORITY: PlatformType[] = ['telegram', 'weixin', 'lark', 'whatsapp']
 
 const consoleLogger: MessagingLogger = {
   info: (message, meta) => console.log('[MessagingGateway]', message, meta ?? ''),
@@ -142,9 +158,10 @@ export class MessagingGateway {
       opts.legacyStorageDir,
       this.log.child({ component: 'binding-store' }),
     )
-    if (opts.onBindingChanged) {
-      this.bindingStore.onChange(opts.onBindingChanged)
-    }
+    this.bindingStore.onChange(() => {
+      this.syncSessionMessagingCallbacks()
+      opts.onBindingChanged?.()
+    })
 
     this.pendingStore = new PendingSendersStore(
       opts.storageDir,
@@ -196,6 +213,7 @@ export class MessagingGateway {
         })
       },
     })
+    this.syncSessionMessagingCallbacks()
   }
 
   // -------------------------------------------------------------------------
@@ -288,6 +306,8 @@ export class MessagingGateway {
         const handled = await this.commands.handleCommand(adapter, msg)
         if (handled) return
       }
+      const binding = this.bindingStore.findByChannel(adapter.platform, msg.channelId, msg.threadId)
+      if (binding) this.registerSessionMessagingCallbacks(binding.sessionId)
       await this.router.route(adapter, msg)
     })
 
@@ -324,6 +344,7 @@ export class MessagingGateway {
 
     const bindings = this.bindingStore.findBySession(event.sessionId)
     if (bindings.length === 0) return
+    this.registerSessionMessagingCallbacks(event.sessionId)
 
     for (const binding of bindings) {
       const adapter = this.adapters.get(binding.platform)
@@ -339,6 +360,116 @@ export class MessagingGateway {
         })
       })
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // Session-scoped messaging tool callbacks
+  // -------------------------------------------------------------------------
+
+  private syncSessionMessagingCallbacks(): void {
+    const sessionIds = new Set(
+      this.bindingStore.getAll()
+        .filter((binding) => binding.enabled)
+        .map((binding) => binding.sessionId),
+    )
+    for (const sessionId of sessionIds) {
+      this.registerSessionMessagingCallbacks(sessionId)
+    }
+  }
+
+  private registerSessionMessagingCallbacks(sessionId: string): void {
+    mergeSessionScopedToolCallbacks(sessionId, {
+      getMessagingBindingsFn: (targetSessionId: string) =>
+        this.bindingStore.findBySession(targetSessionId).map((binding) => ({
+          platform: binding.platform,
+          channelId: binding.channelId,
+          threadId: binding.threadId,
+          channelName: binding.channelName,
+          enabled: binding.enabled,
+        })),
+      unbindMessagingChannelFn: (targetSessionId: string, platform?: string) =>
+        this.bindingStore.unbindSession(
+          targetSessionId,
+          isPlatformType(platform) ? platform : undefined,
+        ),
+      sendMessagingFileFn: (request: SendMessagingFileRequest) =>
+        this.sendMessagingFile(sessionId, request),
+    })
+  }
+
+  private async sendMessagingFile(
+    sessionId: string,
+    request: SendMessagingFileRequest,
+  ): Promise<SendMessagingFileResult> {
+    const rawPath = request.path?.trim()
+    if (!rawPath) throw new Error('path is required')
+
+    const filePath = await validateFilePath(rawPath, getWorkspaceAllowedDirs(this.workspaceId))
+    const fileInfo = await stat(filePath)
+    if (!fileInfo.isFile()) {
+      throw new Error('path must point to a file')
+    }
+    if (fileInfo.size > MAX_MESSAGING_FILE_BYTES) {
+      throw new Error(`file exceeds ${Math.round(MAX_MESSAGING_FILE_BYTES / 1024 / 1024)}MB limit`)
+    }
+
+    const binding = this.resolveMessagingFileBinding(sessionId, request)
+    const adapter = this.adapters.get(binding.platform)
+    if (!adapter || !adapter.isConnected()) {
+      throw new Error(`No connected ${binding.platform} adapter is available`)
+    }
+
+    const file = await readFile(filePath)
+    const fileName = sanitizeFilename(request.name?.trim() || basename(filePath))
+    const caption = request.caption?.trim() || undefined
+    const sent = await adapter.sendFile(
+      binding.channelId,
+      file,
+      fileName,
+      caption,
+      binding.threadId !== undefined ? { threadId: binding.threadId } : undefined,
+    )
+
+    return {
+      platform: sent.platform,
+      channelId: sent.channelId,
+      messageId: sent.messageId,
+      fileName,
+      threadId: binding.threadId,
+    }
+  }
+
+  private resolveMessagingFileBinding(
+    sessionId: string,
+    request: SendMessagingFileRequest,
+  ): ChannelBinding {
+    const connectedBindings = this.bindingStore
+      .findBySession(sessionId)
+      .filter((binding) =>
+        binding.enabled &&
+        (this.adapters.get(binding.platform)?.isConnected() ?? false),
+      )
+    const platform = request.platform
+    const channelId = request.channelId?.trim()
+    const threadId = request.threadId
+
+    if (platform || channelId || threadId !== undefined) {
+      const matches = connectedBindings.filter((binding) => {
+        if (platform && binding.platform !== platform) return false
+        if (channelId && binding.channelId !== channelId) return false
+        if (threadId !== undefined && binding.threadId !== threadId) return false
+        return true
+      })
+      return selectSingleBinding(matches, platform, channelId, threadId)
+    }
+
+    for (const preferredPlatform of MESSAGING_FILE_PLATFORM_PRIORITY) {
+      const matches = connectedBindings.filter((binding) => binding.platform === preferredPlatform)
+      if (matches.length === 0) continue
+      return selectSingleBinding(matches, preferredPlatform)
+    }
+
+    throw new Error('No connected messaging channel is bound to this session')
   }
 
   // -------------------------------------------------------------------------
@@ -671,4 +802,48 @@ export class MessagingGateway {
   isStarted(): boolean {
     return this.started
   }
+}
+
+function isPlatformType(platform?: string): platform is PlatformType {
+  return platform === 'telegram' ||
+    platform === 'weixin' ||
+    platform === 'lark' ||
+    platform === 'whatsapp'
+}
+
+function selectSingleBinding(
+  matches: ChannelBinding[],
+  platform?: string,
+  channelId?: string,
+  threadId?: number,
+): ChannelBinding {
+  if (matches.length === 1) return matches[0]!
+  if (matches.length === 0) {
+    const target = formatMessagingTarget(platform, channelId, threadId)
+    throw new Error(`No connected ${target} channel is bound to this session`)
+  }
+
+  const target = platform ? `${platform} channels` : 'messaging channels'
+  throw new Error(`Multiple connected ${target} are bound to this session; specify channelId${hasTelegramTopicAmbiguity(matches) ? ' and threadId' : ''}`)
+}
+
+function formatMessagingTarget(
+  platform?: string,
+  channelId?: string,
+  threadId?: number,
+): string {
+  if (platform) {
+    const channelPart = channelId ? ` channel ${channelId}` : ''
+    const topicPart = threadId !== undefined ? ` topic ${threadId}` : ''
+    return `${platform}${channelPart}${topicPart}`
+  }
+  if (channelId) {
+    const topicPart = threadId !== undefined ? ` topic ${threadId}` : ''
+    return `channel ${channelId}${topicPart}`
+  }
+  return 'messaging'
+}
+
+function hasTelegramTopicAmbiguity(matches: ChannelBinding[]): boolean {
+  return matches.some((binding) => binding.platform === 'telegram' && binding.threadId !== undefined)
 }

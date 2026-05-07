@@ -39,6 +39,7 @@ import { handleSetSessionStatus } from './handlers/set-session-status.ts';
 import { handleGetSessionInfo } from './handlers/get-session-info.ts';
 import { handleListSessions } from './handlers/list-sessions.ts';
 import { handleSendAgentMessage } from './handlers/send-agent-message.ts';
+import { handleSendMessagingFile } from './handlers/send-messaging-file.ts';
 import { handleListMessagingChannels, handleUnbindMessagingChannel } from './handlers/messaging.ts';
 
 // ============================================================
@@ -211,6 +212,15 @@ export const SendAgentMessageSchema = z.object({
     path: z.string().describe('Absolute file path on disk'),
     name: z.string().optional().describe('Display name (defaults to file basename)'),
   })).optional().describe('Files to include with the message'),
+});
+
+export const SendMessagingFileSchema = z.object({
+  path: z.string().describe('Local file path to send. Relative paths resolve from the session working directory.'),
+  caption: z.string().optional().describe('Optional caption to send with the file when the platform supports it.'),
+  name: z.string().optional().describe('Display filename. Defaults to the source file basename.'),
+  platform: z.enum(['telegram', 'weixin', 'lark', 'whatsapp']).optional().describe('Target platform. Defaults to Telegram, then WeChat, then Lark, then WhatsApp.'),
+  channelId: z.string().optional().describe('Target channel ID. Required when more than one channel is available on the selected platform.'),
+  threadId: z.coerce.number().int().positive().optional().describe('Telegram forum topic ID. Required when multiple topic bindings share one Telegram channel ID.'),
 });
 
 export const ListMessagingChannelsSchema = z.object({
@@ -481,6 +491,10 @@ The target session receives your message with a sender envelope containing your 
   list_messaging_channels: `List messaging channels (Telegram, WhatsApp, WeChat, Lark) bound to a session.
 Shows which external chat apps are connected and can send/receive messages.`,
 
+  send_messaging_file: `Send a local file to a messaging channel bound to this session.
+
+Use this only when the user asks you to deliver a generated file, report, image, or other artifact through the connected chat app. If no target is provided, the gateway sends to the first available platform in priority order: Telegram, WeChat, Lark, then WhatsApp. Provide channelId when a session has multiple bindings on the chosen platform, and threadId when Telegram topic bindings share the same channelId.`,
+
   unbind_messaging_channel: `Disconnect a messaging channel from the current session.
 Messages will no longer be forwarded between the chat app and this session.`,
 } as const;
@@ -557,6 +571,7 @@ export const SESSION_TOOL_DEFS: SessionToolDef[] = [
   { name: 'send_agent_message', description: TOOL_DESCRIPTIONS.send_agent_message, inputSchema: SendAgentMessageSchema, executionMode: 'registry', safeMode: 'block', handler: handleSendAgentMessage },
   // Messaging gateway tools
   { name: 'list_messaging_channels', description: TOOL_DESCRIPTIONS.list_messaging_channels, inputSchema: ListMessagingChannelsSchema, executionMode: 'registry', safeMode: 'allow', readOnly: true, handler: handleListMessagingChannels },
+  { name: 'send_messaging_file', description: TOOL_DESCRIPTIONS.send_messaging_file, inputSchema: SendMessagingFileSchema, executionMode: 'registry', safeMode: 'block', handler: handleSendMessagingFile },
   { name: 'unbind_messaging_channel', description: TOOL_DESCRIPTIONS.unbind_messaging_channel, inputSchema: UnbindMessagingChannelSchema, executionMode: 'registry', safeMode: 'block', handler: handleUnbindMessagingChannel },
 ];
 

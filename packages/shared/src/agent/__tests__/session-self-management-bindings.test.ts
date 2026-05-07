@@ -3,8 +3,7 @@ import {
   registerSessionScopedToolCallbacks,
   mergeSessionScopedToolCallbacks,
   unregisterSessionScopedToolCallbacks,
-} from '../session-scoped-tools.ts';
-import { createClaudeContext } from '../claude-context.ts';
+} from '../session-scoped-tool-callback-registry.ts';
 import { attachSessionSelfManagementBindings } from '../session-self-management-bindings.ts';
 import type { SessionToolContext, SessionInfo } from '@craft-agent/session-tools-core';
 import { SESSION_TOOL_REGISTRY } from '@craft-agent/session-tools-core';
@@ -28,13 +27,23 @@ function makeSessionInfo(overrides: Partial<SessionInfo> = {}): SessionInfo {
 }
 
 function createBaseContext(sessionId: string): SessionToolContext {
-  return createClaudeContext({
+  return {
     sessionId,
     workspacePath: '/tmp/test-workspace',
     workspaceId: 'test-ws',
-    onPlanSubmitted: noopPlan,
-    onAuthRequest: noopAuth,
-  });
+    get sourcesPath() {
+      return '/tmp/test-workspace/sources';
+    },
+    get skillsPath() {
+      return '/tmp/test-workspace/skills';
+    },
+    plansFolderPath: '/tmp/test-workspace/plans',
+    callbacks: {
+      onPlanSubmitted: noopPlan,
+      onAuthRequest: noopAuth,
+    },
+    fs: {} as SessionToolContext['fs'],
+  } as unknown as SessionToolContext;
 }
 
 // ============================================================
@@ -57,6 +66,7 @@ describe('Pi session self-management regression (#511)', () => {
     expect(ctx.listSessions).toBeUndefined();
     expect(ctx.resolveLabels).toBeUndefined();
     expect(ctx.resolveStatus).toBeUndefined();
+    expect(ctx.sendMessagingFile).toBeUndefined();
   });
 
   it('context WITH bindings resolves callbacks from registry', async () => {
@@ -74,15 +84,22 @@ describe('Pi session self-management regression (#511)', () => {
       listSessionsFn: () => ({ total: 1, returned: 1, sessions: [] }),
       resolveLabelsFn: (labels) => ({ resolved: labels, unknown: [], available: labels }),
       resolveStatusFn: (status) => ({ resolved: status, available: ['active', 'done'] }),
+      sendMessagingFileFn: async (request) => ({
+        platform: request.platform ?? 'telegram',
+        channelId: request.channelId ?? 'tg-1',
+        messageId: 'msg-1',
+        fileName: request.name ?? 'file.txt',
+      }),
     });
 
-    // All 6 properties should now be defined
+    // All 7 properties should now be defined
     expect(ctx.setSessionLabels).toBeDefined();
     expect(ctx.setSessionStatus).toBeDefined();
     expect(ctx.getSessionInfo).toBeDefined();
     expect(ctx.listSessions).toBeDefined();
     expect(ctx.resolveLabels).toBeDefined();
     expect(ctx.resolveStatus).toBeDefined();
+    expect(ctx.sendMessagingFile).toBeDefined();
 
     // Verify they actually work
     await ctx.setSessionLabels!(undefined, ['bug', 'urgent']);
@@ -103,6 +120,9 @@ describe('Pi session self-management regression (#511)', () => {
 
     const statusResolved = ctx.resolveStatus!('active');
     expect(statusResolved.resolved).toBe('active');
+
+    const sentFile = await ctx.sendMessagingFile!({ path: '/tmp/file.txt', name: 'file.txt' });
+    expect(sentFile).toMatchObject({ platform: 'telegram', channelId: 'tg-1', fileName: 'file.txt' });
   });
 });
 
@@ -128,6 +148,7 @@ describe('attachSessionSelfManagementBindings', () => {
     expect(ctx.listSessions).toBeUndefined();
     expect(ctx.resolveLabels).toBeUndefined();
     expect(ctx.resolveStatus).toBeUndefined();
+    expect(ctx.sendMessagingFile).toBeUndefined();
   });
 
   it('late merge becomes visible without recreating the context', () => {
@@ -214,6 +235,31 @@ describe('attachSessionSelfManagementBindings', () => {
 
     // No callbacks registered — resolveLabels should be undefined, not an identity function
     expect(ctx.resolveLabels).toBeUndefined();
+  });
+
+  it('sendMessagingFile resolves through the latest registry callback', async () => {
+    const ctx = createBaseContext(sessionId);
+    attachSessionSelfManagementBindings(ctx, sessionId);
+
+    registerSessionScopedToolCallbacks(sessionId, {
+      sendMessagingFileFn: async () => ({
+        platform: 'telegram',
+        channelId: 'tg-a',
+        messageId: 'msg-a',
+        fileName: 'a.txt',
+      }),
+    });
+    expect((await ctx.sendMessagingFile!({ path: '/tmp/a.txt' })).channelId).toBe('tg-a');
+
+    mergeSessionScopedToolCallbacks(sessionId, {
+      sendMessagingFileFn: async () => ({
+        platform: 'weixin',
+        channelId: 'wx-b',
+        messageId: 'msg-b',
+        fileName: 'b.txt',
+      }),
+    });
+    expect((await ctx.sendMessagingFile!({ path: '/tmp/b.txt' })).channelId).toBe('wx-b');
   });
 });
 

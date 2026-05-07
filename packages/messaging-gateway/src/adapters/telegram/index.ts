@@ -66,6 +66,25 @@ const NOOP_LOGGER: MessagingLogger = {
   child: () => NOOP_LOGGER,
 }
 
+type FetchInput = Parameters<typeof globalThis.fetch>[0]
+type FetchInit = Parameters<typeof globalThis.fetch>[1]
+type NativeFetchInit = NonNullable<FetchInit> & { duplex?: 'half' }
+
+function telegramFetch(input: FetchInput, init?: FetchInit): Promise<Response> {
+  const body = init?.body
+  const needsDuplex =
+    body != null &&
+    typeof body !== 'string' &&
+    !(body instanceof URLSearchParams) &&
+    !(body instanceof FormData) &&
+    !(body instanceof Blob) &&
+    !(body instanceof ArrayBuffer)
+  const nextInit = needsDuplex
+    ? ({ ...init, duplex: 'half' } as NativeFetchInit)
+    : init
+  return globalThis.fetch(input, nextInit)
+}
+
 /**
  * Race a promise against a timeout. If `ms` elapses before `p` settles, reject
  * with a labelled error. Used to surface grammY's silent-retry hangs on
@@ -249,7 +268,11 @@ export class TelegramAdapter implements PlatformAdapter {
     }
 
     this.log = config.logger ?? NOOP_LOGGER
-    this.bot = new Bot(config.token)
+    this.bot = new Bot(config.token, {
+      client: {
+        fetch: telegramFetch,
+      },
+    })
     if (config.acceptedSupergroupChatId) {
       this.supergroupChatId = config.acceptedSupergroupChatId
     }
@@ -679,7 +702,10 @@ export class TelegramAdapter implements PlatformAdapter {
       Number(channelId),
       inputFile,
       { caption, ...threadParams(opts) },
-    )
+    ).catch((err: unknown) => {
+      this.log.error('[telegram] sendDocument failed:', describeError(err))
+      throw err
+    })
 
     return {
       platform: 'telegram',
