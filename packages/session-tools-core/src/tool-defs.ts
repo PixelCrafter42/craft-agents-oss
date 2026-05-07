@@ -218,7 +218,7 @@ export const ListMessagingChannelsSchema = z.object({
 });
 
 export const UnbindMessagingChannelSchema = z.object({
-  platform: z.enum(['telegram', 'whatsapp', 'weixin']).optional().describe('Platform to unbind. If omitted, unbinds all.'),
+  platform: z.enum(['telegram', 'whatsapp', 'weixin', 'lark']).optional().describe('Platform to unbind. If omitted, unbinds all.'),
 });
 
 // ============================================================
@@ -478,7 +478,7 @@ Use list_sessions to find session IDs, or use the sessionId returned by spawn_se
 
 The target session receives your message with a sender envelope containing your session ID, so it can use send_agent_message to reply.`,
 
-  list_messaging_channels: `List messaging channels (Telegram, WhatsApp, WeChat) bound to a session.
+  list_messaging_channels: `List messaging channels (Telegram, WhatsApp, WeChat, Lark) bound to a session.
 Shows which external chat apps are connected and can send/receive messages.`,
 
   unbind_messaging_channel: `Disconnect a messaging channel from the current session.

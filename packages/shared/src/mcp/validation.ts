@@ -1,15 +1,14 @@
 /**
- * MCP Connection Validation.
+ * MCP Connection Validation
  *
- * Remote MCP validation connects directly to the MCP server and lists tools.
- * This keeps source validation independent from the configured LLM provider.
+ * Validates HTTP/SSE MCP servers by connecting directly via CraftMcpClient
+ * and listing tools. Avoids spawning a Claude Code subprocess (which is killed
+ * by Electron's macOS sandbox — see issue #697).
  */
 
 import { spawn, type ChildProcess } from 'child_process';
-import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { CraftMcpClient } from './client.js';
 import { debug } from '../utils/debug.ts';
-import type { AgentError } from '../agent/errors.ts';
 import { normalizeMcpUrl } from '../sources/server-builder.ts';
 import type { McpTransport } from '../sources/types.ts';
 
@@ -23,8 +22,6 @@ export interface McpValidationResult {
   success: boolean;
   error?: string;
   errorType?: 'failed' | 'needs-auth' | 'pending' | 'invalid-schema' | 'disabled' | 'unknown';
-  /** Typed error for API/billing failures - display as ErrorBanner */
-  typedError?: AgentError;
   serverInfo?: {
     name: string;
     version: string;
@@ -122,92 +119,31 @@ export interface McpValidationConfig {
   mcpHeaders?: Record<string, string>;
   /** Access token for MCP server (OAuth or bearer) */
   mcpAccessToken?: string;
-  /** Anthropic API key (for API key auth) */
-  claudeApiKey?: string;
-  /** Claude OAuth token (for Max subscription auth) */
-  claudeOAuthToken?: string;
-  /** Model to use for validation (defaults to sonnet) */
-  model?: string;
-}
-
-function hasHeader(headers: Record<string, string>, name: string): boolean {
-  return Object.keys(headers).some((key) => key.toLowerCase() === name.toLowerCase());
-}
-
-function toBearerHeader(token: string): string {
-  return /^Bearer\s+/i.test(token) ? token : `Bearer ${token}`;
-}
-
-function buildMcpHeaders(config: McpValidationConfig): Record<string, string> {
-  const headers = { ...config.mcpHeaders };
-
-  if (config.mcpAccessToken && !hasHeader(headers, 'authorization')) {
-    headers.Authorization = toBearerHeader(config.mcpAccessToken);
-  }
-
-  return headers;
-}
-
-function buildInvalidSchemaMessage(invalidProperties: InvalidProperty[]): string {
-  const toolsWithIssues = [
-    ...new Set(invalidProperties.map((p) => p.toolName)),
-  ];
-  return `Server has ${invalidProperties.length} invalid property name(s) in ${toolsWithIssues.length} tool(s): ${toolsWithIssues.join(', ')}. Property names must match ^[a-zA-Z0-9_.-]{1,64}$`;
-}
-
-function validateToolSchemas(tools: Tool[]): InvalidProperty[] {
-  const allInvalidProperties: InvalidProperty[] = [];
-
-  debug(`Validating schemas for ${tools.length} tools`);
-
-  for (const tool of tools) {
-    if (tool.inputSchema && typeof tool.inputSchema === 'object') {
-      const invalidProps = findInvalidProperties(
-        tool.inputSchema as Record<string, unknown>
-      );
-      for (const prop of invalidProps) {
-        allInvalidProperties.push({
-          toolName: tool.name,
-          propertyPath: prop.path,
-          propertyKey: prop.key,
-        });
-      }
-    }
-  }
-
-  return allInvalidProperties;
-}
-
-function getErrorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
-
-function getErrorStatusCode(err: unknown): number | null {
-  if (!err || typeof err !== 'object') return null;
-  const record = err as Record<string, unknown>;
-  const code = record.code ?? record.status ?? record.statusCode;
-  return typeof code === 'number' ? code : null;
-}
-
-function isAuthError(err: unknown): boolean {
-  const status = getErrorStatusCode(err);
-  if (status === 401 || status === 403) return true;
-
-  const message = getErrorMessage(err).toLowerCase();
-  return (
-    /\b(401|403)\b/.test(message) ||
-    message.includes('unauthorized') ||
-    message.includes('forbidden') ||
-    message.includes('requires authentication') ||
-    message.includes('authentication required') ||
-    message.includes('no auth provider')
-  );
 }
 
 /**
- * Validates an MCP connection by directly connecting to the MCP server and
- * listing tools. Claude credentials are optional compatibility parameters and
- * are not required for MCP source validation.
+ * Map a low-level connection error to a user-actionable result.
+ * Heuristic — keep simple, the underlying message is preserved as the source of truth.
+ */
+function classifyConnectionError(err: unknown): McpValidationResult {
+  const message = err instanceof Error ? err.message : String(err);
+  let errorType: McpValidationResult['errorType'] = 'failed';
+  if (/\b401\b|\b403\b|unauthorized|forbidden|authentication/i.test(message)) {
+    errorType = 'needs-auth';
+  }
+  return {
+    success: false,
+    error: errorType === 'needs-auth'
+      ? 'MCP server requires authentication'
+      : (message || 'Validation failed'),
+    errorType,
+  };
+}
+
+/**
+ * Validates an HTTP/SSE MCP connection by connecting via CraftMcpClient and
+ * listing tools. The internal `connect()` call performs a `listTools()` health
+ * check, so a successful connect proves the server is reachable and responsive.
  */
 export async function validateMcpConnection(
   config: McpValidationConfig
@@ -215,47 +151,68 @@ export async function validateMcpConnection(
   debug('Validating MCP connection to', config.mcpUrl);
 
   const mcpUrl = normalizeMcpUrl(config.mcpUrl);
-  const transport = config.mcpTransport === 'sse' ? 'sse' as const : 'http' as const;
-  const headers = buildMcpHeaders(config);
+
+  // Custom headers first, auth header overrides.
+  const headers = {
+    ...config.mcpHeaders,
+    ...(config.mcpAccessToken ? { Authorization: `Bearer ${config.mcpAccessToken}` } : {}),
+  };
+
+  // SSE transport is not supported by CraftMcpClient (HTTP only). Streamable
+  // HTTP is the modern transport; SSE servers will surface a clear connect error.
   const mcpClient = new CraftMcpClient({
-    transport,
+    transport: 'http',
     url: mcpUrl,
     headers: Object.keys(headers).length > 0 ? headers : undefined,
   });
 
   try {
+    await mcpClient.connect();
+    const serverInfo = mcpClient.getServerInfo();
+
     const tools = await mcpClient.listTools();
     const toolNames = tools.map((t) => t.name);
-    const invalidProperties = validateToolSchemas(tools);
 
-    if (invalidProperties.length > 0) {
+    debug(`Validating schemas for ${tools.length} tools`);
+
+    const allInvalidProperties: InvalidProperty[] = [];
+    for (const tool of tools) {
+      if (tool.inputSchema && typeof tool.inputSchema === 'object') {
+        const invalidProps = findInvalidProperties(
+          tool.inputSchema as Record<string, unknown>
+        );
+        for (const prop of invalidProps) {
+          allInvalidProperties.push({
+            toolName: tool.name,
+            propertyPath: prop.path,
+            propertyKey: prop.key,
+          });
+        }
+      }
+    }
+
+    if (allInvalidProperties.length > 0) {
+      const toolsWithIssues = [
+        ...new Set(allInvalidProperties.map((p) => p.toolName)),
+      ];
       return {
         success: false,
-        error: buildInvalidSchemaMessage(invalidProperties),
+        error: `Server has ${allInvalidProperties.length} invalid property name(s) in ${toolsWithIssues.length} tool(s): ${toolsWithIssues.join(', ')}. Property names must match ^[a-zA-Z0-9_.-]{1,64}$`,
         errorType: 'invalid-schema',
-        invalidProperties,
+        serverInfo,
+        invalidProperties: allInvalidProperties,
         tools: toolNames,
       };
     }
 
     return {
       success: true,
+      serverInfo,
       tools: toolNames,
     };
   } catch (err) {
-    if (isAuthError(err)) {
-      return {
-        success: false,
-        error: 'MCP server requires authentication',
-        errorType: 'needs-auth',
-      };
-    }
-
-    return {
-      success: false,
-      error: getErrorMessage(err) || 'MCP connection failed',
-      errorType: 'failed',
-    };
+    debug('[mcp-validation] error:', err instanceof Error ? err.message : err);
+    return classifyConnectionError(err);
   } finally {
     await mcpClient.close().catch(() => {});
   }

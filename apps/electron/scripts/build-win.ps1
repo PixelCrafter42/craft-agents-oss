@@ -72,6 +72,51 @@ function Copy-DirectoryFresh {
     Copy-Item -LiteralPath $Source -Destination $Destination -Recurse -Force
 }
 
+function Get-SdkVersion {
+    $packageJsonPath = Join-Path $RootDir "package.json"
+    $packageJson = Get-Content -LiteralPath $packageJsonPath -Raw | ConvertFrom-Json
+    $version = $packageJson.dependencies.'@anthropic-ai/claude-agent-sdk'
+    if (-not $version) {
+        throw "@anthropic-ai/claude-agent-sdk dependency not found in $packageJsonPath"
+    }
+    return ($version -replace '^[~^]', '')
+}
+
+function Ensure-SdkBinaryPackage {
+    $sdkBinPkg = "claude-agent-sdk-win32-x64"
+    $sdkBinSource = Join-Path $RootDir "node_modules\@anthropic-ai\$sdkBinPkg"
+    if (Test-Path -LiteralPath $sdkBinSource) {
+        return $sdkBinSource
+    }
+
+    $sdkVersion = Get-SdkVersion
+    Write-Host "Cross-arch build: @anthropic-ai/$sdkBinPkg not in node_modules; fetching $sdkVersion from npm..."
+    $pkgTmp = New-Item -ItemType Directory -Path ([System.IO.Path]::Combine($env:TEMP, [System.Guid]::NewGuid().ToString()))
+    try {
+        Push-Location $pkgTmp.FullName
+        try {
+            Invoke-Checked "npm" "pack" "@anthropic-ai/$sdkBinPkg@$sdkVersion"
+            $tarball = Get-ChildItem -Filter "anthropic-ai-*.tgz" | Select-Object -First 1
+            if (-not $tarball) {
+                throw "npm pack did not produce a tarball for @anthropic-ai/$sdkBinPkg@$sdkVersion"
+            }
+            Invoke-Checked "tar" "-xzf" $tarball.Name
+        } finally {
+            Pop-Location
+        }
+
+        New-Item -ItemType Directory -Force -Path $sdkBinSource | Out-Null
+        Copy-Item -Path (Join-Path $pkgTmp.FullName "package\*") -Destination $sdkBinSource -Recurse -Force
+    } finally {
+        Remove-Item -LiteralPath $pkgTmp.FullName -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    if (-not (Test-Path -LiteralPath $sdkBinSource)) {
+        throw "SDK native binary package not found after npm pack: $sdkBinSource"
+    }
+    return $sdkBinSource
+}
+
 function Ensure-BundledBun {
     $bunExePath = Join-Path $ElectronDir "vendor\bun\bun.exe"
     if (Test-Path -LiteralPath $bunExePath) {
@@ -119,6 +164,27 @@ function Copy-PackagingSupportFiles {
     $sdkSource = Join-Path $RootDir "node_modules\@anthropic-ai\claude-agent-sdk"
     $sdkDest = Join-Path $ElectronDir "node_modules\@anthropic-ai\claude-agent-sdk"
     Copy-DirectoryFresh -Source $sdkSource -Destination $sdkDest
+
+    $sdkBinSource = Ensure-SdkBinaryPackage
+    $sdkBinDest = Join-Path $ElectronDir "node_modules\@anthropic-ai\claude-agent-sdk-binary"
+    Copy-DirectoryFresh -Source $sdkBinSource -Destination $sdkBinDest
+    $claudeBinPath = Join-Path $sdkBinDest "claude.exe"
+    if (-not (Test-Path -LiteralPath $claudeBinPath)) {
+        throw "Native Claude binary not found at $claudeBinPath"
+    }
+    $claudeBinSize = (Get-Item -LiteralPath $claudeBinPath).Length
+    if ($claudeBinSize -lt 50000000) {
+        throw "claude.exe is only $claudeBinSize bytes; expected the native SDK binary"
+    }
+    Write-Host "  Native Claude binary: $([math]::Round($claudeBinSize / 1MB)) MB"
+
+    $rgSource = Join-Path $RootDir "node_modules\@vscode\ripgrep"
+    $rgBinPath = Join-Path $rgSource "bin\rg.exe"
+    if (-not (Test-Path -LiteralPath $rgSource) -or -not (Test-Path -LiteralPath $rgBinPath)) {
+        throw "@vscode/ripgrep not installed or postinstall did not run. Run 'bun install' and 'bun pm trust @vscode/ripgrep'."
+    }
+    $rgDest = Join-Path $ElectronDir "node_modules\@vscode\ripgrep"
+    Copy-DirectoryFresh -Source $rgSource -Destination $rgDest
 
     $sharedSrcDest = Join-Path $ElectronDir "packages\shared\src"
     New-Item -ItemType Directory -Force -Path $sharedSrcDest | Out-Null
@@ -172,7 +238,7 @@ Write-Host "Electron: $ElectronDir"
 Write-Host "Mode: $(if ($Signed) { 'signed' } else { 'unsigned local test' })"
 
 Write-Host "Stopping lingering Electron processes..."
-Get-Process -Name "electron", "electron-builder" -ErrorAction SilentlyContinue | ForEach-Object {
+Get-Process -Name "Craft Agents", "electron", "electron-builder" -ErrorAction SilentlyContinue | ForEach-Object {
     Write-Host "  Stopping $($_.ProcessName) (PID: $($_.Id))" -ForegroundColor Yellow
     Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
 }
@@ -181,6 +247,7 @@ Start-Sleep -Seconds 1
 Write-Host "Cleaning build artifacts..."
 Remove-DirectoryWithRetry (Join-Path $ElectronDir "release")
 Remove-DirectoryWithRetry (Join-Path $ElectronDir "node_modules\@anthropic-ai")
+Remove-DirectoryWithRetry (Join-Path $ElectronDir "node_modules\@vscode")
 Remove-DirectoryWithRetry (Join-Path $ElectronDir "packages")
 Remove-DirectoryWithRetry (Join-Path $ElectronDir "vendor\bun")
 

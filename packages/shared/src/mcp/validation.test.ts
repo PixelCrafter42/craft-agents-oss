@@ -17,6 +17,14 @@ mock.module('./client.js', () => ({
       createdConfigs.push(config);
     }
 
+    async connect(): Promise<void> {
+      // listTools() below is the validation surface under test.
+    }
+
+    getServerInfo(): { name: string; version: string } | undefined {
+      return undefined;
+    }
+
     async listTools(): Promise<Tool[]> {
       return listToolsImpl();
     }

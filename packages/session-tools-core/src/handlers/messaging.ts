@@ -34,9 +34,16 @@ export async function handleListMessagingChannels(
       return successResponse(`No messaging channels bound to session ${sessionId}.`);
     }
 
-    const lines = bindings.map((b) =>
-      `- ${b.platform}: ${b.channelName || b.channelId} (${b.enabled ? 'active' : 'disabled'})`,
-    );
+    const lines = bindings.map((b) => {
+      const baseLabel = b.channelName || b.channelId;
+      // Topic-bound bindings (Telegram supergroup forums) read as
+      // "Group › Topic" so the model can disambiguate two topics in the
+      // same supergroup. DMs and pre-topics bindings render unchanged.
+      const channelLabel = b.threadId !== undefined
+        ? `${baseLabel} › Topic #${b.threadId}`
+        : baseLabel;
+      return `- ${b.platform}: ${channelLabel} (${b.enabled ? 'active' : 'disabled'})`;
+    });
 
     return successResponse(
       `Messaging bindings for session ${sessionId}:\n${lines.join('\n')}`,
@@ -52,7 +59,7 @@ export async function handleListMessagingChannels(
 // ---------------------------------------------------------------------------
 
 export interface UnbindMessagingChannelArgs {
-  platform?: 'telegram' | 'whatsapp' | 'weixin';
+  platform?: 'telegram' | 'whatsapp' | 'weixin' | 'lark';
 }
 
 export async function handleUnbindMessagingChannel(
