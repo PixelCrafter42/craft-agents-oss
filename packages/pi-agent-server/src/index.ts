@@ -77,11 +77,8 @@ import { getDefaultSummarizationModel } from '../../shared/src/config/models.ts'
 import { createWebFetchTool } from './tools/web-fetch.ts';
 import { resolveSearchProvider } from './tools/search/resolve-provider.ts';
 import { createSearchTool } from './tools/search/create-search-tool.ts';
-import {
-  CraftSystemPromptResourceLoader,
-  createCraftSystemPromptResourceLoader,
-} from './craft-system-prompt-resource-loader.ts';
 import { allowCraftMetadataProperties, stripCraftMetadata } from './craft-metadata-schema.ts';
+import { applySystemPromptOverride } from './system-prompt-override.ts';
 
 // ============================================================
 // Types — JSONL Protocol
@@ -245,14 +242,12 @@ let piSession: AgentSession | null = null;
 let piModelRegistry: PiModelRegistry | null = null;
 let moduleAuthStorage: PiAuthStorage | null = null;
 let unsubscribeEvents: (() => void) | null = null;
-let craftSystemPromptResourceLoader: CraftSystemPromptResourceLoader | null = null;
 
 // Init config (set on 'init' message)
 let initConfig: Extract<InboundMessage, { type: 'init' }> | null = null;
 
 // Mutable state
 let currentUserMessage = '';
-let currentCraftSystemPrompt: string | undefined;
 
 // Pending promises for async handshakes
 const pendingPreToolUse = new Map<string, { resolve: (response: { action: string; input?: Record<string, unknown>; reason?: string }) => void }>();
@@ -310,17 +305,6 @@ function findMostRecentSessionFile(sessionDir: string): string | null {
     }
   }
   return best?.path ?? null;
-}
-
-function setCraftSystemPrompt(systemPrompt: string | undefined): void {
-  const trimmed = systemPrompt?.trim();
-  currentCraftSystemPrompt = trimmed ? systemPrompt : undefined;
-  craftSystemPromptResourceLoader?.setSystemPrompt(currentCraftSystemPrompt);
-}
-
-function rebuildCraftSystemPrompt(session: AgentSession): void {
-  if (!craftSystemPromptResourceLoader) return;
-  session.setActiveToolsByName(session.getActiveToolNames());
 }
 
 // ============================================================
@@ -596,7 +580,6 @@ async function ensureSession(): Promise<AgentSession> {
     customTools: wrappedAll,
     tools: toolAllowlist,
   };
-  let agentDir = initConfig.agentDir || getPiAgentDir();
   if (initConfig.agentDir) {
     sessionOptions.agentDir = initConfig.agentDir;
   }
@@ -604,7 +587,7 @@ async function ensureSession(): Promise<AgentSession> {
   // Extension isolation: set agentDir to a temp directory under session path
   // to prevent loading global Pi extensions from ~/.pi/agent
   if (initConfig.sessionPath) {
-    agentDir = initConfig.agentDir || join(initConfig.sessionPath, '.pi-agent');
+    const agentDir = initConfig.agentDir || join(initConfig.sessionPath, '.pi-agent');
     mkdirSync(agentDir, { recursive: true });
     sessionOptions.agentDir = agentDir;
 
@@ -645,15 +628,6 @@ async function ensureSession(): Promise<AgentSession> {
     }
 
   }
-
-  const { resourceLoader, settingsManager } = await createCraftSystemPromptResourceLoader(
-    cwd,
-    agentDir,
-    currentCraftSystemPrompt,
-  );
-  craftSystemPromptResourceLoader = resourceLoader;
-  sessionOptions.resourceLoader = resourceLoader;
-  sessionOptions.settingsManager = settingsManager;
 
   // Set model if specified
   if (initConfig.model) {
@@ -972,15 +946,6 @@ async function queryLlm(request: LLMQueryRequest): Promise<LLMQueryResult> {
     if (initConfig!.sessionPath) {
       mkdirSync(ephemeralAgentDir, { recursive: true });
     }
-    const ephemeralPrompt = request.systemPrompt ?? 'Reply with ONLY the requested text. No explanation.';
-    const {
-      resourceLoader: ephemeralResourceLoader,
-      settingsManager: ephemeralSettingsManager,
-    } = await createCraftSystemPromptResourceLoader(
-      resolvedCwd(),
-      ephemeralAgentDir,
-      ephemeralPrompt,
-    );
 
     // Create minimal ephemeral session
     const ephemeralOptions: CreateAgentSessionOptions = {
@@ -991,8 +956,6 @@ async function queryLlm(request: LLMQueryRequest): Promise<LLMQueryResult> {
       tools: [],
       sessionManager: PiSessionManager.inMemory(),
       model: piModel,
-      resourceLoader: ephemeralResourceLoader,
-      settingsManager: ephemeralSettingsManager,
     };
 
     const { session: ephemeralSession } = await createAgentSession(ephemeralOptions);
@@ -1006,6 +969,12 @@ async function queryLlm(request: LLMQueryRequest): Promise<LLMQueryResult> {
     }
 
     debugLog(`[queryLlm] Created ephemeral session: ${ephemeralSession.sessionId}`);
+
+    // Force the system prompt — see system-prompt-override.ts for why direct
+    // assignment to `state.systemPrompt` doesn't survive `session.prompt()`.
+    const promptForSession =
+      request.systemPrompt ?? 'Reply with ONLY the requested text. No explanation.';
+    applySystemPromptOverride(ephemeralSession, promptForSession);
 
     // Collect response text and errors from events
     let result = '';
@@ -1257,13 +1226,10 @@ async function handleInit(msg: Extract<InboundMessage, { type: 'init' }>): Promi
     }
     piSession.dispose();
     piSession = null;
-    craftSystemPromptResourceLoader = null;
     moduleAuthStorage = null; // Reset so createAuthenticatedRegistry() creates fresh storage
     debugLog('Cleaned up existing session for re-init');
   }
 
-  currentCraftSystemPrompt = undefined;
-  craftSystemPromptResourceLoader = null;
   initConfig = msg;
 
   // Azure OpenAI requires a tenant-specific endpoint URL.
@@ -1309,7 +1275,6 @@ async function waitForCompaction(session: { isCompacting: boolean }, timeoutMs =
 
 async function handlePrompt(msg: Extract<InboundMessage, { type: 'prompt' }>): Promise<void> {
   currentUserMessage = msg.message;
-  setCraftSystemPrompt(msg.systemPrompt);
 
   try {
     // If proxy tools changed since last session creation, dispose and recreate.
@@ -1323,11 +1288,16 @@ async function handlePrompt(msg: Extract<InboundMessage, { type: 'prompt' }>): P
       }
       piSession.dispose();
       piSession = null;
-      craftSystemPromptResourceLoader = null;
     }
 
     const session = await ensureSession();
-    rebuildCraftSystemPrompt(session);
+
+    // Force the Craft-built system prompt onto the Pi session. Direct assignment
+    // to `state.systemPrompt` is wiped on every `session.prompt()` call by the Pi
+    // SDK (see system-prompt-override.ts).
+    if (msg.systemPrompt) {
+      applySystemPromptOverride(session, msg.systemPrompt);
+    }
 
     // Wire up event handler
     if (unsubscribeEvents) {
@@ -1642,8 +1612,6 @@ function handleShutdown(): void {
     piSession.dispose();
     piSession = null;
   }
-  craftSystemPromptResourceLoader = null;
-  currentCraftSystemPrompt = undefined;
 
   // Stop callback server
   stopCallbackServer();
