@@ -153,6 +153,44 @@ describe('Router', () => {
     expect(first.base64 && first.base64.length).toBeGreaterThan(0)
   })
 
+  it('detects extension-less image attachments before text fallback', async () => {
+    const { router, sessionManager } = makeRouter()
+    const pngPath = join(fileDir, '1778212708195-5b0a3b85.bin')
+    writeFileSync(pngPath, Buffer.from(TINY_PNG_B64, 'base64'))
+
+    await router.route(
+      makeFakeAdapter(),
+      baseMsg({
+        text: '',
+        attachments: [
+          {
+            type: 'photo',
+            fileId: 'wx-file',
+            fileName: '1778212708195-5b0a3b85.bin',
+            mimeType: 'application/octet-stream',
+            localPath: pngPath,
+          },
+        ],
+      }),
+    )
+
+    const args = sessionManager.sendMessage.mock.calls[0]!
+    const fileAttachments = args[2] as Array<{
+      type: string
+      name: string
+      mimeType: string
+      base64?: string
+      text?: string
+    }>
+
+    expect(fileAttachments).toHaveLength(1)
+    expect(fileAttachments[0]?.type).toBe('image')
+    expect(fileAttachments[0]?.name).toBe('1778212708195-5b0a3b85.png')
+    expect(fileAttachments[0]?.mimeType).toBe('image/png')
+    expect(fileAttachments[0]?.base64).toBe(TINY_PNG_B64)
+    expect(fileAttachments[0]?.text).toBeUndefined()
+  })
+
   it('drops attachments that have no localPath', async () => {
     const { router, sessionManager } = makeRouter()
     await router.route(
