@@ -1,6 +1,6 @@
 import type { EventSink } from '@craft-agent/server-core/transport'
 import type { ISessionManager, IBrowserPaneManager, ExecutePromptAutomationInput } from '@craft-agent/server-core/handlers'
-import { validateFilePath, getWorkspaceAllowedDirs } from '@craft-agent/server-core/handlers'
+import { validateFilePath, getWorkspaceAllowedDirs, sanitizeFilename } from '@craft-agent/server-core/handlers'
 import { createScopedLogger, CONSOLE_LOGGER, type PlatformServices, type Logger } from '@craft-agent/server-core/runtime'
 import { basename, dirname, join } from 'path'
 import { existsSync } from 'fs'
@@ -54,6 +54,7 @@ import {
   getSessionAttachmentsPath,
   getSessionPath as getSessionStoragePath,
   ensureSessionDir,
+  validateSessionId,
   getSessionFilePath,
   generateSessionId,
   sessionPersistenceQueue,
@@ -5130,6 +5131,83 @@ export class SessionManager implements ISessionManager {
     sessionLog.info(`Deleted session ${sessionId}`)
   }
 
+  private async materializeStoredAttachmentsForMessage(
+    managed: ManagedSession,
+    attachments?: FileAttachment[],
+  ): Promise<StoredAttachment[] | undefined> {
+    if (!attachments?.length) return undefined
+
+    validateSessionId(managed.id)
+    const attachmentsDir = getSessionAttachmentsPath(managed.workspace.rootPath, managed.id)
+    await mkdir(attachmentsDir, { recursive: true })
+
+    const storedAttachments: StoredAttachment[] = []
+    for (const attachment of attachments) {
+      try {
+        const id = randomUUID()
+        const sourceName = attachment.name || (attachment.path ? basename(attachment.path) : 'attachment.bin')
+        const safeName = sanitizeFilename(sourceName) || 'attachment.bin'
+        const storedPath = join(attachmentsDir, `${id}_${safeName}`)
+
+        let contents: Buffer
+        if (attachment.base64) {
+          contents = Buffer.from(attachment.base64, 'base64')
+        } else if (attachment.text !== undefined) {
+          contents = Buffer.from(attachment.text, 'utf8')
+        } else if (attachment.path) {
+          contents = await readFile(attachment.path)
+        } else {
+          sessionLog.warn('Skipping attachment with no readable content', {
+            sessionId: managed.id,
+            name: attachment.name,
+          })
+          continue
+        }
+
+        await writeFile(storedPath, contents)
+
+        let thumbnailBase64 = attachment.thumbnailBase64
+        let thumbnailPath: string | undefined
+        if (!thumbnailBase64 && attachment.type === 'image' && _platform?.imageProcessor) {
+          const thumbPath = join(attachmentsDir, `${id}_thumb.png`)
+          try {
+            const thumbBuffer = await _platform.imageProcessor.process(storedPath, {
+              resize: { width: 200, height: 200 },
+              format: 'png',
+            })
+            await writeFile(thumbPath, thumbBuffer)
+            thumbnailPath = thumbPath
+            thumbnailBase64 = thumbBuffer.toString('base64')
+          } catch (thumbError) {
+            sessionLog.info(
+              'Attachment thumbnail generation failed:',
+              thumbError instanceof Error ? thumbError.message : thumbError,
+            )
+          }
+        }
+
+        storedAttachments.push({
+          id,
+          type: attachment.type,
+          name: sourceName,
+          mimeType: attachment.mimeType,
+          size: contents.length,
+          storedPath,
+          thumbnailPath,
+          thumbnailBase64,
+        })
+      } catch (error) {
+        sessionLog.warn('Failed to store attachment for message display', {
+          sessionId: managed.id,
+          name: attachment.name,
+          error: error instanceof Error ? error.message : String(error),
+        })
+      }
+    }
+
+    return storedAttachments.length > 0 ? storedAttachments : undefined
+  }
+
   async sendMessage(
     sessionId: string,
     message: string,
@@ -5159,6 +5237,9 @@ export class SessionManager implements ISessionManager {
 
     // Ensure messages are loaded before we try to add new ones
     await this.ensureMessagesLoaded(managed)
+
+    const displayStoredAttachments = storedAttachments ??
+      (await this.materializeStoredAttachmentsForMessage(managed, attachments))
 
     // If currently processing, behavior depends on the connection's
     // `midStreamBehavior` (resolved via {@link resolveMidStreamBehavior},
@@ -5199,7 +5280,7 @@ export class SessionManager implements ISessionManager {
         role: 'user',
         content: message,
         timestamp: this.monotonic(),
-        attachments: storedAttachments,
+        attachments: displayStoredAttachments,
         badges: options?.badges,
       }
       managed.messages.push(userMessage)
@@ -5219,7 +5300,7 @@ export class SessionManager implements ISessionManager {
         // for both queue-direct (current turn still running) and
         // queue-after-abort (backend already aborted) — the replay path in
         // processNextQueuedMessage is identical.
-        managed.messageQueue.push({ message, attachments, storedAttachments, options, messageId: userMessage.id, optimisticMessageId: options?.optimisticMessageId })
+        managed.messageQueue.push({ message, attachments, storedAttachments: displayStoredAttachments, options, messageId: userMessage.id, optimisticMessageId: options?.optimisticMessageId })
         managed.wasInterrupted = true
       }
 
@@ -5248,7 +5329,7 @@ export class SessionManager implements ISessionManager {
         role: 'user',
         content: message,
         timestamp: this.monotonic(),
-        attachments: storedAttachments, // Include for persistence (has thumbnailBase64)
+        attachments: displayStoredAttachments, // Include for persistence (has thumbnailBase64)
         badges: options?.badges,  // Include content badges (sources, skills with embedded icons)
       }
       managed.messages.push(userMessage)
@@ -5352,7 +5433,7 @@ export class SessionManager implements ISessionManager {
     // we need to recreate the agent and retry the message)
     managed.lastSentMessage = message
     managed.lastSentAttachments = attachments
-    managed.lastSentStoredAttachments = storedAttachments
+    managed.lastSentStoredAttachments = displayStoredAttachments
     managed.lastSentOptions = options
 
     // Capture the generation to detect if a new request supersedes this one.

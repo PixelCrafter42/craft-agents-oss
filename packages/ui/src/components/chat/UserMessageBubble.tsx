@@ -408,6 +408,7 @@ export function UserMessageBubble({
     }
     displayContent = displayContent.trim()
   }
+  const hasTextBubble = showQueued || hasInlineBadges || displayContent.trim().length > 0
 
   return (
     <div className={cn("flex flex-col items-end gap-3 w-full", className)}>
@@ -484,36 +485,38 @@ export function UserMessageBubble({
           separate pill below — keeps the chat to one bubble per message
           while the chip and pulsing icon make the waiting state obvious
           (#616 follow-up). */}
-      <div
-        className={cn(
-          "max-w-[80%] bg-user-message-bubble rounded-[16px] break-words min-w-0 select-text [&_p]:m-0",
-          compactMode ? "px-4 py-2" : "px-5 py-3.5"
-        )}
-      >
-        {showQueued && (
-          <div
-            className="flex items-center gap-1.5 text-foreground/55 mb-1.5"
-            role="status"
-            aria-live="polite"
-          >
-            <Clock className="h-3 w-3 animate-pulse" aria-hidden="true" />
-            <span className="text-[11px] italic">{t('chat.queuedBadge')}</span>
-          </div>
-        )}
-        {hasInlineBadges
-          ? renderContentWithBadges(displayContent, inlineBadges, onUrlClick, onFileClick)
-          : (
-            <Markdown
-              mode="minimal"
-              onUrlClick={onUrlClick}
-              onFileClick={onFileClick}
-              className="text-sm [&_a]:underline [&_code]:bg-foreground/10 [&_p]:whitespace-pre-wrap"
+      {hasTextBubble && (
+        <div
+          className={cn(
+            "max-w-[80%] bg-user-message-bubble rounded-[16px] break-words min-w-0 select-text [&_p]:m-0",
+            compactMode ? "px-4 py-2" : "px-5 py-3.5"
+          )}
+        >
+          {showQueued && (
+            <div
+              className="flex items-center gap-1.5 text-foreground/55 mb-1.5"
+              role="status"
+              aria-live="polite"
             >
-              {displayContent}
-            </Markdown>
-          )
-        }
-      </div>
+              <Clock className="h-3 w-3 animate-pulse" aria-hidden="true" />
+              <span className="text-[11px] italic">{t('chat.queuedBadge')}</span>
+            </div>
+          )}
+          {hasInlineBadges
+            ? renderContentWithBadges(displayContent, inlineBadges, onUrlClick, onFileClick)
+            : (
+              <Markdown
+                mode="minimal"
+                onUrlClick={onUrlClick}
+                onFileClick={onFileClick}
+                className="text-sm [&_a]:underline [&_code]:bg-foreground/10 [&_p]:whitespace-pre-wrap"
+              >
+                {displayContent}
+              </Markdown>
+            )
+          }
+        </div>
+      )}
     </div>
   )
 }

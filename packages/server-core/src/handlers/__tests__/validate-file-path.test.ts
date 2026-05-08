@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'bun:test'
 import { homedir, tmpdir } from 'os'
+import { mkdir, writeFile } from 'fs/promises'
 import { join, sep } from 'path'
 import { validateFilePath } from '../utils'
 
@@ -83,5 +84,18 @@ describe('validateFilePath', () => {
     // Should not throw even with undefined/empty values in the array
     const result = await validateFilePath(path, ['', undefined as unknown as string])
     expect(result).toContain('test.txt')
+  })
+
+  it('recovers a Windows absolute path that was prefixed with another absolute path', async () => {
+    if (sep !== '\\') return
+
+    const dir = join(tmp, 'craft-validate-file-path')
+    const path = join(dir, 'preview.png')
+    await mkdir(dir, { recursive: true })
+    await writeFile(path, 'x')
+
+    const malformed = `${process.cwd()}\\${path}`
+    const result = await validateFilePath(malformed)
+    expect(result).toBe(path)
   })
 })

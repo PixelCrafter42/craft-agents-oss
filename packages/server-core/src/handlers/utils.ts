@@ -65,6 +65,18 @@ export function getWorkspaceAllowedDirs(workspaceId?: string | null): string[] {
   return dirs
 }
 
+function recoverEmbeddedWindowsAbsolutePath(filePath: string): string {
+  const driveRootMatches = [...filePath.matchAll(/[A-Za-z]:[\\/]/g)]
+  if (driveRootMatches.length === 0) return filePath
+
+  const lastDriveRootIndex = driveRootMatches[driveRootMatches.length - 1]?.index ?? 0
+  if (driveRootMatches.length > 1 || lastDriveRootIndex > 0) {
+    return filePath.slice(lastDriveRootIndex)
+  }
+
+  return filePath
+}
+
 /**
  * Validates that a file path is within allowed directories to prevent path traversal attacks.
  * Allowed directories: user's home directory, /tmp, and any additional dirs passed by the caller
@@ -74,6 +86,8 @@ export async function validateFilePath(
   filePath: string,
   additionalAllowedDirs?: string[],
 ): Promise<string> {
+  filePath = recoverEmbeddedWindowsAbsolutePath(filePath)
+
   // Normalize the path to resolve . and .. components
   let normalizedPath = normalize(filePath)
 
