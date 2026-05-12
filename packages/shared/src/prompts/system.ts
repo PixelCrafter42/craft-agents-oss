@@ -11,7 +11,7 @@ import { readPluginName } from '../utils/workspace.ts';
 import { globSync } from 'glob';
 import os from 'os';
 
-/** Maximum size of CLAUDE.md file to include (10KB) */
+/** Maximum size of AGENTS.md/CLAUDE.md file to include (10KB) */
 const MAX_CONTEXT_FILE_SIZE = 10 * 1024;
 
 /** Maximum number of context files to discover in monorepo */
@@ -268,17 +268,28 @@ export function getProjectContextFilesPrompt(workingDirectory?: string): string 
     return '';
   }
 
+  const rootContextFile = readProjectContextFile(workingDirectory);
+
   // Format file list with (root) annotation for top-level files
   const fileList = contextFiles
     .map((file) => {
       const isRoot = !file.includes('/');
-      return `- ${file}${isRoot ? ' (root)' : ''}`;
+      const isLoadedRoot = rootContextFile && isRoot && file.toLowerCase() === rootContextFile.filename.toLowerCase();
+      return `- ${file}${isRoot ? ` (root${isLoadedRoot ? ', loaded below' : ''})` : ''}`;
     })
     .join('\n');
+
+  const rootContextFileBlock = rootContextFile
+    ? `
+<loaded_project_context_file path="${rootContextFile.filename}" scope="root">
+${rootContextFile.content}
+</loaded_project_context_file>`
+    : '';
 
   return `
 <project_context_files working_directory="${workingDirectory}">
 ${fileList}
+${rootContextFileBlock}
 </project_context_files>`;
 }
 
@@ -565,7 +576,7 @@ Skills are stored at three levels (checked in order):
 
 When \`<project_context_files>\` appears in the system prompt, it lists all discovered context files (CLAUDE.md, AGENTS.md) in the working directory and its subdirectories. This supports monorepos where each package may have its own context file.
 
-Read relevant context files using the Read tool - they contain architecture info, conventions, and project-specific guidance. For monorepos, read the root context file first, then package-specific files as needed based on what you're working on.
+The root context file content is already loaded when \`<loaded_project_context_file>\` is present. Read nested package-specific context files using the Read tool as needed based on what you're working on.
 
 ## Configuration Documentation
 
