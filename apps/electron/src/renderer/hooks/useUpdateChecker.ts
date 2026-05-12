@@ -13,6 +13,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import type { UpdateInfo } from '../../shared/types'
+import { AUTO_UPDATE_ENABLED } from '../../shared/feature-flags'
 
 interface UseUpdateCheckerResult {
   /** Current update info */
@@ -66,6 +67,9 @@ export function useUpdateChecker(): UseUpdateCheckerResult {
   // Install the update
   const installUpdate = useCallback(async () => {
     try {
+      if (!AUTO_UPDATE_ENABLED) {
+        throw new Error('Auto-update is disabled in this build')
+      }
       // Dismiss the update toast first
       toast.dismiss(UPDATE_TOAST_ID)
       toast.info(t('toast.installingUpdate'), {
@@ -83,6 +87,13 @@ export function useUpdateChecker(): UseUpdateCheckerResult {
 
   // Load initial state and check if update ready
   useEffect(() => {
+    if (!AUTO_UPDATE_ENABLED) {
+      window.electronAPI.getUpdateInfo().then((info) => {
+        setUpdateInfo(info)
+      })
+      return
+    }
+
     const checkAndNotify = async (info: UpdateInfo) => {
       if (!info.available || !info.latestVersion) return
       if (info.downloadState !== 'ready') return
@@ -123,6 +134,9 @@ export function useUpdateChecker(): UseUpdateCheckerResult {
   // Check for updates manually
   const checkForUpdates = useCallback(async () => {
     try {
+      if (!AUTO_UPDATE_ENABLED) {
+        throw new Error('Auto-update is disabled in this build')
+      }
       const info = await window.electronAPI.checkForUpdates()
       setUpdateInfo(info)
 

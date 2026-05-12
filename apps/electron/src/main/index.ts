@@ -106,6 +106,7 @@ import { initNotificationService, initBadgeIcon, initInstanceBadge, updateBadgeC
 import { checkForUpdatesOnLaunch, setAutoUpdateEventSink, isUpdating } from './auto-update'
 import type { EventSink } from '@craft-agent/server-core/transport'
 import { validateGitBashPath, checkVCRedistInstalled } from '@craft-agent/server-core/services'
+import { AUTO_UPDATE_ENABLED } from '../shared/feature-flags'
 
 // Initialize electron-log for renderer process support
 log.initialize()
@@ -1050,13 +1051,13 @@ app.whenReady().then(async () => {
 
     // Initialize auto-update (check immediately on launch)
     // Skip in dev mode to avoid replacing /Applications app and launching it instead
-    if (moduleSink) setAutoUpdateEventSink(moduleSink)
-    if (app.isPackaged) {
+    if (AUTO_UPDATE_ENABLED && moduleSink) setAutoUpdateEventSink(moduleSink)
+    if (AUTO_UPDATE_ENABLED && app.isPackaged) {
       checkForUpdatesOnLaunch().catch(err => {
         mainLog.error('[auto-update] Launch check failed:', err)
       })
     } else {
-      mainLog.info('[auto-update] Skipping auto-update in dev mode')
+      mainLog.info('[auto-update] Auto-update disabled or dev mode; skipping launch check')
     }
 
     // Process pending deep link from cold start

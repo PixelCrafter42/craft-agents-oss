@@ -5,6 +5,7 @@ import {
   SETTINGS_ITEMS,
   type SettingsMenuItem,
 } from '../../../shared/menu-schema'
+import { AUTO_UPDATE_ENABLED } from '../../../shared/feature-flags'
 
 /** Identifies one of the mobile menu pages. */
 export type MobileMenuPageId = 'root' | 'settings' | 'help' | 'debug'
@@ -120,6 +121,9 @@ export function buildMobileMenuPages({ hasNewWindow, isDebugMode }: BuildOptions
   }))
 
   const debugRows: MobileMenuRow[] = DEBUG_MENU.items
+    .filter((item) =>
+      AUTO_UPDATE_ENABLED || (item.type !== 'action' || (item.id !== 'checkForUpdates' && item.id !== 'installUpdate')),
+    )
     .filter((item) => item.type === 'action')
     .map<MobileMenuRow>((item) => {
       // Narrowed by the filter above.

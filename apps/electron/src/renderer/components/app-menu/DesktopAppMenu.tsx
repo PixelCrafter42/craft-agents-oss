@@ -30,6 +30,7 @@ import {
 } from "../../../shared/menu-schema"
 import type { MenuItem, MenuSection } from "../../../shared/menu-schema"
 import type { AppMenuProps } from "./types"
+import { AUTO_UPDATE_ENABLED } from '../../../shared/feature-flags'
 
 type MenuActionHandlers = {
   toggleFocusMode?: () => void
@@ -268,6 +269,9 @@ export function DesktopAppMenu({
  */
 function renderDebugSubmenu(t: (key: string) => string): React.ReactNode {
   const SectionIcon = getIcon(DEBUG_MENU.icon)
+  const debugItems = DEBUG_MENU.items.filter((item) =>
+    AUTO_UPDATE_ENABLED || (item.type !== 'action' || (item.id !== 'checkForUpdates' && item.id !== 'installUpdate')),
+  )
   return (
     <DropdownMenuSub>
       <StyledDropdownMenuSubTrigger>
@@ -275,7 +279,7 @@ function renderDebugSubmenu(t: (key: string) => string): React.ReactNode {
         {t(DEBUG_MENU.labelKey)}
       </StyledDropdownMenuSubTrigger>
       <StyledDropdownMenuSubContent>
-        {DEBUG_MENU.items.map((item, index) => {
+        {debugItems.map((item, index) => {
           if (item.type === 'separator') {
             return <StyledDropdownMenuSeparator key={`sep-${index}`} />
           }

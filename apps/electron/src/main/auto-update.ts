@@ -28,6 +28,7 @@ import {
 import { readJsonFileSync } from '@craft-agent/shared/utils/files'
 import { RPC_CHANNELS, type UpdateInfo } from '../shared/types'
 import type { EventSink } from '@craft-agent/server-core/transport'
+import { AUTO_UPDATE_ENABLED } from '../shared/feature-flags'
 
 // Platform detection
 const PLATFORM = platform()
@@ -111,22 +112,25 @@ function broadcastDownloadProgress(progress: number): void {
 
 // ─── Configure electron-updater ───────────────────────────────────────────────
 
-// Auto-download updates in the background after detection
-autoUpdater.autoDownload = true
+if (AUTO_UPDATE_ENABLED) {
+  // Auto-download updates in the background after detection
+  autoUpdater.autoDownload = true
 
-// Install on app quit (if update is downloaded but user hasn't clicked "Restart")
-autoUpdater.autoInstallOnAppQuit = true
+  // Install on app quit (if update is downloaded but user hasn't clicked "Restart")
+  autoUpdater.autoInstallOnAppQuit = true
 
-// Use the logger for electron-updater internal logging
-autoUpdater.logger = {
-  info: (msg: unknown) => mainLog.info('[electron-updater]', msg),
-  warn: (msg: unknown) => mainLog.warn('[electron-updater]', msg),
-  error: (msg: unknown) => mainLog.error('[electron-updater]', msg),
-  debug: (msg: unknown) => mainLog.info('[electron-updater:debug]', msg),
+  // Use the logger for electron-updater internal logging
+  autoUpdater.logger = {
+    info: (msg: unknown) => mainLog.info('[electron-updater]', msg),
+    warn: (msg: unknown) => mainLog.warn('[electron-updater]', msg),
+    error: (msg: unknown) => mainLog.error('[electron-updater]', msg),
+    debug: (msg: unknown) => mainLog.info('[electron-updater:debug]', msg),
+  }
 }
 
 // ─── Event handlers ───────────────────────────────────────────────────────────
 
+if (AUTO_UPDATE_ENABLED) {
 autoUpdater.on('checking-for-update', () => {
   mainLog.info('[auto-update] Checking for updates...')
 })
@@ -219,6 +223,7 @@ autoUpdater.on('error', (error) => {
   }
   broadcastUpdateInfo()
 })
+}
 
 // ─── Exported API ─────────────────────────────────────────────────────────────
 
@@ -314,6 +319,18 @@ function checkForExistingDownload(): { exists: boolean; version?: string } {
  * @param options.autoDownload - If false, only checks without downloading (for manual "Check Now")
  */
 export async function checkForUpdates(options: CheckOptions = {}): Promise<UpdateInfo> {
+  if (!AUTO_UPDATE_ENABLED) {
+    mainLog.info('[auto-update] Disabled in this build; skipping check')
+    updateInfo = {
+      available: false,
+      currentVersion: getAppVersion(),
+      latestVersion: null,
+      downloadState: 'idle',
+      downloadProgress: 0,
+    }
+    return getUpdateInfo()
+  }
+
   const { autoDownload = true } = options
 
   // Temporarily override autoDownload for this check if needed
@@ -369,6 +386,10 @@ export async function checkForUpdates(options: CheckOptions = {}): Promise<Updat
  * Then relaunches the app automatically.
  */
 export async function installUpdate(): Promise<void> {
+  if (!AUTO_UPDATE_ENABLED) {
+    throw new Error('Auto-update is disabled in this build')
+  }
+
   if (updateInfo.downloadState !== 'ready') {
     throw new Error('No update ready to install')
   }
@@ -413,6 +434,11 @@ export interface UpdateOnLaunchResult {
  * - Auto-downloads if update available
  */
 export async function checkForUpdatesOnLaunch(): Promise<UpdateOnLaunchResult> {
+  if (!AUTO_UPDATE_ENABLED) {
+    mainLog.info('[auto-update] Disabled in this build; skipping launch check')
+    return { action: 'skipped', reason: 'disabled', version: null }
+  }
+
   mainLog.info('[auto-update] Checking for updates on launch...')
 
   const info = await checkForUpdates({ autoDownload: true })

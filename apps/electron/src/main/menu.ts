@@ -7,6 +7,7 @@ import type { MenuItem } from '../shared/menu-schema'
 import type { WindowManager } from './window-manager'
 import type { EventSink } from '@craft-agent/server-core/transport'
 import { mainLog, isDebugMode } from './logger'
+import { AUTO_UPDATE_ENABLED } from '../shared/feature-flags'
 
 type ClientResolver = (webContentsId: number) => string | undefined
 
@@ -57,25 +58,26 @@ export async function rebuildMenu(): Promise<void> {
     return
   }
 
-  // Get current update state
-  const { getUpdateInfo, installUpdate, checkForUpdates } = await import('./auto-update')
-  const updateInfo = getUpdateInfo()
-  const updateReady = updateInfo.available && updateInfo.downloadState === 'ready'
+  let updateMenuItem: Electron.MenuItemConstructorOptions | null = null
+  if (AUTO_UPDATE_ENABLED) {
+    const { getUpdateInfo, installUpdate, checkForUpdates } = await import('./auto-update')
+    const updateInfo = getUpdateInfo()
+    const updateReady = updateInfo.available && updateInfo.downloadState === 'ready'
 
-  // Build the update menu item based on state
-  const updateMenuItem: Electron.MenuItemConstructorOptions = updateReady
-    ? {
-        label: i18n.t("menu.installUpdateVersion", { version: updateInfo.latestVersion }),
-        click: async () => {
-          await installUpdate()
+    updateMenuItem = updateReady
+      ? {
+          label: i18n.t("menu.installUpdateVersion", { version: updateInfo.latestVersion }),
+          click: async () => {
+            await installUpdate()
+          }
         }
-      }
-    : {
-        label: i18n.t("menu.checkForUpdatesEllipsis"),
-        click: async () => {
-          await checkForUpdates({ autoDownload: true })
+      : {
+          label: i18n.t("menu.checkForUpdatesEllipsis"),
+          click: async () => {
+            await checkForUpdates({ autoDownload: true })
+          }
         }
-      }
+  }
 
   const template: Electron.MenuItemConstructorOptions[] = [
     // App menu (macOS only)
@@ -83,8 +85,7 @@ export async function rebuildMenu(): Promise<void> {
       label: 'Craft Agents',
       submenu: [
         { role: 'about' as const, label: i18n.t('menu.aboutCraftAgents') },
-        updateMenuItem,
-        { type: 'separator' as const },
+        ...(updateMenuItem ? [updateMenuItem, { type: 'separator' as const }] : []),
         {
           label: i18n.t("menu.settings"),
           accelerator: 'CmdOrCtrl+,',
@@ -198,26 +199,28 @@ export async function rebuildMenu(): Promise<void> {
     ...(!app.isPackaged ? [{
       label: i18n.t("menu.debug"),
       submenu: [
-        {
-          label: i18n.t("menu.checkForUpdates"),
-          click: async () => {
-            const { checkForUpdates } = await import('./auto-update')
-            const info = await checkForUpdates({ autoDownload: true })
-            mainLog.info('[debug-menu] Update check result:', info)
-          }
-        },
-        {
-          label: i18n.t("menu.installUpdate"),
-          click: async () => {
-            const { installUpdate } = await import('./auto-update')
-            try {
-              await installUpdate()
-            } catch (err) {
-              mainLog.error('[debug-menu] Install failed:', err)
+        ...(AUTO_UPDATE_ENABLED ? [
+          {
+            label: i18n.t("menu.checkForUpdates"),
+            click: async () => {
+              const { checkForUpdates } = await import('./auto-update')
+              const info = await checkForUpdates({ autoDownload: true })
+              mainLog.info('[debug-menu] Update check result:', info)
             }
-          }
-        },
-        { type: 'separator' as const },
+          },
+          {
+            label: i18n.t("menu.installUpdate"),
+            click: async () => {
+              const { installUpdate } = await import('./auto-update')
+              try {
+                await installUpdate()
+              } catch (err) {
+                mainLog.error('[debug-menu] Install failed:', err)
+              }
+            }
+          },
+          { type: 'separator' as const },
+        ] : []),
         {
           label: i18n.t("menu.resetToDefaults"),
           click: async () => {

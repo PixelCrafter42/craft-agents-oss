@@ -22,6 +22,7 @@ import { routes } from '@/lib/navigate'
 import { Spinner } from '@craft-agent/ui'
 import type { DetailsPageMeta } from '@/lib/navigation-registry'
 import type { NetworkProxySettings } from '../../../shared/types'
+import { AUTO_UPDATE_ENABLED } from '../../../shared/feature-flags'
 
 import {
   SettingsSection,
@@ -324,7 +325,7 @@ export default function AppSettingsPage() {
                       )}
                     </div>
                   </SettingsRow>
-                  {isElectron && (
+                  {isElectron && AUTO_UPDATE_ENABLED && (
                     <SettingsRow label={t("settings.about.checkForUpdates")}>
                       <Button
                         variant="outline"
@@ -343,7 +344,7 @@ export default function AppSettingsPage() {
                       </Button>
                     </SettingsRow>
                   )}
-                  {isElectron && updateChecker.isReadyToInstall && updateChecker.updateInfo?.latestVersion && (
+                  {isElectron && AUTO_UPDATE_ENABLED && updateChecker.isReadyToInstall && updateChecker.updateInfo?.latestVersion && (
                     <SettingsRow label={t("settings.about.updateReady")}>
                       <Button
                         size="sm"
