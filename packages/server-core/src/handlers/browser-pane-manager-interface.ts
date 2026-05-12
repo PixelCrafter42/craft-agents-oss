@@ -116,6 +116,29 @@ export interface BrowserDownloadEntry {
   savePath?: string
 }
 
+export interface BrowserCookie {
+  name: string
+  value: string
+  domain: string
+  path: string
+  httpOnly?: boolean
+  secure?: boolean
+  sameSite?: string
+  expires?: number
+}
+
+export interface BrowserGetCookiesOptions {
+  url?: string
+  domain?: string
+  names?: string[]
+}
+
+export interface BrowserGetCookiesResult {
+  url: string
+  title: string
+  cookies: BrowserCookie[]
+}
+
 export interface AccessibilityNode {
   ref: string
   role: string
@@ -224,5 +247,6 @@ export interface IBrowserPaneManager {
   getNetworkLogs(id: string, options?: BrowserNetworkOptions): BrowserNetworkEntry[]
   waitFor(id: string, args: BrowserWaitArgs): Promise<BrowserWaitResult>
   getDownloads(id: string, options?: BrowserDownloadOptions): Promise<BrowserDownloadEntry[]>
+  getCookies(id: string, options?: BrowserGetCookiesOptions): Promise<BrowserGetCookiesResult>
   detectSecurityChallenge(id: string): Promise<{ detected: boolean; provider: string; signals: string[] }>
 }

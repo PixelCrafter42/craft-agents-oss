@@ -71,7 +71,7 @@ import {
   type SessionHeader,
   pickSessionFields,
 } from '@craft-agent/shared/sessions'
-import { loadWorkspaceSources, loadAllSources, getSourcesBySlugs, isSourceUsable, type LoadedSource, type McpServerConfig, getSourcesNeedingAuth, getSourceCredentialManager, getSourceServerBuilder, type SourceWithCredential, isApiOAuthProvider, hasRenewEndpoint, SERVER_BUILD_ERRORS, TokenRefreshManager, createTokenGetter } from '@craft-agent/shared/sources'
+import { loadWorkspaceSources, loadAllSources, getSourcesBySlugs, isSourceUsable, type LoadedSource, type McpServerConfig, getSourcesNeedingAuth, getSourceCredentialManager, getSourceServerBuilder, type SourceWithCredential, isApiOAuthProvider, hasRenewEndpoint, SERVER_BUILD_ERRORS, TokenRefreshManager, createTokenGetter, markSourceAuthenticated, createSourceCookieCredentialValue } from '@craft-agent/shared/sources'
 import { ConfigWatcher, type ConfigWatcherCallbacks } from '@craft-agent/shared/config'
 import { getValidClaudeOAuthToken } from '@craft-agent/shared/auth'
 import { resolveAuthEnvVars } from '@craft-agent/shared/config'
@@ -1003,6 +1003,7 @@ export class SessionManager implements ISessionManager {
     sessionId: string
     type?: 'bash' | 'file_write' | 'mcp_mutation' | 'api_mutation' | 'admin_approval'
     commandHash?: string
+    resolve?: (allowed: boolean) => void
   }> = new Map()
   // Privileged approval binding + audit logger
   private privilegedExecutionBroker = new PrivilegedExecutionBroker(sessionLog)
@@ -3257,6 +3258,48 @@ export class SessionManager implements ISessionManager {
           return { windows, target: validated.target }
         }
 
+        const requestCookieAccessApproval = (request: {
+          action: 'reveal_cookies' | 'store_cookies_as_source'
+          sourceSlug?: string
+          sourceName?: string
+          url?: string
+          domain?: string
+          names: string[]
+        }): Promise<boolean> => {
+          const requestId = `browser-cookie-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+          const scope = request.url || request.domain || 'current page'
+          const target = request.sourceName || request.sourceSlug || 'browser session'
+          const action = request.action === 'store_cookies_as_source'
+            ? `Store browser Cookies as source credential for ${target}`
+            : 'Reveal browser Cookie values'
+
+          return new Promise((resolve) => {
+            this.pendingPermissionRequests.set(requestId, {
+              sessionId: sid,
+              type: 'admin_approval',
+              resolve,
+            })
+
+            this.sendEvent({
+              type: 'permission_request',
+              sessionId: sid,
+              request: {
+                requestId,
+                sessionId: sid,
+                toolName: 'browser_tool',
+                command: action,
+                description: `${action}. Scope: ${scope}. Cookie names: ${request.names.length ? request.names.join(', ') : '(all matching scope)'}. Values will not be shown in the prompt.`,
+                type: 'admin_approval',
+                appName: 'Browser',
+                reason: 'Browser Cookie values can grant access to logged-in websites.',
+                impact: request.action === 'store_cookies_as_source'
+                  ? 'Approved Cookie values will be stored in the encrypted source credential store.'
+                  : 'Approved Cookie values may be returned to the agent.',
+              },
+            }, managed.workspace.id)
+          })
+        }
+
         mergeSessionScopedToolCallbacks(sid, {
           browserPaneFns: {
             openPanel: async (options) => {
@@ -3339,6 +3382,46 @@ export class SessionManager implements ISessionManager {
               const instanceId = resolveSessionBrowserInstance('browser_downloads')
               return bpm.getDownloads(instanceId, options)
             },
+            getCookies: (options) => {
+              const instanceId = resolveSessionBrowserInstance('browser_get_cookies')
+              return bpm.getCookies(instanceId, options)
+            },
+            getSourceCookieAuthConfig: async (sourceSlug) => {
+              const sources = loadWorkspaceSources(managed.workspace.rootPath)
+              const source = sources.find(s => s.config.slug === sourceSlug)
+              if (!source) return null
+              return {
+                sourceSlug,
+                sourceName: source.config.name,
+                baseUrl: source.config.api?.baseUrl,
+                authType: source.config.api?.authType,
+                cookieAuth: source.config.api?.cookieAuth,
+              }
+            },
+            storeSourceCookieCredential: async (input) => {
+              const credManager = getCredentialManager()
+              const wsId = basename(managed.workspace.rootPath) || managed.workspace.id
+              const credential = createSourceCookieCredentialValue({
+                cookies: input.cookies,
+                preset: input.preset,
+                url: input.url,
+                domain: input.domain,
+                names: input.names,
+              })
+              await credManager.set(
+                { type: 'source_cookie', workspaceId: wsId, sourceId: input.sourceSlug },
+                { value: JSON.stringify(credential), expiresAt: credential.expiresAt }
+              )
+              markSourceAuthenticated(managed.workspace.rootPath, input.sourceSlug)
+              managed.agent?.markSourceUnseen(input.sourceSlug)
+              return {
+                sourceSlug: input.sourceSlug,
+                sourceName: input.sourceName,
+                storedCookieNames: input.cookies.map(cookie => cookie.name),
+                expiresAt: credential.expiresAt,
+              }
+            },
+            requestCookieAccessApproval,
             upload: (ref, filePaths) => {
               const instanceId = resolveSessionBrowserInstance('browser_upload')
               return bpm.uploadFile(instanceId, ref, filePaths).then(() => {})
@@ -6257,6 +6340,12 @@ export class SessionManager implements ISessionManager {
     if (managed?.agent) {
       const requestMeta = this.pendingPermissionRequests.get(requestId)
       this.pendingPermissionRequests.delete(requestId)
+
+      if (requestMeta?.resolve) {
+        sessionLog.info(`Internal permission response for ${requestId}: allowed=${allowed}`)
+        requestMeta.resolve(allowed)
+        return true
+      }
 
       if (requestMeta?.type === 'admin_approval') {
         const brokerResult = this.privilegedExecutionBroker.resolveApproval(requestId, allowed, {

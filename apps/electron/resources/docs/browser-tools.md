@@ -75,12 +75,16 @@ browser_tool({ command: "network 50 failed" })
 browser_tool({ command: "wait network-idle 8000" })
 browser_tool({ command: "key Enter" })
 browser_tool({ command: "downloads wait 15000" })
+browser_tool({ command: "get-cookies --url https://example.com --names SESSION,CSRF" })
+browser_tool({ command: "store-cookies-as-source --source bilibili --preset bilibili" })
 browser_tool({ command: "focus" })
 browser_tool({ command: "windows" })
 browser_tool({ command: "release" })
 browser_tool({ command: "hide" })
 browser_tool({ command: "close" })
 ```
+
+Cookie values are redacted by default. Revealing Cookie values or storing them as a source credential requires explicit user approval.
 
 The wrapper validates commands and returns actionable errors when arguments are missing or invalid.
 

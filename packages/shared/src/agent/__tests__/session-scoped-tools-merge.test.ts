@@ -34,6 +34,7 @@ describe('session-scoped tool callback merge', () => {
       waitFor: async () => ({ ok: true as const, kind: 'network-idle', elapsedMs: 0, detail: 'ok' }),
       sendKey: async () => {},
       getDownloads: async () => [],
+      getCookies: async () => ({ url: 'https://example.com', title: 'Example', cookies: [] }),
       upload: async () => {},
       scroll: async () => {},
       goBack: async () => {},

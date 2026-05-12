@@ -9,7 +9,7 @@
  */
 
 import { describe, test, expect } from 'bun:test';
-import { buildToolDescription } from '../api-tools.ts';
+import { buildToolDescription, redactHeadersForDebug } from '../api-tools.ts';
 import type { ApiConfig } from '../types.ts';
 
 function baseConfig(overrides: Partial<ApiConfig> = {}): ApiConfig {
@@ -70,5 +70,23 @@ describe('buildToolDescription', () => {
     const b = buildToolDescription(baseConfig({ documentation: 'whatever' }));
     expect(a).toBe(b);
     expect(a).not.toContain('older format');
+  });
+});
+
+describe('redactHeadersForDebug', () => {
+  test('redacts Cookie and auth-like headers without changing ordinary headers', () => {
+    const headers = redactHeadersForDebug({
+      Cookie: 'SESSDATA=secret; bili_jct=csrf',
+      Authorization: 'Bearer secret-token',
+      'X-API-Key': 'secret-api-key',
+      Accept: 'application/json',
+    });
+
+    expect(headers.Cookie).toBe('[REDACTED]');
+    expect(headers.Authorization).toBe('[REDACTED]');
+    expect(headers['X-API-Key']).toBe('[REDACTED]');
+    expect(headers.Accept).toBe('application/json');
+    expect(JSON.stringify(headers)).not.toContain('SESSDATA=secret');
+    expect(JSON.stringify(headers)).not.toContain('secret-token');
   });
 });

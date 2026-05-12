@@ -1,12 +1,18 @@
 import type {
   BrowserConsoleArgs,
   BrowserDownloadsArgs,
+  BrowserGetCookiesArgs,
   BrowserLifecycleActionResult,
   BrowserNetworkArgs,
   BrowserPaneFns,
   BrowserScreenshotRegionArgs,
   BrowserWaitArgs,
 } from './browser-tools.ts';
+import {
+  resolveCookieAuthNames,
+  resolveRequiredCookieNames,
+  type BrowserCookiePreset,
+} from '../sources/browser-cookie-auth.ts';
 
 export interface BrowserCommandImage {
   data: string;
@@ -67,6 +73,8 @@ export function getBrowserToolHelp(): string {
     '  wait <selector|text|url|network-idle> <value?> [timeoutMs]',
     '  key <key> [modifiers]',
     '  downloads [list|wait] [limit|timeoutMs]',
+    '  get-cookies [--url <url>] [--domain <domain>] [--names a,b] [--json] [--reveal]',
+    '  store-cookies-as-source --source <slug> [--url <url>] [--domain <domain>] [--names a,b] [--preset bilibili]',
     '  scroll <up|down|left|right> [amount]',
     '  back',
     '  forward',
@@ -107,6 +115,8 @@ export function getBrowserToolHelp(): string {
     '  wait network-idle 8000',
     '  key Enter',
     '  downloads wait 15000',
+    '  get-cookies --url https://www.bilibili.com --names SESSDATA,bili_jct',
+    '  store-cookies-as-source --source bilibili --preset bilibili',
     '  focus',
     '  focus browser-1',
     '  windows',
@@ -539,6 +549,105 @@ function includesNormalized(haystack: string | undefined, needle: string): boole
   const n = needle.trim().toLowerCase();
   if (!h || !n) return false;
   return h.includes(n);
+}
+
+function parseOptionCommand(parts: string[], spec: {
+  valueOptions?: Set<string>;
+  booleanOptions?: Set<string>;
+}): { positionals: string[]; options: Record<string, string | boolean> } {
+  const positionals: string[] = [];
+  const options: Record<string, string | boolean> = {};
+  const valueOptions = spec.valueOptions ?? new Set<string>();
+  const booleanOptions = spec.booleanOptions ?? new Set<string>();
+
+  for (let i = 1; i < parts.length; i += 1) {
+    const token = parts[i]!;
+    if (!token.startsWith('--')) {
+      positionals.push(token);
+      continue;
+    }
+
+    const eq = token.indexOf('=');
+    const name = eq === -1 ? token : token.slice(0, eq);
+    const inlineValue = eq === -1 ? undefined : token.slice(eq + 1);
+
+    if (booleanOptions.has(name)) {
+      options[name] = true;
+      continue;
+    }
+
+    if (!valueOptions.has(name)) {
+      throw new Error(`Unknown option "${name}" for ${parts[0]}.`);
+    }
+
+    const value = inlineValue ?? parts[i + 1];
+    if (!value || value.startsWith('--')) {
+      throw new Error(`${name} requires a value.`);
+    }
+    options[name] = value;
+    if (inlineValue === undefined) i += 1;
+  }
+
+  return { positionals, options };
+}
+
+function commaList(value: string | boolean | undefined): string[] | undefined {
+  if (typeof value !== 'string') return undefined;
+  return value.split(',').map((item) => item.trim()).filter(Boolean);
+}
+
+function optionString(value: string | boolean | undefined): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function normalizeCookieDomain(domain: string): string {
+  return domain.trim().replace(/^\./, '').toLowerCase();
+}
+
+function cookieMatchesDomain(cookieDomain: string, requestedDomain: string): boolean {
+  const cookieHost = normalizeCookieDomain(cookieDomain);
+  const requestedHost = normalizeCookieDomain(requestedDomain);
+  return cookieHost === requestedHost || cookieHost.endsWith(`.${requestedHost}`);
+}
+
+function filterCookies(
+  cookies: Awaited<ReturnType<BrowserPaneFns['getCookies']>>['cookies'],
+  filters: BrowserGetCookiesArgs,
+) {
+  return cookies.filter((cookie) => {
+    if (filters.domain && !cookieMatchesDomain(cookie.domain, filters.domain)) return false;
+    if (filters.names?.length && !filters.names.includes(cookie.name)) return false;
+    return true;
+  });
+}
+
+function redactCookies(
+  cookies: Awaited<ReturnType<BrowserPaneFns['getCookies']>>['cookies'],
+  reveal: boolean,
+) {
+  return cookies.map((cookie) => ({
+    name: cookie.name,
+    value: reveal ? cookie.value : '***redacted***',
+    domain: cookie.domain,
+    path: cookie.path,
+    httpOnly: !!cookie.httpOnly,
+    secure: !!cookie.secure,
+    sameSite: cookie.sameSite,
+    expires: cookie.expires,
+  }));
+}
+
+async function requireCookieApproval(
+  fns: BrowserPaneFns,
+  request: Parameters<NonNullable<BrowserPaneFns['requestCookieAccessApproval']>>[0],
+): Promise<void> {
+  if (!fns.requestCookieAccessApproval) {
+    throw new Error('Cookie value access requires approval, but approval handling is not available in this environment.');
+  }
+  const allowed = await fns.requestCookieAccessApproval(request);
+  if (!allowed) {
+    throw new Error('Cookie access denied by user.');
+  }
 }
 
 async function verifySelectResult(args: {
@@ -1507,6 +1616,142 @@ async function executeSingleCommand(args: {
       );
     }
     return { output: lines.join('\n'), appendReleaseHint: true };
+  }
+
+  if (cmd === 'get-cookies') {
+    const parsed = parseOptionCommand(parts, {
+      valueOptions: new Set(['--url', '--domain', '--names']),
+      booleanOptions: new Set(['--json', '--reveal']),
+    });
+    if (parsed.positionals.length > 0) {
+      throw new Error('get-cookies only accepts options. Example: get-cookies --url https://example.com --names SESSION,CSRF');
+    }
+
+    const filters: BrowserGetCookiesArgs = {
+      url: optionString(parsed.options['--url']),
+      domain: optionString(parsed.options['--domain']),
+      names: commaList(parsed.options['--names']),
+    };
+    const reveal = parsed.options['--reveal'] === true;
+
+    if (reveal) {
+      await requireCookieApproval(fns, {
+        action: 'reveal_cookies',
+        url: filters.url,
+        domain: filters.domain,
+        names: filters.names ?? [],
+      });
+    }
+
+    const result = await fns.getCookies(filters);
+    const cookies = filterCookies(result.cookies, filters);
+    const output = {
+      scope: {
+        url: filters.url ?? result.url,
+        domain: filters.domain,
+        names: filters.names,
+      },
+      cookies: redactCookies(cookies, reveal),
+      redacted: !reveal,
+    };
+
+    return {
+      output: JSON.stringify(output, null, 2),
+      appendReleaseHint: true,
+    };
+  }
+
+  if (cmd === 'store-cookies-as-source') {
+    const parsed = parseOptionCommand(parts, {
+      valueOptions: new Set(['--source', '--url', '--domain', '--names', '--preset']),
+    });
+    if (parsed.positionals.length > 0) {
+      throw new Error('store-cookies-as-source only accepts options. Example: store-cookies-as-source --source bilibili --preset bilibili');
+    }
+
+    const sourceSlug = optionString(parsed.options['--source']);
+    if (!sourceSlug) {
+      throw new Error('store-cookies-as-source requires --source <slug>.');
+    }
+    if (!fns.getSourceCookieAuthConfig || !fns.storeSourceCookieCredential) {
+      throw new Error('Browser Cookie source authentication is not available in this environment.');
+    }
+
+    const sourceConfig = await fns.getSourceCookieAuthConfig(sourceSlug);
+    if (!sourceConfig) {
+      throw new Error(`Source "${sourceSlug}" not found.`);
+    }
+    if (sourceConfig.authType !== 'browser_cookie') {
+      throw new Error(`Source "${sourceSlug}" is not configured for browser_cookie auth.`);
+    }
+
+    const preset = (optionString(parsed.options['--preset']) as BrowserCookiePreset | undefined)
+      ?? sourceConfig.cookieAuth?.preset;
+    if (preset && preset !== 'bilibili') {
+      throw new Error(`Unknown cookie preset "${preset}". Supported presets: bilibili.`);
+    }
+
+    const explicitNames = commaList(parsed.options['--names']);
+    const cookieAuthForNames = {
+      ...sourceConfig.cookieAuth,
+      ...(preset ? { preset } : {}),
+      ...(explicitNames ? { names: explicitNames } : {}),
+    };
+    const names = explicitNames ?? resolveCookieAuthNames(cookieAuthForNames);
+    if (names.length === 0) {
+      throw new Error(`Source "${sourceSlug}" must specify cookie names via --names, --preset, or api.cookieAuth.names.`);
+    }
+    const requiredNames = resolveRequiredCookieNames(cookieAuthForNames);
+
+    const url = optionString(parsed.options['--url'])
+      ?? sourceConfig.cookieAuth?.url
+      ?? sourceConfig.baseUrl;
+    const domain = optionString(parsed.options['--domain'])
+      ?? sourceConfig.cookieAuth?.domain;
+
+    await requireCookieApproval(fns, {
+      action: 'store_cookies_as_source',
+      sourceSlug,
+      sourceName: sourceConfig.sourceName,
+      url,
+      domain,
+      names,
+    });
+
+    const cookieResult = await fns.getCookies({ url, domain, names });
+    const cookies = filterCookies(cookieResult.cookies, { url, domain, names });
+    const presentNames = new Set(cookies.map((cookie) => cookie.name));
+    const missingRequiredNames = requiredNames.filter((name) => !presentNames.has(name));
+    if (missingRequiredNames.length > 0) {
+      throw new Error(`Missing required Cookie(s) for source "${sourceSlug}": ${missingRequiredNames.join(', ')}`);
+    }
+    if (cookies.length === 0) {
+      throw new Error(`No matching Cookies found for source "${sourceSlug}".`);
+    }
+
+    const stored = await fns.storeSourceCookieCredential({
+      sourceSlug,
+      sourceName: sourceConfig.sourceName,
+      cookies,
+      url,
+      domain,
+      names,
+      preset,
+    });
+
+    return {
+      output: JSON.stringify({
+        ok: true,
+        source: {
+          slug: stored.sourceSlug,
+          name: stored.sourceName,
+        },
+        storedCookieNames: stored.storedCookieNames,
+        expiresAt: stored.expiresAt,
+        redacted: true,
+      }, null, 2),
+      appendReleaseHint: true,
+    };
   }
 
   if (cmd === 'scroll') {

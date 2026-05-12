@@ -131,6 +131,7 @@ interface AgentControlLockState {
 
 interface BrowserInstance {
   id: string
+  partition: string
   window: BrowserWindow
   toolbarView: BrowserView
   pageView: BrowserView
@@ -262,6 +263,23 @@ export interface BrowserDownloadOptions {
   timeoutMs?: number
 }
 
+export interface BrowserGetCookiesOptions {
+  url?: string
+  domain?: string
+  names?: string[]
+}
+
+export interface BrowserCookieEntry {
+  name: string
+  value: string
+  domain: string
+  path: string
+  httpOnly?: boolean
+  secure?: boolean
+  sameSite?: string
+  expires?: number
+}
+
 export interface BrowserScreenshotResult {
   imageBuffer: Buffer
   imageFormat: 'png' | 'jpeg'
@@ -315,8 +333,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   private stateChangeCallback: ((info: BrowserInstanceInfo) => void) | null = null
   private removedCallback: ((id: string) => void) | null = null
   private interactedCallback: ((id: string) => void) | null = null
-  private partitionPermissionsInitialized = false
-  private partitionObserversInitialized = false
+  private partitionPermissionsInitialized = new WeakSet<ElectronSession>()
+  private partitionObserversInitialized = new WeakSet<ElectronSession>()
   private inFlightRequestsByWebContentsId = new Map<number, number>()
   private lastNetworkActivityByWebContentsId = new Map<number, number>()
   private popupWindowsByParentInstanceId = new Map<string, Set<BrowserWindow>>()
@@ -355,7 +373,10 @@ export class BrowserPaneManager implements IBrowserPaneManager {
       return instanceId
     }
 
-    const ses = session.fromPartition(SESSION_PARTITION)
+    const partition = ownerType === 'session' && ownerSessionId
+      ? `browser-pane:${ownerSessionId}`
+      : SESSION_PARTITION
+    const ses = session.fromPartition(partition)
     this.setupSessionPermissions(ses)
     this.setupSessionObservers(ses)
 
@@ -428,6 +449,7 @@ export class BrowserPaneManager implements IBrowserPaneManager {
 
     const instance: BrowserInstance = {
       id: instanceId,
+      partition,
       window,
       toolbarView,
       pageView,
@@ -1560,6 +1582,51 @@ export class BrowserPaneManager implements IBrowserPaneManager {
     return instance.downloads.slice(-limit)
   }
 
+  async getCookies(id: string, options?: BrowserGetCookiesOptions): Promise<{ url: string; title: string; cookies: BrowserCookieEntry[] }> {
+    const instance = this.requireAliveInstance(id)
+    const url = options?.url?.trim() || instance.currentUrl
+    const domain = options?.domain?.trim()
+    const names = options?.names?.filter(Boolean) ?? []
+
+    if (!url && !domain) {
+      throw new Error('Cookie lookup requires a URL or domain, and the browser has no current page URL.')
+    }
+    if (url && (url === 'about:blank' || url.startsWith('file:')) && !domain) {
+      throw new Error('Cookie lookup requires --url or --domain when the current page is not an HTTP(S) page.')
+    }
+
+    const filter: Parameters<ElectronSession['cookies']['get']>[0] = {}
+    if (!domain && url) {
+      filter.url = url
+    }
+
+    const rawCookies = await instance.pageView.webContents.session.cookies.get(filter)
+    const normalizedDomain = domain?.replace(/^\./, '').toLowerCase()
+    const filtered = rawCookies.filter((cookie) => {
+      if (normalizedDomain) {
+        const cookieDomain = (cookie.domain ?? '').replace(/^\./, '').toLowerCase()
+        if (cookieDomain !== normalizedDomain && !cookieDomain.endsWith(`.${normalizedDomain}`)) return false
+      }
+      if (names.length > 0 && !names.includes(cookie.name)) return false
+      return true
+    })
+
+    return {
+      url: instance.currentUrl,
+      title: instance.title,
+      cookies: filtered.map((cookie) => ({
+        name: cookie.name,
+        value: cookie.value,
+        domain: cookie.domain ?? '',
+        path: cookie.path ?? '/',
+        httpOnly: cookie.httpOnly,
+        secure: cookie.secure,
+        sameSite: cookie.sameSite,
+        expires: cookie.expirationDate,
+      })),
+    }
+  }
+
   // validateUploadFilePath removed — uses shared validateFilePath from @craft-agent/server-core/handlers
 
   async uploadFile(id: string, ref: string, filePaths: string[]): Promise<ElementGeometry> {
@@ -2678,8 +2745,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   private setupSessionObservers(ses: ElectronSession): void {
-    if (this.partitionObserversInitialized) return
-    this.partitionObserversInitialized = true
+    if (this.partitionObserversInitialized.has(ses)) return
+    this.partitionObserversInitialized.add(ses)
 
     ses.webRequest.onBeforeRequest((details, callback) => {
       const wcId = details.webContentsId
@@ -2793,8 +2860,8 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   private setupSessionPermissions(ses: ElectronSession): void {
-    if (this.partitionPermissionsInitialized) return
-    this.partitionPermissionsInitialized = true
+    if (this.partitionPermissionsInitialized.has(ses)) return
+    this.partitionPermissionsInitialized.add(ses)
 
     const allow = new Set([
       'fullscreen',

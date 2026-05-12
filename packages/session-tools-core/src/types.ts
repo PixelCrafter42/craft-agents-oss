@@ -232,7 +232,15 @@ export type McpAuthType = 'oauth' | 'bearer' | 'none';
 /**
  * API auth type
  */
-export type ApiAuthType = 'bearer' | 'header' | 'query' | 'basic' | 'oauth' | 'none';
+export type ApiAuthType = 'bearer' | 'header' | 'query' | 'basic' | 'oauth' | 'browser_cookie' | 'none';
+
+export interface SourceCookieAuthConfig {
+  url?: string;
+  domain?: string;
+  names?: string[];
+  requiredNames?: string[];
+  preset?: 'bilibili';
+}
 
 /**
  * MCP source configuration block
@@ -261,6 +269,7 @@ export interface ApiSourceConfig {
   headerNames?: string[];
   queryParam?: string;
   authScheme?: string;
+  cookieAuth?: SourceCookieAuthConfig;
   testEndpoint?: {
     method: 'GET' | 'POST';
     path: string;

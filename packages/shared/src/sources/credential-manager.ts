@@ -61,6 +61,7 @@ import {
 } from '../auth/generic-oauth.ts';
 import { debug } from '../utils/debug.ts';
 import { markSourceAuthenticated, loadSourceConfig, saveSourceConfig } from './storage.ts';
+import { getCookieHeaderFromCredentialValue } from './browser-cookie-auth.ts';
 
 /**
  * Result of authentication attempt
@@ -220,6 +221,10 @@ export class SourceCredentialManager {
       return null;
     }
 
+    if (source.config.api?.authType === 'browser_cookie') {
+      return getCookieHeaderFromCredentialValue(cred.value);
+    }
+
     return cred.value;
   }
 
@@ -232,6 +237,10 @@ export class SourceCredentialManager {
     const headerNames = source.config.api?.headerNames || source.config.mcp?.headerNames;
     debug(`[SourceCredentialManager] getApiCredential for ${source.config.slug}: cred.value exists=${!!cred?.value}, headerNames=${JSON.stringify(headerNames)}`);
     if (!cred?.value) return null;
+
+    if (source.config.api?.authType === 'browser_cookie') {
+      return getCookieHeaderFromCredentialValue(cred.value);
+    }
 
     // Check for multi-header auth (JSON with header names as keys)
     // Works for both API sources (api.headerNames) and MCP sources (mcp.headerNames)
@@ -293,6 +302,8 @@ export class SourceCredentialManager {
       } else if (api?.authType === 'oauth') {
         // Generic OAuth API sources — explicit config or auto-discovery
         type = 'source_oauth';
+      } else if (api?.authType === 'browser_cookie') {
+        type = 'source_cookie';
       } else if (api?.authType === 'bearer') {
         type = 'source_bearer';
       } else if (api?.authType === 'basic') {

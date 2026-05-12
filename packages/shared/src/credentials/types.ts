@@ -32,6 +32,7 @@ export type CredentialType =
   | 'source_bearer'      // Bearer tokens
   | 'source_apikey'      // API keys
   | 'source_basic'       // Basic auth (base64 encoded user:pass)
+  | 'source_cookie'      // Browser Cookie credentials for API sources
   // Messaging gateway credentials (keyed by workspaceId + platform)
   | 'messaging_bearer';  // Platform tokens (e.g., Telegram bot token)
 
@@ -48,6 +49,7 @@ const VALID_CREDENTIAL_TYPES: readonly CredentialType[] = [
   'source_bearer',
   'source_apikey',
   'source_basic',
+  'source_cookie',
   'messaging_bearer',
 ] as const;
 
@@ -137,6 +139,7 @@ export const SOURCE_CREDENTIAL_TYPES = [
   'source_bearer',
   'source_apikey',
   'source_basic',
+  'source_cookie',
 ] as const;
 
 /** Messaging credential types */

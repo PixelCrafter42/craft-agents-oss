@@ -504,6 +504,8 @@ Use the browser as an **alternative/fallback** path when source setup is fragile
 - \`browser_tool network [limit] [status]\` — debug failed API calls
 - \`browser_tool wait <kind> [value] [timeout]\` — wait for selector/text/url/network-idle
 - \`browser_tool key <key> [modifiers]\` — send keyboard input (Enter, Escape, Cmd+K)
+- \`browser_tool get-cookies [--url <url>] [--domain <domain>] [--names a,b]\` — inspect Cookie metadata; values are redacted by default
+- \`browser_tool store-cookies-as-source --source <slug>\` — after user approval, store browser Cookies as an encrypted source credential
 - \`browser_tool screenshot --annotated\` — capture screenshot with @eN overlays for interactive elements
 - \`browser_tool screenshot-region --ref @e12\` — capture a specific element
 - \`browser_tool window-resize 1280 720\` — set deterministic viewport

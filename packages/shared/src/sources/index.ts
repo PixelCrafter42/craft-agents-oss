@@ -32,6 +32,19 @@ export {
   isRefreshableSource,
 } from './types.ts';
 
+export {
+  BILIBILI_COOKIE_NAMES,
+  createSourceCookieCredentialValue,
+  getCookieHeaderFromCredentialValue,
+  parseSourceCookieCredentialValue,
+} from './browser-cookie-auth.ts';
+export type {
+  BrowserCookieCredentialCookie,
+  BrowserCookiePreset,
+  SourceCookieAuthConfig,
+  SourceCookieCredentialValue,
+} from './browser-cookie-auth.ts';
+
 // Storage functions
 export {
   // Directory utilities

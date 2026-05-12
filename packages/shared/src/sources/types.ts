@@ -1,3 +1,5 @@
+import type { SourceCookieAuthConfig } from './browser-cookie-auth.ts';
+
 /**
  * Source Types
  *
@@ -24,7 +26,7 @@ export type SourceMcpAuthType = 'oauth' | 'bearer' | 'none';
 /**
  * API authentication types
  */
-export type ApiAuthType = 'bearer' | 'header' | 'query' | 'basic' | 'oauth' | 'none';
+export type ApiAuthType = 'bearer' | 'header' | 'query' | 'basic' | 'oauth' | 'browser_cookie' | 'none';
 
 /**
  * Google service types for OAuth scope selection
@@ -377,6 +379,7 @@ export interface ApiSourceConfig {
   defaultHeaders?: Record<string, string>; // Headers to include with every request
   testEndpoint?: ApiTestEndpoint; // Endpoint to use for connection testing
   renewEndpoint?: ApiRenewEndpoint; // Optional token renewal endpoint for non-OAuth sources
+  cookieAuth?: SourceCookieAuthConfig; // Browser Cookie authentication config
 
   // Google OAuth fields (used when provider is 'google')
   googleService?: GoogleService; // Predefined service for scope selection

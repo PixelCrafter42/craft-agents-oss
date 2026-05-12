@@ -14,6 +14,8 @@ import type {
   BrowserConsoleOptions,
   BrowserDownloadEntry,
   BrowserDownloadOptions,
+  BrowserGetCookiesOptions,
+  BrowserGetCookiesResult,
   BrowserInstanceSnapshot,
   BrowserKeyArgs,
   BrowserNetworkEntry,
@@ -85,6 +87,7 @@ export class NullBrowserPaneManager implements IBrowserPaneManager {
   getNetworkLogs(_id: string, _options?: BrowserNetworkOptions): BrowserNetworkEntry[] { return [] }
   async waitFor(_id: string, _args: BrowserWaitArgs): Promise<BrowserWaitResult> { return unavailable('waitFor') }
   async getDownloads(_id: string, _options?: BrowserDownloadOptions): Promise<BrowserDownloadEntry[]> { return [] }
+  async getCookies(_id: string, _options?: BrowserGetCookiesOptions): Promise<BrowserGetCookiesResult> { return unavailable('getCookies') }
   async detectSecurityChallenge(_id: string): Promise<{ detected: boolean; provider: string; signals: string[] }> {
     return { detected: false, provider: 'none', signals: [] }
   }

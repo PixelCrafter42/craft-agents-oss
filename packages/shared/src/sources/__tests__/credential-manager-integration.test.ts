@@ -16,6 +16,7 @@ import {
 } from '../credential-manager.ts';
 import type { LoadedSource, FolderSourceConfig } from '../types.ts';
 import * as credentialsModule from '../../credentials/index.ts';
+import { createSourceCookieCredentialValue } from '../browser-cookie-auth.ts';
 
 // Create a minimal mock LoadedSource for testing
 function createMockSource(overrides: Partial<FolderSourceConfig> = {}): LoadedSource {
@@ -97,6 +98,38 @@ describe('getApiCredential with multi-header sources', () => {
 
     expect(result).toBe('simple-api-key');
     expect(typeof result).toBe('string');
+
+    loadSpy.mockRestore();
+  });
+
+  test('should return Cookie header for browser_cookie source credentials', async () => {
+    const source = createMockSource({
+      api: {
+        baseUrl: 'https://www.bilibili.com/',
+        authType: 'browser_cookie',
+        cookieAuth: { preset: 'bilibili' },
+      },
+    });
+
+    const storedCredential = createSourceCookieCredentialValue({
+      cookies: [
+        { name: 'SESSDATA', value: 'sess-value', domain: '.bilibili.com', path: '/', httpOnly: true },
+        { name: 'bili_jct', value: 'csrf-value', domain: '.bilibili.com', path: '/' },
+      ],
+      preset: 'bilibili',
+      url: 'https://www.bilibili.com',
+      names: ['SESSDATA', 'bili_jct'],
+    });
+
+    const loadSpy = spyOn(credManager, 'load').mockResolvedValue({
+      value: JSON.stringify(storedCredential),
+    });
+
+    const credential = await credManager.getApiCredential(source);
+    const token = await credManager.getToken(source);
+
+    expect(credential).toBe('SESSDATA=sess-value; bili_jct=csrf-value');
+    expect(token).toBe('SESSDATA=sess-value; bili_jct=csrf-value');
 
     loadSpy.mockRestore();
   });

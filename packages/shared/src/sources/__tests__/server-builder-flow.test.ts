@@ -79,6 +79,21 @@ describe('SourceServerBuilder.buildApiConfig', () => {
     expect(config.auth?.type).toBe('none');
   });
 
+  test('should build Cookie header auth for browser_cookie type', () => {
+    const source = createMockSource({
+      api: {
+        baseUrl: 'https://www.bilibili.com/',
+        authType: 'browser_cookie',
+        cookieAuth: { preset: 'bilibili' },
+      },
+    });
+
+    const config = builder.buildApiConfig(source);
+
+    expect(config.auth?.type).toBe('header');
+    expect(config.auth?.headerName).toBe('Cookie');
+  });
+
   test('should use default headerName when not specified', () => {
     const source = createMockSource({
       api: {
@@ -246,5 +261,19 @@ describe('Full flow: Source config → ApiConfig → Headers', () => {
     const headers = buildHeaders(apiConfig.auth, 'my-simple-key');
 
     expect(headers['X-API-Key']).toBe('my-simple-key');
+  });
+
+  test('browser_cookie source injects serialized Cookie header', () => {
+    const source = createMockSource({
+      api: {
+        baseUrl: 'https://www.bilibili.com/',
+        authType: 'browser_cookie',
+      },
+    });
+
+    const apiConfig = builder.buildApiConfig(source);
+    const headers = buildHeaders(apiConfig.auth, 'SESSDATA=sess-value; bili_jct=csrf-value');
+
+    expect(headers['Cookie']).toBe('SESSDATA=sess-value; bili_jct=csrf-value');
   });
 });

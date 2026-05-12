@@ -264,6 +264,9 @@ export class SourceServerBuilder {
       case 'header':
         config.auth = { type: 'header', headerName: api.headerName || 'x-api-key' };
         break;
+      case 'browser_cookie':
+        config.auth = { type: 'header', headerName: 'Cookie' };
+        break;
       case 'query':
         config.auth = { type: 'query', queryParam: api.queryParam || 'api_key' };
         break;

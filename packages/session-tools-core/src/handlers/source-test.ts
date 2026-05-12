@@ -574,6 +574,9 @@ async function testApiConnectionWithAuth(
         headers['X-API-Key'] = token;
       }
       break;
+    case 'browser_cookie':
+      headers['Cookie'] = token;
+      break;
     case 'query':
       // Add token as query parameter
       const paramName = source.api!.queryParam || 'api_key';
@@ -1014,7 +1017,11 @@ async function checkAuthStatus(
       } else if (source.api?.authType && source.api.authType !== 'none') {
         hasWarning = true;
         lines.push('⚠ Source not authenticated');
-        lines.push('  Use source_credential_prompt to enter credentials');
+        if (source.api.authType === 'browser_cookie') {
+          lines.push('  Use browser_tool store-cookies-as-source --source ' + sourceSlug);
+        } else {
+          lines.push('  Use source_credential_prompt to enter credentials');
+        }
       } else {
         lines.push('ℹ Source does not require authentication');
       }

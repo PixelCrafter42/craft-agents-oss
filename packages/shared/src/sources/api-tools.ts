@@ -59,6 +59,15 @@ function isTokenGetter(cred: ApiCredentialSource): cred is () => Promise<string>
   return typeof cred === 'function';
 }
 
+export function redactHeadersForDebug(headers: Record<string, string>): Record<string, string> {
+  const sensitive = new Set(['authorization', 'cookie', 'set-cookie', 'x-api-key', 'api-key']);
+  const redacted: Record<string, string> = {};
+  for (const [key, value] of Object.entries(headers)) {
+    redacted[key] = sensitive.has(key.toLowerCase()) && value ? '[REDACTED]' : value;
+  }
+  return redacted;
+}
+
 /** Summarize callback type — typically agent.runMiniCompletion.bind(agent) */
 export type SummarizeCallback = (prompt: string) => Promise<string | null>;
 
@@ -255,7 +264,7 @@ export function createApiTool(
           }
         }
 
-        debug(`[api-tools] ${config.name}: headers=${JSON.stringify(fetchOptions.headers)}, bodyLength=${fetchOptions.body ? String(fetchOptions.body).length : 0}`);
+        debug(`[api-tools] ${config.name}: headers=${JSON.stringify(redactHeadersForDebug(fetchOptions.headers as Record<string, string>))}, bodyLength=${fetchOptions.body ? String(fetchOptions.body).length : 0}`);
 
         const response = await fetch(url, fetchOptions);
 

@@ -46,6 +46,30 @@ function createMockFns(): BrowserPaneFns {
     getDownloads: async () => ([
       { id: 'dl-1', timestamp: Date.now(), url: 'https://example.com/file.pdf', filename: 'file.pdf', state: 'completed', bytesReceived: 100, totalBytes: 100, mimeType: 'application/pdf' },
     ]),
+    getCookies: async () => ({
+      url: 'https://www.bilibili.com',
+      title: 'Bilibili',
+      cookies: [
+        { name: 'SESSDATA', value: 'secret-sess', domain: '.bilibili.com', path: '/', httpOnly: true, secure: true, sameSite: 'None', expires: 1770000000 },
+        { name: 'bili_jct', value: 'secret-jct', domain: '.bilibili.com', path: '/', secure: true, expires: 1770000000 },
+        { name: 'DedeUserID', value: '12345', domain: '.bilibili.com', path: '/', secure: true, expires: 1770000000 },
+        { name: 'buvid3', value: 'buvid', domain: '.bilibili.com', path: '/', secure: true, expires: 1770000000 },
+      ],
+    }),
+    getSourceCookieAuthConfig: async (sourceSlug: string) => ({
+      sourceSlug,
+      sourceName: 'Bilibili',
+      baseUrl: 'https://www.bilibili.com',
+      authType: 'browser_cookie',
+      cookieAuth: { preset: 'bilibili' },
+    }),
+    storeSourceCookieCredential: async (args) => ({
+      sourceSlug: args.sourceSlug,
+      sourceName: args.sourceName,
+      storedCookieNames: args.cookies.map((cookie) => cookie.name),
+      expiresAt: 1770000000000,
+    }),
+    requestCookieAccessApproval: async () => true,
     upload: async (_ref: string, _filePaths: string[]) => {},
     scroll: async (_dir: 'up' | 'down' | 'left' | 'right', _amount?: number) => {},
     goBack: async () => {},
@@ -127,8 +151,54 @@ describe('createBrowserTools', () => {
       expect(result.content[0].text).toContain('screenshot [--annotated|-a]')
       expect(result.content[0].text).toContain('focus [windowId]')
       expect(result.content[0].text).toContain('windows')
+      expect(result.content[0].text).toContain('get-cookies')
+      expect(result.content[0].text).toContain('store-cookies-as-source')
       expect(result.content[0].text).toContain('Array mode (JSON array input, no batch splitting/tokenization):')
       expect(result.content[0].text).not.toContain('When you are done using the browser')
+    })
+
+    it('returns redacted cookie metadata by default', async () => {
+      const result = await executeTool(tools, 'browser_tool', {
+        command: 'get-cookies --url https://www.bilibili.com --names SESSDATA,bili_jct',
+      })
+      const text = result.content[0].text
+      expect(text).toContain('"value": "***redacted***"')
+      expect(text).toContain('"SESSDATA"')
+      expect(text).not.toContain('secret-sess')
+      expect(text).not.toContain('secret-jct')
+    })
+
+    it('stores browser cookies as a source credential without revealing values', async () => {
+      const result = await executeTool(tools, 'browser_tool', {
+        command: 'store-cookies-as-source --source bilibili --preset bilibili',
+      })
+      const text = result.content[0].text
+      expect(text).toContain('"ok": true')
+      expect(text).toContain('"bilibili"')
+      expect(text).toContain('"SESSDATA"')
+      expect(text).not.toContain('secret-sess')
+      expect(text).not.toContain('secret-jct')
+    })
+
+    it('does not store source cookies when approval is denied', async () => {
+      let stored = false
+      mockFns.requestCookieAccessApproval = async () => false
+      mockFns.storeSourceCookieCredential = async (args) => {
+        stored = true
+        return {
+          sourceSlug: args.sourceSlug,
+          sourceName: args.sourceName,
+          storedCookieNames: [],
+        }
+      }
+
+      const result = await executeTool(tools, 'browser_tool', {
+        command: 'store-cookies-as-source --source bilibili --preset bilibili',
+      })
+
+      expect(result.isError).toBe(true)
+      expect(result.content[0].text).toContain('Cookie access denied by user')
+      expect(stored).toBe(false)
     })
 
     it('routes navigate command and appends release hint', async () => {

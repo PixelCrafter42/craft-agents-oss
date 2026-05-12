@@ -112,6 +112,69 @@ export interface BrowserDownloadsArgs {
   timeoutMs?: number
 }
 
+export interface BrowserCookie {
+  name: string
+  value: string
+  domain: string
+  path: string
+  httpOnly?: boolean
+  secure?: boolean
+  sameSite?: string
+  expires?: number
+}
+
+export interface BrowserGetCookiesArgs {
+  url?: string
+  domain?: string
+  names?: string[]
+}
+
+export interface BrowserGetCookiesResult {
+  url: string
+  title: string
+  cookies: BrowserCookie[]
+}
+
+export interface BrowserSourceCookieAuthConfig {
+  sourceSlug: string
+  sourceName: string
+  baseUrl?: string
+  authType?: string
+  cookieAuth?: {
+    url?: string
+    domain?: string
+    names?: string[]
+    requiredNames?: string[]
+    preset?: 'bilibili'
+  }
+}
+
+export interface BrowserStoreSourceCookieArgs {
+  sourceSlug: string
+  sourceName: string
+  cookies: BrowserCookie[]
+  url?: string
+  domain?: string
+  names: string[]
+  preset?: 'bilibili'
+}
+
+export interface BrowserStoreSourceCookieResult {
+  sourceSlug: string
+  sourceName: string
+  storedCookieNames: string[]
+  expiresAt?: number
+}
+
+export interface BrowserSensitiveCookieAccessRequest {
+  action: 'reveal_cookies' | 'store_cookies_as_source'
+  sourceSlug?: string
+  sourceName?: string
+  url?: string
+  domain?: string
+  names: string[]
+}
+
 export interface BrowserLifecycleActionResult {
   action: 'closed' | 'hidden' | 'released' | 'noop'
   requestedInstanceId?: string
@@ -140,6 +203,10 @@ export interface BrowserPaneFns {
   waitFor: (args: BrowserWaitArgs) => Promise<{ ok: true; kind: string; elapsedMs: number; detail: string }>;
   sendKey: (args: BrowserKeyArgs) => Promise<void>;
   getDownloads: (args?: BrowserDownloadsArgs) => Promise<Array<{ id: string; timestamp: number; url: string; filename: string; state: string; bytesReceived: number; totalBytes: number; mimeType: string; savePath?: string }>>;
+  getCookies: (args?: BrowserGetCookiesArgs) => Promise<BrowserGetCookiesResult>;
+  getSourceCookieAuthConfig?: (sourceSlug: string) => Promise<BrowserSourceCookieAuthConfig | null>;
+  storeSourceCookieCredential?: (args: BrowserStoreSourceCookieArgs) => Promise<BrowserStoreSourceCookieResult>;
+  requestCookieAccessApproval?: (request: BrowserSensitiveCookieAccessRequest) => Promise<boolean>;
   upload: (ref: string, filePaths: string[]) => Promise<void>;
   scroll: (direction: 'up' | 'down' | 'left' | 'right', amount?: number) => Promise<void>;
   goBack: () => Promise<void>;
@@ -220,6 +287,8 @@ Examples:
 - \`key Enter\`
 - \`key k meta\`
 - \`downloads wait 15000\`
+- \`get-cookies --url https://example.com --names SESSION,CSRF\` — inspect Cookie metadata, values redacted by default
+- \`store-cookies-as-source --source bilibili --preset bilibili\` — store approved browser Cookies as an encrypted source credential
 - \`focus [windowId]\` — focus existing browser window (no new window)
 - \`windows\` — list current browser windows and ownership state
 - \`release [windowId|all]\` — dismiss the agent control overlay when done

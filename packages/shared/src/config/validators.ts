@@ -416,12 +416,19 @@ const ApiOAuthConfigSchema = z.object({
 
 const ApiSourceConfigSchema = z.object({
   baseUrl: z.string().url(),
-  authType: z.enum(['bearer', 'header', 'query', 'basic', 'oauth', 'none']),
+  authType: z.enum(['bearer', 'header', 'query', 'basic', 'oauth', 'browser_cookie', 'none']),
   headerName: z.string().optional(),
   headerNames: z.array(z.string()).optional(),
   queryParam: z.string().optional(),
   authScheme: z.string().optional(),
   defaultHeaders: z.record(z.string(), z.string()).optional(),
+  cookieAuth: z.object({
+    url: z.string().url().optional(),
+    domain: z.string().optional(),
+    names: z.array(z.string()).optional(),
+    requiredNames: z.array(z.string()).optional(),
+    preset: z.enum(['bilibili']).optional(),
+  }).optional(),
   testEndpoint: z
     .object({
       method: z.enum(['GET', 'POST']),
