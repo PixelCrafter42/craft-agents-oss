@@ -244,29 +244,22 @@ async function handleIconCheck(
     return { lines, hasWarning };
   }
 
-  // Check if icon is a URL that can be downloaded or cached. A configured URL
-  // still counts as an icon even when caching is unavailable or fails.
-  if (source.icon && isConfiguredIconUrl(ctx, source.icon)) {
-    lines.push(`✓ Icon URL configured: ${source.icon}`);
-
-    if (!ctx.downloadSourceIcon) {
-      lines.push('ℹ Icon cache download not available in this context');
-      return { lines, hasWarning };
-    }
-
-    try {
-      const cachedPath = await ctx.downloadSourceIcon(sourceSlug, source.icon);
-      if (cachedPath) {
-        lines.push(`✓ Icon downloaded and cached`);
-        return { lines, hasWarning };
+  // Check if icon is a URL that can be downloaded
+  if (source.icon && ctx.isIconUrl && ctx.isIconUrl(source.icon)) {
+    if (ctx.downloadSourceIcon) {
+      lines.push(`ℹ Icon URL detected: ${source.icon}`);
+      try {
+        const cachedPath = await ctx.downloadSourceIcon(sourceSlug, source.icon);
+        if (cachedPath) {
+          lines.push(`✓ Icon downloaded and cached`);
+          return { lines, hasWarning };
+        }
+      } catch (e) {
+        lines.push(`⚠ Failed to download icon: ${e instanceof Error ? e.message : 'Unknown error'}`);
+        hasWarning = true;
       }
-
-      lines.push('ℹ Icon URL configured, but no cached icon was produced');
-      return { lines, hasWarning };
-    } catch (e) {
-      lines.push(`⚠ Icon URL configured, but cache download failed: ${e instanceof Error ? e.message : 'Unknown error'}`);
-      hasWarning = true;
-      return { lines, hasWarning };
+    } else {
+      lines.push(`ℹ Icon URL configured but download not available: ${source.icon}`);
     }
   }
 
@@ -317,19 +310,6 @@ function isEmoji(str: string): boolean {
   // Check if string is a single emoji (basic heuristic)
   const emojiRegex = /^[\p{Emoji}]$/u;
   return emojiRegex.test(str) || (str.length >= 2 && str.length <= 8 && /[\u{1F300}-\u{1FAD6}]/u.test(str));
-}
-
-function isConfiguredIconUrl(ctx: SessionToolContext, icon: string): boolean {
-  if (ctx.isIconUrl) {
-    return ctx.isIconUrl(icon);
-  }
-
-  try {
-    const url = new URL(icon);
-    return url.protocol === 'http:' || url.protocol === 'https:';
-  } catch {
-    return false;
-  }
 }
 
 // ============================================================
@@ -574,9 +554,6 @@ async function testApiConnectionWithAuth(
         headers['X-API-Key'] = token;
       }
       break;
-    case 'browser_cookie':
-      headers['Cookie'] = token;
-      break;
     case 'query':
       // Add token as query parameter
       const paramName = source.api!.queryParam || 'api_key';
@@ -731,46 +708,6 @@ async function testApiConnectionBasic(
   return { lines, success, hasError, error };
 }
 
-function hasHeader(headers: Record<string, string>, name: string): boolean {
-  return Object.keys(headers).some((key) => key.toLowerCase() === name.toLowerCase());
-}
-
-function toBearerHeader(token: string): string {
-  return /^Bearer\s+/i.test(token) ? token : `Bearer ${token}`;
-}
-
-async function getStoredSourceToken(
-  ctx: SessionToolContext,
-  source: SourceConfig,
-  sourceSlug: string
-): Promise<string | null> {
-  if (!ctx.credentialManager) return null;
-
-  const workspaceId = basename(ctx.workspacePath) || '';
-  const loadedSource = {
-    config: source,
-    folderPath: getSourcePath(ctx.workspacePath, sourceSlug),
-    workspaceRootPath: ctx.workspacePath,
-    workspaceId,
-  };
-
-  try {
-    const token = await ctx.credentialManager.getToken(loadedSource);
-    if (token) return token;
-  } catch {
-    // Continue to refresh below.
-  }
-
-  try {
-    const refreshed = await ctx.credentialManager.refresh(loadedSource);
-    if (refreshed) return refreshed;
-  } catch {
-    // Missing or unrefreshable credentials are handled by the connection result.
-  }
-
-  return null;
-}
-
 async function testMcpConnection(
   ctx: SessionToolContext,
   source: SourceConfig,
@@ -837,8 +774,9 @@ async function testMcpConnection(
       lines.push(`ℹ Testing MCP server: ${source.mcp.url}`);
       try {
         // Merge static headers with credential-store headers (if headerNames configured)
-        const headers: Record<string, string> = source.mcp.headers ? { ...source.mcp.headers } : {};
-        if (source.mcp.headerNames?.length && ctx.credentialManager) {
+        let headers = source.mcp.headers ? { ...source.mcp.headers } : undefined;
+        let accessToken: string | undefined;
+        if (ctx.credentialManager) {
           const workspaceId = basename(ctx.workspacePath) || '';
           const loadedSource = {
             config: source,
@@ -846,32 +784,39 @@ async function testMcpConnection(
             workspaceRootPath: ctx.workspacePath,
             workspaceId,
           };
-          try {
-            const rawCred = await ctx.credentialManager.getToken(loadedSource);
-            if (rawCred) {
-              const parsed = JSON.parse(rawCred) as Record<string, string>;
-              Object.assign(headers, parsed);
+
+          if (source.mcp.headerNames?.length) {
+            // Multi-header credential — credential value is JSON keyed by header name.
+            try {
+              const rawCred = await ctx.credentialManager.getToken(loadedSource);
+              if (rawCred) {
+                const parsed = JSON.parse(rawCred) as Record<string, string>;
+                headers = { ...headers, ...parsed };
+              }
+            } catch {
+              // Not JSON or no credential — continue without credential headers
             }
-          } catch {
-            // Not JSON or no credential — continue without credential headers
+          } else if (source.mcp.authType === 'oauth' || source.mcp.authType === 'bearer') {
+            // OAuth / bearer single-token path — mirror the runtime so the probe
+            // sends an Authorization header. Cached token first, refresh fallback
+            // only on miss (matches checkAuthStatus and TokenRefreshManager).
+            try {
+              accessToken =
+                (await ctx.credentialManager.getToken(loadedSource)) ??
+                (await ctx.credentialManager.refresh(loadedSource)) ??
+                undefined;
+            } catch {
+              // Token resolution failed — fall through; the probe will surface
+              // the resulting `needsAuth` / 401 the same way it always has.
+            }
           }
         }
-
-        if (
-          (source.mcp.authType === 'oauth' || source.mcp.authType === 'bearer') &&
-          !hasHeader(headers, 'authorization')
-        ) {
-          const token = await getStoredSourceToken(ctx, source, sourceSlug);
-          if (token) {
-            headers.Authorization = toBearerHeader(token);
-          }
-        }
-
         const result = await ctx.validateMcpConnection({
           url: source.mcp.url,
           transport: source.mcp.transport,
           authType: source.mcp.authType,
-          headers: Object.keys(headers).length > 0 ? headers : undefined,
+          headers,
+          accessToken,
         });
         if (result.success) {
           success = true;
@@ -1017,11 +962,7 @@ async function checkAuthStatus(
       } else if (source.api?.authType && source.api.authType !== 'none') {
         hasWarning = true;
         lines.push('⚠ Source not authenticated');
-        if (source.api.authType === 'browser_cookie') {
-          lines.push('  Use browser_tool store-cookies-as-source --source ' + sourceSlug);
-        } else {
-          lines.push('  Use source_credential_prompt to enter credentials');
-        }
+        lines.push('  Use source_credential_prompt to enter credentials');
       } else {
         lines.push('ℹ Source does not require authentication');
       }
