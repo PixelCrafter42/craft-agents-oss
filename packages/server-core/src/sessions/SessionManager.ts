@@ -197,7 +197,7 @@ function getPiTurnAnchorsPath(sessionPath: string): string {
   return join(sessionPath, 'meta', PI_TURN_ANCHORS_FILE)
 }
 
-async function loadPiTurnAnchors(sessionPath: string): Promise<PiTurnAnchorsIndex> {
+export async function loadPiTurnAnchors(sessionPath: string): Promise<PiTurnAnchorsIndex> {
   const filePath = getPiTurnAnchorsPath(sessionPath)
   try {
     const raw = await readFile(filePath, 'utf-8')
@@ -227,7 +227,7 @@ async function getPiTurnAnchor(sessionPath: string, messageId: string): Promise<
   return index.anchors[messageId]
 }
 
-async function savePiTurnAnchor(sessionPath: string, messageId: string, anchorId: string): Promise<void> {
+export async function savePiTurnAnchor(sessionPath: string, messageId: string, anchorId: string): Promise<void> {
   if (!messageId || !anchorId) return
 
   const index = await loadPiTurnAnchors(sessionPath)
@@ -238,6 +238,39 @@ async function savePiTurnAnchor(sessionPath: string, messageId: string, anchorId
   const filePath = getPiTurnAnchorsPath(sessionPath)
   await mkdir(join(sessionPath, 'meta'), { recursive: true })
   await writeFile(filePath, JSON.stringify(index), 'utf-8')
+}
+
+/**
+ * Copy Pi turn anchors from the source session into the branch session,
+ * filtered to the messages actually carried into the branch.
+ *
+ * Without this, branching a branch is silently lossy: the source branch's
+ * sidecar contains no anchors for messages copied from its own parent, so a
+ * downstream branch falls back to "full-history fork" — discarding the
+ * branch cutoff and producing a session whose visible history doesn't match
+ * what the LLM sees. See craft-agents-oss#782.
+ */
+export async function copyPiTurnAnchorsForBranch(
+  sourceSessionPath: string,
+  branchSessionPath: string,
+  branchedMessageIds: Iterable<string>,
+): Promise<void> {
+  const index = await loadPiTurnAnchors(sourceSessionPath)
+  if (Object.keys(index.anchors).length === 0) return
+  const idSet = new Set(branchedMessageIds)
+  const filtered: Record<string, string> = {}
+  for (const [messageId, anchor] of Object.entries(index.anchors)) {
+    if (idSet.has(messageId)) {
+      filtered[messageId] = anchor
+    }
+  }
+  if (Object.keys(filtered).length === 0) return
+  await mkdir(join(branchSessionPath, 'meta'), { recursive: true })
+  await writeFile(
+    getPiTurnAnchorsPath(branchSessionPath),
+    JSON.stringify({ version: PI_TURN_ANCHORS_VERSION, anchors: filtered }),
+    'utf-8',
+  )
 }
 
 const CLAUDE_TURN_ANCHORS_VERSION = 1
@@ -369,8 +402,34 @@ async function buildServersFromSources(
     return undefined
   }
 
+  // Per-request credential getter for non-OAuth / non-renew API sources
+  // (bearer / header / query / basic auth).
+  //
+  // Without this, the in-process API tool captures the credential as a static
+  // string at build time and keeps using it forever — meaning a fresh JWT
+  // entered via source_credential_prompt is ignored until session restart.
+  //
+  // With this getter, every API call reads the latest credential from the
+  // vault, so credential updates take effect on the next call. OAuth and
+  // renew-endpoint sources have their own refresh logic via TokenRefreshManager
+  // and are skipped here.
+  const getCredentialForSource = (source: LoadedSource) => {
+    if (source.config.type !== 'api') return undefined
+    if (source.config.api?.authType === 'none') return undefined
+    if (isApiOAuthProvider(source.config.provider)) return undefined
+    if (source.config.api?.authType === 'oauth') return undefined
+    if (hasRenewEndpoint(source)) return undefined
+    return async () => credManager.getApiCredential(source)
+  }
+
   // Pass sessionPath to enable saving large API responses to session folder
-  const result = await serverBuilder.buildAll(sourcesWithCreds, getTokenForSource, sessionPath, summarize)
+  const result = await serverBuilder.buildAll(
+    sourcesWithCreds,
+    getTokenForSource,
+    sessionPath,
+    summarize,
+    getCredentialForSource,
+  )
   span.mark('servers.built')
   span.setMetadata('mcpCount', Object.keys(result.mcpServers).length)
   span.setMetadata('apiCount', Object.keys(result.apiServers).length)
@@ -871,6 +930,58 @@ interface ManagedSession {
   // Whether the previous turn was interrupted (for context injection on next message).
   // Ephemeral — not persisted to disk. Cleared after one-shot injection.
   wasInterrupted?: boolean
+  /**
+   * Runtime-only: Pi SDK message id → Craft assistant message id.
+   * Populated when a `text_complete` arrives carrying `sdkMessageId`, and read
+   * when the follow-up `pi_turn_anchor` event arrives (deferred by one microtask
+   * so the SDK's session-manager has updated its leaf — see craft-agents-oss#782).
+   * Capped at PI_SDK_MESSAGE_ID_CACHE_LIMIT to bound memory in long sessions.
+   */
+  piSdkMessageToCraftMessage?: Map<string, string>
+  // Source-activation auto-retry (craft-agents-oss#804). When a source activates
+  // mid-turn, we re-send the original message with a "[<slug> activated]" suffix
+  // after a short delay. The pending slot lets `sendMessage` dedup a duplicate
+  // RPC from a legacy renderer that still ships the client-side auto_retry.
+  autoRetryTimer?: ReturnType<typeof setTimeout>
+  autoRetryPending?: {
+    content: string
+    deadlineMs: number
+    /** True after the first matching sendMessage consumes the slot; later matches drop. */
+    committed: boolean
+  }
+}
+
+const PI_SDK_MESSAGE_ID_CACHE_LIMIT = 256
+
+export interface AutoRetryPendingHost {
+  autoRetryPending?: {
+    content: string
+    deadlineMs: number
+    committed: boolean
+  }
+}
+
+export function claimAutoRetryPending(
+  host: AutoRetryPendingHost,
+  message: string,
+  nowMs = Date.now(),
+): 'send' | 'drop' {
+  const pending = host.autoRetryPending
+  if (pending && message === pending.content) {
+    if (nowMs < pending.deadlineMs) {
+      if (pending.committed) return 'drop'
+      pending.committed = true
+      return 'send'
+    }
+    host.autoRetryPending = undefined
+    return 'send'
+  }
+
+  if (pending && nowMs >= pending.deadlineMs) {
+    host.autoRetryPending = undefined
+  }
+
+  return 'send'
 }
 
 /**
@@ -2332,6 +2443,7 @@ export class SessionManager implements ISessionManager {
       branchFromSessionPath?: string
       branchFromSdkCwd?: string
       branchFromSdkTurnId?: string
+      sourceProvider?: 'anthropic' | 'pi'
     } | undefined
 
     if (options?.branchFromSessionId || options?.branchFromMessageId) {
@@ -2495,6 +2607,7 @@ export class SessionManager implements ISessionManager {
         branchFromSessionPath,
         branchFromSdkCwd,
         branchFromSdkTurnId,
+        sourceProvider: sourceBackendContext.provider,
       }
 
       sessionLog.info('Branch validation succeeded', {
@@ -2556,6 +2669,29 @@ export class SessionManager implements ISessionManager {
         delete branchedStored.branchFromSdkTurnId
       }
       await saveStoredSession(branchedStored)
+
+      // Propagate the Pi turn-anchor sidecar into the branch so a downstream
+      // branch can still resolve anchors for messages copied here from the
+      // source. Without this step, branch-of-branch silently falls back to
+      // full-history fork — see craft-agents-oss#782.
+      if (
+        validatedBranch.branchContextStrategy === 'sdk-fork' &&
+        validatedBranch.sourceProvider === 'pi'
+      ) {
+        try {
+          await copyPiTurnAnchorsForBranch(
+            sourceDir,
+            branchDir,
+            branchedStored.messages.map((m) => m.id),
+          )
+        } catch (err) {
+          sessionLog.warn('Failed to copy Pi turn-anchors sidecar to branch', {
+            err,
+            sourceSessionId: validatedBranch.sourceSessionId,
+            branchSessionId: storedSession.id,
+          })
+        }
+      }
     }
 
     // Resolve connection/provider/auth/model using the provider-agnostic backend resolver.
@@ -2616,6 +2752,12 @@ export class SessionManager implements ISessionManager {
             workspaceRootPath,
             sessionId: storedSession.id,
             deleteFromRuntimeSessions: (id) => {
+              const m = this.sessions.get(id)
+              if (m?.autoRetryTimer) {
+                clearTimeout(m.autoRetryTimer)
+                m.autoRetryTimer = undefined
+              }
+              if (m) m.autoRetryPending = undefined
               this.sessions.delete(id)
             },
             deleteStoredSession,
@@ -4000,10 +4142,10 @@ export class SessionManager implements ISessionManager {
           // Claude SDK freezes mcpServers at query() start; Pi only picks up new proxy
           // tool defs on the next handlePrompt (`toolsChanged` flag in pi-agent-server).
           // Mark a pending restart on the agent — ClaudeAgent/PiAgent consume it after
-          // the next tool_result, yield source_activated, and forceAbort. The renderer's
-          // auto_retry effect then resends the original user message with a
-          // "[{slug} activated]" suffix — landing in a fresh turn with tools live.
-          // Same machinery as the tool-call-error auto-retry path.
+          // the next tool_result, yield source_activated, and forceAbort. The
+          // `source_activated` handler in this class then schedules a server-side
+          // resend of the original user message with a "[{slug} activated]" suffix —
+          // landing in a fresh turn with tools live (craft-agents-oss#804).
           const userMessage = managed.agent?.getCurrentTurnUserMessage?.() ?? ''
           if (userMessage) {
             managed.agent?.setPendingSourceActivationRestart({ sourceSlug, userMessage })
@@ -5195,6 +5337,13 @@ export class SessionManager implements ISessionManager {
       })
     }
 
+    // Cancel any pending source-activation auto-retry timer (craft-agents-oss#804).
+    if (managed.autoRetryTimer) {
+      clearTimeout(managed.autoRetryTimer)
+      managed.autoRetryTimer = undefined
+    }
+    managed.autoRetryPending = undefined
+
     this.sessions.delete(sessionId)
 
     // Clean up session metadata in AutomationSystem (prevents memory leak)
@@ -5311,6 +5460,16 @@ export class SessionManager implements ISessionManager {
     const managed = this.sessions.get(sessionId)
     if (!managed) {
       throw new Error(`Session ${sessionId} not found`)
+    }
+
+    // Source-activation auto-retry dedup (craft-agents-oss#804). When the server
+    // has just scheduled or committed a "[<slug> activated]" retry, drop a matching
+    // duplicate that arrives from a legacy renderer still running the client-side
+    // auto_retry. The first matching caller wins (server timer or legacy RPC,
+    // whichever arrives first), subsequent matching calls within the deadline drop.
+    if (claimAutoRetryPending(managed, message) === 'drop') {
+      sessionLog.info(`sendMessage: dropped duplicate source-activation retry for ${sessionId}`)
+      return
     }
 
     // Clear any pending plan execution state when a new user message is sent.
@@ -6707,13 +6866,22 @@ export class SessionManager implements ISessionManager {
             }
           }
 
-          // Pi branch-cutoff support: persist provider-native turn anchor in session sidecar.
-          // Keeps session.jsonl schema unchanged while enabling strict branch cutoffs later.
-          if (event.sdkTurnAnchor) {
-            try {
-              await savePiTurnAnchor(sessionPath, assistantMessage.id, event.sdkTurnAnchor)
-            } catch (error) {
-              sessionLog.warn(`Failed to persist Pi turn anchor for session ${sessionId}:`, error)
+          // Pi branch-cutoff support: remember the SDK message id → Craft
+          // assistant message id mapping. The actual anchor arrives as a
+          // separate `pi_turn_anchor` event one microtask later — the SDK
+          // updates its leaf only AFTER firing message_end (see #782).
+          if (event.sdkMessageId) {
+            let cache = managed.piSdkMessageToCraftMessage
+            if (!cache) {
+              cache = new Map()
+              managed.piSdkMessageToCraftMessage = cache
+            }
+            cache.set(event.sdkMessageId, assistantMessage.id)
+            // Prune oldest entries when over the cap. Map preserves insertion
+            // order, so the first key is the oldest.
+            if (cache.size > PI_SDK_MESSAGE_ID_CACHE_LIMIT) {
+              const oldest = cache.keys().next().value
+              if (oldest !== undefined) cache.delete(oldest)
             }
           }
         }
@@ -6722,6 +6890,27 @@ export class SessionManager implements ISessionManager {
 
         // Persist session after complete message to prevent data loss on quit
         this.persistSession(managed)
+        break
+      }
+
+      case 'pi_turn_anchor': {
+        // Follow-up to a `text_complete` from the Pi backend, carrying the
+        // correct leaf id captured AFTER the SDK appended its assistant entry
+        // (the synchronous `message_end` listener could not see it — #782).
+        // Look up the Craft assistant message id by SDK message id and
+        // persist the anchor to the sidecar.
+        const cache = managed.piSdkMessageToCraftMessage
+        const craftMessageId = cache?.get(event.sdkMessageId)
+        if (!craftMessageId) {
+          sessionLog.debug(`pi_turn_anchor for unknown sdkMessageId=${event.sdkMessageId}; ignoring`)
+          break
+        }
+        const sessionPath = getSessionStoragePath(managed.workspace.rootPath, sessionId)
+        try {
+          await savePiTurnAnchor(sessionPath, craftMessageId, event.sdkTurnAnchor)
+        } catch (error) {
+          sessionLog.warn(`Failed to persist Pi turn anchor for session ${sessionId}:`, error)
+        }
         break
       }
 
@@ -7173,16 +7362,64 @@ export class SessionManager implements ISessionManager {
         }, workspaceId)
         break
 
-      case 'source_activated':
-        // A source was auto-activated mid-turn, forward to renderer for auto-retry
-        sessionLog.info(`Source "${event.sourceSlug}" activated, notifying renderer for auto-retry`)
+      case 'source_activated': {
+        // A source was auto-activated mid-turn. The server schedules a re-send of the
+        // original message with a "[<slug> activated]" suffix so headless deployments
+        // (WebUI, docker server) chain activations the same way the renderer used to.
+        // The renderer still receives the event to render activation feedback, but no
+        // longer fires its own auto_retry (see processor.ts).
+        sessionLog.info(`Source "${event.sourceSlug}" activated for session ${sessionId}, scheduling auto-retry`)
+
         this.sendEvent({
           type: 'source_activated',
           sessionId,
           sourceSlug: event.sourceSlug,
           originalMessage: event.originalMessage,
         }, workspaceId)
+
+        if (!managed) break
+
+        const originalMessage = event.originalMessage ?? ''
+        if (!originalMessage.trim()) {
+          sessionLog.warn(`Source "${event.sourceSlug}" activated for session ${sessionId}, but originalMessage was empty; skipping auto-retry`)
+          break
+        }
+
+        const messageWithSuffix = `${originalMessage}\n\n[${event.sourceSlug} activated]`
+        const messageCountAtSchedule = managed.messages.length
+
+        // Stash the retry payload so a duplicate sendMessage from a legacy renderer
+        // (mixed-version rollout: new server + v0.9.5 Electron client) gets deduped.
+        // 2s window covers WS latency tail on flaky mobile / proxy links.
+        managed.autoRetryPending = {
+          content: messageWithSuffix,
+          deadlineMs: Date.now() + 2000,
+          committed: false,
+        }
+
+        if (managed.autoRetryTimer) clearTimeout(managed.autoRetryTimer)
+        managed.autoRetryTimer = setTimeout(() => {
+          const current = this.sessions.get(sessionId)
+          if (!current) return
+          current.autoRetryTimer = undefined
+
+          // If a user follow-up arrived in the 100ms window, skip — they preempted us.
+          if (current.messages.length > messageCountAtSchedule) {
+            sessionLog.info(`Auto-retry skipped for ${sessionId}: follow-up message arrived first`)
+            current.autoRetryPending = undefined
+            return
+          }
+
+          // Note: do NOT clear autoRetryPending here — sendMessage() needs to see it
+          // so a legacy renderer's duplicate RPC arriving ~50ms later gets dropped.
+          // The pending slot is cleared by the deadline check in sendMessage, by the
+          // next matching sendMessage that drops as a duplicate, or by session deletion.
+          this.sendMessage(sessionId, messageWithSuffix).catch(err => {
+            sessionLog.error(`Auto-retry sendMessage failed for ${sessionId}:`, err)
+          })
+        }, 100)
         break
+      }
 
       case 'complete':
         // Complete event from CraftAgent - accumulate usage from this turn
