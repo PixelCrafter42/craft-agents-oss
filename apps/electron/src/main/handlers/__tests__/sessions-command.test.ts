@@ -15,6 +15,12 @@ function createServer(handlers: Map<string, HandlerFn>): RpcServer {
     async invokeClient() {
       return null
     },
+    hasClientCapability() {
+      return false
+    },
+    findClientsWithCapability() {
+      return []
+    },
   }
 }
 
