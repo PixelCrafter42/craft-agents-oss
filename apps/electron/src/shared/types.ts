@@ -689,6 +689,7 @@ export interface ElectronAPI {
   onWhatsAppEvent(callback: (payload: { workspaceId: string; event: WhatsAppUiEvent }) => void): () => void
   // Weixin (subprocess-based openclaw adapter)
   startWeixinConnect(): Promise<{ success: boolean }>
+  submitWeixinVerifyCode(code: string): Promise<{ success: boolean }>
   onWeixinEvent(callback: (payload: { workspaceId: string; event: WeixinUiEvent }) => void): () => void
   // Messaging access control (Phase 3)
   getMessagingPlatformOwners(platform: string): Promise<MessagingPlatformOwnerInfo[]>
@@ -760,6 +761,7 @@ export type WhatsAppUiEvent =
 /** Event payloads broadcast from the Weixin subprocess to the UI. */
 export type WeixinUiEvent =
   | { type: 'qr'; qr: string }
+  | { type: 'verify_code_required'; retry?: boolean; message?: string }
   | { type: 'connected'; accountId?: string; userId?: string; name?: string }
   | { type: 'disconnected'; reason?: string }
   | { type: 'unavailable'; reason: string; message: string }

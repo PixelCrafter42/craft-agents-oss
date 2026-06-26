@@ -10,6 +10,7 @@ import type { Workspace, WorkspaceInfo, ActiveSessionInfo } from '@craft-agent/c
 import type { StoredAttachment, AnnotationV1 } from '@craft-agent/core/types'
 import type { PermissionMode } from '@craft-agent/shared/agent/mode-types'
 import type { ThinkingLevel } from '@craft-agent/shared/agent/thinking-levels'
+import type { AutomationMessagingTarget } from '@craft-agent/shared/automations'
 import type { AuthResult } from '@craft-agent/shared/agent'
 import type {
   Session,
@@ -233,14 +234,19 @@ export interface ISessionManager {
 
   /**
    * Install a callback invoked from `executePromptAutomation` after a session
-   * is created when the matcher declared `telegramTopic`. Wired by the
+   * is created when the matcher declared messaging routing. Wired by the
    * messaging-gateway bootstrap so the SessionManager doesn't need to import
    * the messaging package (avoids a circular package-level import).
    *
    * The callback should be best-effort: failures must not block the session.
    */
   setAutomationBinder?(
-    fn: (input: { workspaceId: string; sessionId: string; topicName: string }) => Promise<void>,
+    fn: (input: {
+      workspaceId: string
+      sessionId: string
+      topicName?: string
+      messagingTarget?: AutomationMessagingTarget
+    }) => Promise<void>,
   ): void
 }
 
@@ -268,4 +274,6 @@ export interface ExecutePromptAutomationInput {
    * (created on first use). Silently ignored when prerequisites aren't met.
    */
   telegramTopic?: string
+  /** Output-only messaging target for the spawned session. */
+  messagingTarget?: AutomationMessagingTarget
 }

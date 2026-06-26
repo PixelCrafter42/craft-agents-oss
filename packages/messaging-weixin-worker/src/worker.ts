@@ -37,14 +37,22 @@ const WORKER_GIT_SHA =
 
 const FIXED_BASE_URL = 'https://ilinkai.weixin.qq.com'
 const DEFAULT_ILINK_BOT_TYPE = '3'
-const GET_QRCODE_TIMEOUT_MS = 5_000
+const GET_QRCODE_TIMEOUT_MS = 10_000
 const QR_LONG_POLL_TIMEOUT_MS = 35_000
 const LOGIN_TTL_MS = 5 * 60_000
 const LOGIN_TIMEOUT_MS = 480_000
 const MAX_QR_REFRESH_COUNT = 3
+const WEIXIN_ILINK_APP_ID = 'bot'
+const UPSTREAM_WEIXIN_PROTOCOL_VERSION = '2.4.6'
+const WEIXIN_ILINK_CLIENT_VERSION = buildClientVersion(UPSTREAM_WEIXIN_PROTOCOL_VERSION)
+const DEFAULT_BOT_AGENT = 'CraftAgent/1.0'
 
 type WeixinSdk = typeof import('weixin-agent-sdk')
 type WeixinBot = InstanceType<WeixinSdk['Bot']>
+type FetchInput = Parameters<typeof fetch>[0]
+type FetchInit = NonNullable<Parameters<typeof fetch>[1]>
+type FetchHeaders = FetchInit['headers']
+type FetchBody = FetchInit['body']
 
 interface AccountData {
   token?: string
@@ -57,6 +65,8 @@ interface SessionState {
   stateDir: string
   accountId: string
   userId: string
+  baseUrl: string
+  token?: string
   bot: WeixinBot
   abortController: AbortController
   monitor: Promise<void>
@@ -67,8 +77,18 @@ interface QrResponse {
   qrcode_img_content: string
 }
 
+type OutgoingMediaType = 'image' | 'video' | 'file'
+
 interface QrStatusResponse {
-  status: 'wait' | 'scaned' | 'confirmed' | 'expired' | 'scaned_but_redirect'
+  status:
+    | 'wait'
+    | 'scaned'
+    | 'confirmed'
+    | 'expired'
+    | 'scaned_but_redirect'
+    | 'need_verifycode'
+    | 'verify_code_blocked'
+    | 'binded_redirect'
   bot_token?: string
   ilink_bot_id?: string
   baseurl?: string
@@ -83,6 +103,8 @@ interface LoginResult {
 
 let session: SessionState | null = null
 let stdinBuffer = ''
+let pendingVerifyCode: ((code: string) => void) | null = null
+let fetchCompatibilityPatchInstalled = false
 
 function emit(event: WorkerEvent): void {
   process.stdout.write(encodeMessage(event))
@@ -97,6 +119,14 @@ function ensureNode22(): void {
   if (!Number.isFinite(major) || major < 22) {
     throw new Error(`Weixin connector requires Node.js >=22; current ${process.versions.node}`)
   }
+}
+
+function buildClientVersion(version: string): number {
+  const [major = 0, minor = 0, patch = 0] = version
+    .split('.')
+    .map((part) => Number.parseInt(part, 10))
+    .map((part) => (Number.isFinite(part) ? part : 0))
+  return ((major & 0xff) << 16) | ((minor & 0xff) << 8) | (patch & 0xff)
 }
 
 function normalizeAccountId(raw: string): string {
@@ -151,6 +181,18 @@ function findConfiguredAccount(stateDir: string): { accountId: string; data: Acc
   return null
 }
 
+function listLocalBotTokens(stateDir: string): string[] {
+  const accountIds = listAccountIds(stateDir)
+  const tokens: string[] = []
+  for (let i = accountIds.length - 1; i >= 0 && tokens.length < 10; i -= 1) {
+    const accountId = accountIds[i]
+    if (!accountId) continue
+    const token = loadAccount(stateDir, accountId)?.token?.trim()
+    if (token) tokens.push(token)
+  }
+  return tokens
+}
+
 function saveAccount(
   stateDir: string,
   rawAccountId: string,
@@ -175,9 +217,153 @@ function saveAccount(
   return accountId
 }
 
-function buildHeaders(): Record<string, string> {
+function buildCommonHeaders(): Record<string, string> {
   return {
+    'iLink-App-Id': WEIXIN_ILINK_APP_ID,
+    'iLink-App-ClientVersion': String(WEIXIN_ILINK_CLIENT_VERSION),
+  }
+}
+
+function buildHeaders(token?: string): Record<string, string> {
+  const headers: Record<string, string> = {
+    ...buildCommonHeaders(),
     'Content-Type': 'application/json',
+  }
+  if (token?.trim()) headers.Authorization = `Bearer ${token.trim()}`
+  return headers
+}
+
+function normalizeFetchHeaders(headers: FetchHeaders | undefined, token?: string): Headers {
+  const normalized = new Headers(headers)
+  // fetch sets Content-Length itself; a stale caller-supplied value breaks the
+  // request once `withBaseInfo` rewrites the body.
+  normalized.delete('Content-Length')
+  normalized.delete('content-length')
+  // Apply the standard weixin headers as defaults, never clobbering values the
+  // caller already set. Single source of truth: buildHeaders.
+  for (const [key, value] of Object.entries(buildHeaders(token))) {
+    if (!normalized.has(key)) normalized.set(key, value)
+  }
+  return normalized
+}
+
+function withBaseInfo(body: FetchBody | null | undefined): FetchBody | null | undefined {
+  if (typeof body !== 'string') return body
+  try {
+    const parsed = JSON.parse(body) as { base_info?: Record<string, unknown> }
+    parsed.base_info = {
+      channel_version: UPSTREAM_WEIXIN_PROTOCOL_VERSION,
+      bot_agent: DEFAULT_BOT_AGENT,
+      ...parsed.base_info,
+    }
+    return JSON.stringify(parsed)
+  } catch {
+    return body
+  }
+}
+
+function classifyFetchError(err: unknown): { type: string; description: string; code?: string } {
+  if (err instanceof Error && err.name === 'AbortError') {
+    return { type: 'timeout', description: 'request timeout' }
+  }
+  const cause = (err as { cause?: unknown }).cause
+  const causeCode =
+    cause && typeof cause === 'object' && 'code' in cause
+      ? String((cause as { code?: unknown }).code ?? '')
+      : ''
+  const causeText = `${String(cause ?? err ?? '')} ${causeCode}`
+  if (/ENOTFOUND|EAI_AGAIN|getaddrinfo/i.test(causeText)) {
+    return { type: 'dns', description: 'DNS resolution failed', code: causeCode || undefined }
+  }
+  if (/ECONNREFUSED/i.test(causeText)) {
+    return { type: 'tcp', description: 'TCP connection refused', code: causeCode || undefined }
+  }
+  if (/UND_ERR_CONNECT_TIMEOUT|ETIMEDOUT|ENETUNREACH|EHOSTUNREACH/i.test(causeText)) {
+    return { type: 'tcp', description: 'TCP connection timeout or unreachable', code: causeCode || undefined }
+  }
+  if (/UND_ERR_SOCKET|SSL|TLS|CERT|UNABLE_TO_VERIFY|DEPTH_ZERO/i.test(causeText)) {
+    return { type: 'tls', description: 'TLS handshake error', code: causeCode || undefined }
+  }
+  return { type: 'unknown', description: 'network request failed' }
+}
+
+function isWeixinApiUrl(raw: unknown): raw is string {
+  return typeof raw === 'string' && /\/ilink\/bot\//.test(raw)
+}
+
+function installWeixinFetchCompatibilityPatch(): void {
+  if (fetchCompatibilityPatchInstalled) return
+  fetchCompatibilityPatchInstalled = true
+  const originalFetch = globalThis.fetch.bind(globalThis)
+  globalThis.fetch = (async (input: FetchInput, init?: FetchInit): Promise<Response> => {
+    const rawUrl =
+      typeof input === 'string'
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : input.url
+    const shouldPatch = isWeixinApiUrl(rawUrl)
+    if (!shouldPatch) return originalFetch(input, init)
+
+    const nextInit: RequestInit = { ...init }
+    nextInit.headers = normalizeFetchHeaders(init?.headers)
+    nextInit.body = withBaseInfo(init?.body) as RequestInit['body']
+    try {
+      const response = await originalFetch(input, nextInit)
+      if (/\/ilink\/bot\/sendmessage(?:\?|$)/.test(rawUrl)) {
+        const raw = await response.clone().text().catch(() => '')
+        if (raw.trim()) {
+          try {
+            const parsed = JSON.parse(raw) as { ret?: number; errmsg?: string }
+            if (parsed.ret !== undefined && parsed.ret !== 0) {
+              throw new Error(`sendMessage ret=${parsed.ret} errmsg=${parsed.errmsg ?? '(none)'}`)
+            }
+          } catch (err) {
+            if (err instanceof Error && err.message.startsWith('sendMessage ret=')) throw err
+          }
+        }
+      }
+      return response
+    } catch (err) {
+      const classified = classifyFetchError(err)
+      log(
+        `Weixin fetch failed: url=${rawUrl.split('?')[0]} type=${classified.type} ` +
+          `description=${classified.description}${classified.code ? ` code=${classified.code}` : ''} error=${
+            err instanceof Error ? err.message : String(err)
+          }`,
+      )
+      throw err
+    }
+  }) as typeof fetch
+}
+
+async function requestJson<T>(params: {
+  baseUrl: string
+  endpoint: string
+  method: 'GET' | 'POST'
+  body?: unknown
+  timeoutMs: number
+  signal?: AbortSignal
+  token?: string
+}): Promise<T> {
+  const controller = new AbortController()
+  const onAbort = () => controller.abort()
+  params.signal?.addEventListener('abort', onAbort, { once: true })
+  const timer = setTimeout(() => controller.abort(), params.timeoutMs)
+  try {
+    const url = new URL(params.endpoint, params.baseUrl.endsWith('/') ? params.baseUrl : `${params.baseUrl}/`)
+    const res = await fetch(url.toString(), {
+      method: params.method,
+      headers: params.method === 'GET' ? buildCommonHeaders() : buildHeaders(params.token),
+      body: params.method === 'POST' ? JSON.stringify(params.body ?? {}) : undefined,
+      signal: controller.signal,
+    })
+    const raw = await res.text()
+    if (!res.ok) throw new Error(`${res.status}: ${raw}`)
+    return JSON.parse(raw) as T
+  } finally {
+    clearTimeout(timer)
+    params.signal?.removeEventListener('abort', onAbort)
   }
 }
 
@@ -187,30 +373,49 @@ async function getJson<T>(
   timeoutMs: number,
   signal?: AbortSignal,
 ): Promise<T> {
-  const controller = new AbortController()
-  const onAbort = () => controller.abort()
-  signal?.addEventListener('abort', onAbort, { once: true })
-  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  return requestJson<T>({ baseUrl, endpoint, method: 'GET', timeoutMs, signal })
+}
+
+async function postJson<T>(
+  baseUrl: string,
+  endpoint: string,
+  body: unknown,
+  timeoutMs: number,
+  signal?: AbortSignal,
+  token?: string,
+): Promise<T> {
+  return requestJson<T>({ baseUrl, endpoint, method: 'POST', body, timeoutMs, signal, token })
+}
+
+async function notifyConnection(
+  type: 'start' | 'stop',
+  account: { token?: string; baseUrl?: string },
+): Promise<void> {
+  const token = account.token?.trim()
+  if (!token) return
+  const endpoint = type === 'start' ? 'ilink/bot/msg/notifystart' : 'ilink/bot/msg/notifystop'
   try {
-    const url = new URL(endpoint, baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`)
-    const res = await fetch(url.toString(), {
-      method: 'GET',
-      headers: buildHeaders(),
-      signal: controller.signal,
-    })
-    const raw = await res.text()
-    if (!res.ok) throw new Error(`${res.status}: ${raw}`)
-    return JSON.parse(raw) as T
-  } finally {
-    clearTimeout(timer)
-    signal?.removeEventListener('abort', onAbort)
+    const resp = await postJson<{ ret?: number; errmsg?: string }>(
+      account.baseUrl?.trim() || FIXED_BASE_URL,
+      endpoint,
+      {},
+      10_000,
+      undefined,
+      token,
+    )
+    if (resp.ret !== undefined && resp.ret !== 0) {
+      log(`notify ${type} returned ret=${resp.ret} errmsg=${resp.errmsg ?? ''}`)
+    }
+  } catch (err) {
+    log(`notify ${type} failed:`, err instanceof Error ? err.message : String(err))
   }
 }
 
-async function fetchQr(signal: AbortSignal): Promise<QrResponse> {
-  return getJson<QrResponse>(
+async function fetchQr(stateDir: string, signal: AbortSignal): Promise<QrResponse> {
+  return postJson<QrResponse>(
     FIXED_BASE_URL,
     `ilink/bot/get_bot_qrcode?bot_type=${encodeURIComponent(DEFAULT_ILINK_BOT_TYPE)}`,
+    { local_token_list: listLocalBotTokens(stateDir) },
     GET_QRCODE_TIMEOUT_MS,
     signal,
   )
@@ -219,12 +424,15 @@ async function fetchQr(signal: AbortSignal): Promise<QrResponse> {
 async function pollQrStatus(
   baseUrl: string,
   qrcode: string,
+  verifyCode: string | undefined,
   signal: AbortSignal,
 ): Promise<QrStatusResponse> {
   try {
+    let endpoint = `ilink/bot/get_qrcode_status?qrcode=${encodeURIComponent(qrcode)}`
+    if (verifyCode) endpoint += `&verify_code=${encodeURIComponent(verifyCode)}`
     return await getJson<QrStatusResponse>(
       baseUrl,
-      `ilink/bot/get_qrcode_status?qrcode=${encodeURIComponent(qrcode)}`,
+      endpoint,
       QR_LONG_POLL_TIMEOUT_MS,
       signal,
     )
@@ -236,26 +444,79 @@ async function pollQrStatus(
   }
 }
 
+function waitForVerifyCode(retry: boolean, signal: AbortSignal): Promise<string> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new Error('Login aborted.'))
+      return
+    }
+    emit({
+      type: 'verify_code_required',
+      retry,
+      message: retry
+        ? 'The previous verification code did not match. Enter the new code shown in WeChat.'
+        : 'Enter the verification code shown in WeChat to continue connecting.',
+    })
+    const onAbort = () => {
+      pendingVerifyCode = null
+      reject(new Error('Login aborted.'))
+    }
+    pendingVerifyCode = (code) => {
+      signal.removeEventListener('abort', onAbort)
+      pendingVerifyCode = null
+      resolve(code)
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
 async function startLogin(stateDir: string, signal: AbortSignal): Promise<LoginResult> {
-  let qr = await fetchQr(signal)
+  let qr = await fetchQr(stateDir, signal)
   emit({ type: 'qr', qr: qr.qrcode_img_content })
 
   const deadline = Date.now() + LOGIN_TIMEOUT_MS
   let currentBaseUrl = FIXED_BASE_URL
   let refreshCount = 1
+  let verifyCode: string | undefined
+  let verifyRetry = false
 
   while (Date.now() < deadline && !signal.aborted) {
-    const status = await pollQrStatus(currentBaseUrl, qr.qrcode, signal)
+    const status = await pollQrStatus(currentBaseUrl, qr.qrcode, verifyCode, signal)
 
     if (status.status === 'scaned_but_redirect') {
       if (status.redirect_host) currentBaseUrl = `https://${status.redirect_host}`
+    } else if (status.status === 'scaned') {
+      verifyCode = undefined
+      verifyRetry = false
+    } else if (status.status === 'need_verifycode') {
+      verifyCode = await waitForVerifyCode(verifyRetry, signal)
+      verifyRetry = true
+      continue
+    } else if (status.status === 'verify_code_blocked') {
+      verifyCode = undefined
+      verifyRetry = false
+      refreshCount += 1
+      if (refreshCount > MAX_QR_REFRESH_COUNT) {
+        throw new Error('Login stopped: verification code was rejected too many times.')
+      }
+      qr = await fetchQr(stateDir, signal)
+      currentBaseUrl = FIXED_BASE_URL
+      emit({ type: 'qr', qr: qr.qrcode_img_content })
+    } else if (status.status === 'binded_redirect') {
+      const account = findConfiguredAccount(stateDir)
+      if (account) return { accountId: account.accountId, userId: account.data.userId! }
+      throw new Error(
+        'Weixin reports this OpenClaw client is already connected, but no local credentials were found. Disconnect WeChat and connect again.',
+      )
     } else if (status.status === 'expired') {
       refreshCount += 1
       if (refreshCount > MAX_QR_REFRESH_COUNT) {
         throw new Error('Login timed out: QR code expired too many times.')
       }
-      qr = await fetchQr(signal)
+      qr = await fetchQr(stateDir, signal)
       currentBaseUrl = FIXED_BASE_URL
+      verifyCode = undefined
+      verifyRetry = false
       emit({ type: 'qr', qr: qr.qrcode_img_content })
     } else if (status.status === 'confirmed') {
       if (!status.ilink_bot_id || !status.bot_token || !status.ilink_user_id) {
@@ -313,13 +574,17 @@ async function handleStart(stateDir: string): Promise<void> {
   emit({ type: 'ready', buildId: WORKER_BUILD_ID, gitSha: WORKER_GIT_SHA })
   mkdirSync(stateDir, { recursive: true })
   process.env.OPENCLAW_STATE_DIR = stateDir
+  installWeixinFetchCompatibilityPatch()
 
   const controller = new AbortController()
   let account = findConfiguredAccount(stateDir)
   if (!account) {
     try {
       const login = await startLogin(stateDir, controller.signal)
-      account = { accountId: login.accountId, data: { userId: login.userId } }
+      account = {
+        accountId: login.accountId,
+        data: loadAccount(stateDir, login.accountId) ?? { userId: login.userId },
+      }
     } catch (err) {
       emit({
         type: 'unavailable',
@@ -380,10 +645,13 @@ async function handleStart(stateDir: string): Promise<void> {
       stateDir,
       accountId: account.accountId,
       userId,
+      baseUrl: account.data.baseUrl?.trim() || FIXED_BASE_URL,
+      token: account.data.token?.trim() || undefined,
       bot,
       abortController: controller,
       monitor,
     }
+    void notifyConnection('start', account.data)
     emit({ type: 'connected', accountId: account.accountId, userId, name: account.accountId })
     monitor.then(
       () => {
@@ -441,11 +709,12 @@ async function handleSendFile(
   const safeName = path.basename(filename).replace(/[^\w.\-]+/g, '_') || 'attachment.bin'
   const filePath = path.join(tmpdir(), `craft-agent-weixin-${Date.now()}-${safeName}`)
   try {
-    writeFileSync(filePath, Buffer.from(dataBase64, 'base64'))
+    const data = Buffer.from(dataBase64, 'base64')
+    writeFileSync(filePath, data)
     await session.bot.sendMessage({
       text: caption,
       media: {
-        type: 'file',
+        type: inferOutgoingMediaType(filename, data),
         url: filePath,
         fileName: filename,
       },
@@ -458,12 +727,87 @@ async function handleSendFile(
   }
 }
 
+function inferOutgoingMediaType(filename: string, data: Buffer): OutgoingMediaType {
+  const ext = path.extname(filename).toLowerCase()
+  if (IMAGE_EXTENSIONS.has(ext) || hasImageMagic(data)) return 'image'
+  if (VIDEO_EXTENSIONS.has(ext) || hasVideoMagic(data)) return 'video'
+  return 'file'
+}
+
+const IMAGE_EXTENSIONS = new Set([
+  '.jpg',
+  '.jpeg',
+  '.png',
+  '.gif',
+  '.webp',
+  '.bmp',
+])
+
+const VIDEO_EXTENSIONS = new Set([
+  '.mp4',
+  '.mov',
+  '.m4v',
+  '.webm',
+  '.mkv',
+  '.avi',
+])
+
+function hasImageMagic(data: Buffer): boolean {
+  if (data.length >= 3 && data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff) return true
+  if (
+    data.length >= 8 &&
+    data[0] === 0x89 &&
+    data[1] === 0x50 &&
+    data[2] === 0x4e &&
+    data[3] === 0x47 &&
+    data[4] === 0x0d &&
+    data[5] === 0x0a &&
+    data[6] === 0x1a &&
+    data[7] === 0x0a
+  ) return true
+  if (data.length >= 6 && (data.subarray(0, 6).toString('ascii') === 'GIF87a' || data.subarray(0, 6).toString('ascii') === 'GIF89a')) {
+    return true
+  }
+  if (
+    data.length >= 12 &&
+    data.subarray(0, 4).toString('ascii') === 'RIFF' &&
+    data.subarray(8, 12).toString('ascii') === 'WEBP'
+  ) return true
+  if (data.length >= 2 && data[0] === 0x42 && data[1] === 0x4d) return true
+  return false
+}
+
+function hasVideoMagic(data: Buffer): boolean {
+  if (data.length >= 12 && data.subarray(4, 8).toString('ascii') === 'ftyp') return true
+  if (data.length >= 4 && data[0] === 0x1a && data[1] === 0x45 && data[2] === 0xdf && data[3] === 0xa3) return true
+  if (
+    data.length >= 12 &&
+    data.subarray(0, 4).toString('ascii') === 'RIFF' &&
+    data.subarray(8, 12).toString('ascii') === 'AVI '
+  ) return true
+  return false
+}
+
 async function shutdown(): Promise<void> {
   if (session) {
+    await notifyConnection('stop', { token: session.token, baseUrl: session.baseUrl })
     session.abortController.abort()
     session = null
   }
   process.exit(0)
+}
+
+function handleSubmitVerifyCode(code: string): void {
+  const normalized = code.trim()
+  if (!normalized) {
+    emit({ type: 'error', message: 'Verification code cannot be empty' })
+    return
+  }
+  if (!pendingVerifyCode) {
+    emit({ type: 'error', message: 'No Weixin verification code is currently expected' })
+    return
+  }
+  pendingVerifyCode(normalized)
 }
 
 async function handleCommand(cmd: WorkerCommand): Promise<void> {
@@ -476,6 +820,9 @@ async function handleCommand(cmd: WorkerCommand): Promise<void> {
       return
     case 'send_file':
       await handleSendFile(cmd.id, cmd.channelId, cmd.dataBase64, cmd.filename, cmd.caption)
+      return
+    case 'submit_verify_code':
+      handleSubmitVerifyCode(cmd.code)
       return
     case 'shutdown':
       await shutdown()

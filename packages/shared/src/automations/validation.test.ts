@@ -82,6 +82,61 @@ describe('validation', () => {
       expect(result.valid).toBe(true);
     });
 
+    it('should accept messagingTarget for automation-spawned sessions', () => {
+      const config = {
+        automations: {
+          SchedulerTick: [{
+            cron: '0 9 * * *',
+            messagingTarget: {
+              platform: 'weixin',
+              channelId: 'wx-user-1',
+              responseMode: 'final_only',
+            },
+            actions: [{ type: 'prompt', prompt: 'Send a morning summary' }],
+          }],
+        },
+      };
+      const result = validateAutomationsConfig(config);
+      expect(result.valid).toBe(true);
+      expect(result.config?.automations.SchedulerTick?.[0]?.messagingTarget).toEqual({
+        platform: 'weixin',
+        channelId: 'wx-user-1',
+        responseMode: 'final_only',
+      });
+    });
+
+    it('should accept platform-only messagingTarget for automatic binding resolution', () => {
+      const config = {
+        automations: {
+          SchedulerTick: [{
+            cron: '0 9 * * *',
+            messagingTarget: { platform: 'weixin' },
+            actions: [{ type: 'prompt', prompt: 'Send a morning summary' }],
+          }],
+        },
+      };
+      const result = validateAutomationsConfig(config);
+      expect(result.valid).toBe(true);
+      expect(result.config?.automations.SchedulerTick?.[0]?.messagingTarget).toEqual({
+        platform: 'weixin',
+      });
+    });
+
+    it('should reject messagingTarget definitions with no bindingId or platform', () => {
+      const config = {
+        automations: {
+          SchedulerTick: [{
+            cron: '0 9 * * *',
+            messagingTarget: { channelId: 'wx-user-1' },
+            actions: [{ type: 'prompt', prompt: 'Send a morning summary' }],
+          }],
+        },
+      };
+      const result = validateAutomationsConfig(config);
+      expect(result.valid).toBe(false);
+      expect(result.errors.some(e => e.includes('channelId requires platform'))).toBe(true);
+    });
+
     it('should accept thinkingLevel on prompt actions', () => {
       const config = {
         automations: {

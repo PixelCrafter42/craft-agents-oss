@@ -90,6 +90,7 @@ import type { Session, Workspace, FileAttachment, PermissionRequest, LoadedSourc
 import { sessionMetaMapAtom, sendToWorkspaceAtom, type SessionMeta } from "@/atoms/sessions"
 import { sourcesAtom } from "@/atoms/sources"
 import { skillsAtom } from "@/atoms/skills"
+import { setMessagingBindingsAtom, type MessagingBinding } from "@/atoms/messaging"
 import { panelStackAtom, panelCountAtom, focusedPanelIdAtom, focusedSessionIdAtom, focusNextPanelAtom, focusPrevPanelAtom, parseSessionIdFromRoute } from "@/atoms/panel-stack"
 import { type SessionStatusId, type SessionStatus, statusConfigsToSessionStatuses } from "@/config/session-status-config"
 import { useStatuses } from "@/hooks/useStatuses"
@@ -825,6 +826,36 @@ function AppShellContent({
   React.useEffect(() => {
     setSkillsAtom(skills)
   }, [skills, setSkillsAtom])
+
+  const setMessagingBindings = useSetAtom(setMessagingBindingsAtom)
+  React.useEffect(() => {
+    if (!activeWorkspaceId) {
+      setMessagingBindings([])
+      return
+    }
+
+    let cancelled = false
+    setMessagingBindings([])
+    const loadMessagingBindings = async () => {
+      try {
+        const rows = await window.electronAPI.getMessagingBindings()
+        if (!cancelled) setMessagingBindings(rows as MessagingBinding[])
+      } catch (err) {
+        console.error('[Chat] Failed to load messaging bindings:', err)
+      }
+    }
+
+    void loadMessagingBindings()
+    const off = window.electronAPI.onMessagingBindingChanged((workspaceId) => {
+      if (workspaceId === activeWorkspaceId) void loadMessagingBindings()
+    })
+
+    return () => {
+      cancelled = true
+      off()
+    }
+  }, [activeWorkspaceId, setMessagingBindings])
+
   // Automations — state, handlers, loading, subscriptions
   const activeWorkspace = workspaces.find(w => w.id === activeWorkspaceId)
 

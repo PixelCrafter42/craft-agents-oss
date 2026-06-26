@@ -420,6 +420,7 @@ export const RPC_CHANNELS = {
     /** Broadcast to UI clients: QR string, pairing code, status, unavailable, error. */
     WA_UI_EVENT: 'messaging:wa:uiEvent',
     WX_START_CONNECT: 'messaging:wx:startConnect',
+    WX_SUBMIT_VERIFY_CODE: 'messaging:wx:submitVerifyCode',
     WX_UI_EVENT: 'messaging:wx:uiEvent',
     // UI ↔ Server — Access control (per-platform owners + per-binding allow-list)
     GET_PLATFORM_OWNERS: 'messaging:access:getOwners',

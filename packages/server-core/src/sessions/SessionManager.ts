@@ -96,7 +96,7 @@ import { listLabels, loadLabelConfig } from '@craft-agent/shared/labels/storage'
 import { extractLabelId, resolveSessionLabels } from '@craft-agent/shared/labels'
 import { ensureLabelsExist } from '@craft-agent/shared/labels/crud'
 import { loadStatusConfig } from '@craft-agent/shared/statuses/storage'
-import { AutomationSystem, createPromptHistoryEntry, appendAutomationHistoryEntry, type AutomationSystemMetadataSnapshot } from '@craft-agent/shared/automations'
+import { AutomationSystem, createPromptHistoryEntry, appendAutomationHistoryEntry, type AutomationSystemMetadataSnapshot, type AutomationMessagingTarget } from '@craft-agent/shared/automations'
 import { buildBackendRuntimeSignature, buildRestartRequiredSignature, filterAttachmentsForModelInput } from './runtime-config'
 
 // Import from server-core domain utilities
@@ -1153,14 +1153,14 @@ export class SessionManager implements ISessionManager {
   /**
    * Optional binder installed by the messaging-gateway bootstrap. When set,
    * `executePromptAutomation` calls it after creating a session whose matcher
-   * declared `telegramTopic`, so the new session is bound to a Telegram forum
-   * topic in the workspace's paired supergroup. Best-effort — failures must
-   * not block the session.
+   * declared messaging routing. Best-effort — failures must not block the
+   * session.
    */
   private automationBinder?: (input: {
     workspaceId: string
     sessionId: string
-    topicName: string
+    topicName?: string
+    messagingTarget?: AutomationMessagingTarget
   }) => Promise<void>
 
   /**
@@ -1185,12 +1185,17 @@ export class SessionManager implements ISessionManager {
   }
 
   /**
-   * Install the automation→topic binder. Wired by the messaging-gateway
+   * Install the automation messaging binder. Wired by the messaging-gateway
    * bootstrap so SessionManager doesn't need to import the messaging
    * package (avoids a package-level circular dependency).
    */
   setAutomationBinder(
-    fn: (input: { workspaceId: string; sessionId: string; topicName: string }) => Promise<void>,
+    fn: (input: {
+      workspaceId: string
+      sessionId: string
+      topicName?: string
+      messagingTarget?: AutomationMessagingTarget
+    }) => Promise<void>,
   ): void {
     this.automationBinder = fn
   }
@@ -1599,6 +1604,7 @@ export class SessionManager implements ISessionManager {
                 thinkingLevel: pending.thinkingLevel,
                 automationName: pending.automationName,
                 telegramTopic: pending.telegramTopic,
+                messagingTarget: pending.messagingTarget,
               })
             )
           )
@@ -7740,6 +7746,7 @@ export class SessionManager implements ISessionManager {
       thinkingLevel,
       automationName,
       telegramTopic,
+      messagingTarget,
     } = input
 
     // Warn if llmConnection was specified but doesn't resolve
@@ -7786,21 +7793,23 @@ export class SessionManager implements ISessionManager {
     // a synthetic empty session and temporarily show "New chat".
     this.sendEvent({ type: 'session_created', sessionId: session.id }, workspaceId)
 
-    // Bind the new session to its Telegram forum topic if the matcher
-    // declared `telegramTopic`. Done before `sendMessage` so the first
-    // assistant tokens already route through the bound topic. Failure
-    // is logged inside the binder; the session continues unbound.
-    if (this.automationBinder && telegramTopic && telegramTopic.trim().length > 0) {
+    // Register automation messaging routing before `sendMessage` so the first
+    // assistant output can be delivered to the configured chat target.
+    // Failure is logged inside the binder; the session continues unbound.
+    const topicName = telegramTopic?.trim()
+    if (this.automationBinder && ((topicName && topicName.length > 0) || messagingTarget)) {
       try {
         await this.automationBinder({
           workspaceId,
           sessionId: session.id,
-          topicName: telegramTopic.trim(),
+          ...(topicName && topicName.length > 0 ? { topicName } : {}),
+          ...(messagingTarget ? { messagingTarget } : {}),
         })
       } catch (err) {
         sessionLog.warn('[Automations] automation binder threw', {
           sessionId: session.id,
-          telegramTopic,
+          telegramTopic: topicName,
+          messagingTarget,
           error: err instanceof Error ? err.message : String(err),
         })
       }

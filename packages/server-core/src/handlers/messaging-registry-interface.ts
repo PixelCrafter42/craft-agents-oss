@@ -212,6 +212,9 @@ export interface IMessagingGatewayRegistry {
   /** Start the Weixin QR connect flow. */
   startWeixinConnect(workspaceId: string): Promise<void>
 
+  /** Submit the phone-displayed Weixin verification code during QR login. */
+  submitWeixinVerifyCode(workspaceId: string, code: string): Promise<void>
+
   // -------------------------------------------------------------------------
   // Access control (Phase 2/3)
   // -------------------------------------------------------------------------

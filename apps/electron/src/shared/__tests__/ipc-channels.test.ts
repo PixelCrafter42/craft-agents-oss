@@ -168,6 +168,7 @@ const EXPECTED_CHANNELS: string[] = [
   'messaging:wa:submitPhone',
   'messaging:wa:uiEvent',
   'messaging:wx:startConnect',
+  'messaging:wx:submitVerifyCode',
   'messaging:wx:uiEvent',
   'notification:getEnabled',
   'notification:navigate',

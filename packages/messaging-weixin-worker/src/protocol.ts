@@ -11,6 +11,7 @@ export type WorkerCommand =
   | StartCommand
   | SendTextCommand
   | SendFileCommand
+  | SubmitVerifyCodeCommand
   | ShutdownCommand
 
 export interface StartCommand {
@@ -35,6 +36,11 @@ export interface SendFileCommand {
   caption?: string
 }
 
+export interface SubmitVerifyCodeCommand {
+  type: 'submit_verify_code'
+  code: string
+}
+
 export interface ShutdownCommand {
   type: 'shutdown'
 }
@@ -42,6 +48,7 @@ export interface ShutdownCommand {
 export type WorkerEvent =
   | ReadyEvent
   | QrEvent
+  | VerifyCodeRequiredEvent
   | ConnectedEvent
   | DisconnectedEvent
   | IncomingEvent
@@ -58,6 +65,12 @@ export interface ReadyEvent {
 export interface QrEvent {
   type: 'qr'
   qr: string
+}
+
+export interface VerifyCodeRequiredEvent {
+  type: 'verify_code_required'
+  retry?: boolean
+  message?: string
 }
 
 export interface ConnectedEvent {

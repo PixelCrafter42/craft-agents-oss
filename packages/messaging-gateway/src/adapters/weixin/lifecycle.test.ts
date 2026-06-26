@@ -23,6 +23,7 @@ function writeWorkerScript(kind: 'events' | 'silent'): string {
       if (msg.type === 'start') {
         emit({ type: 'ready', buildId: 'test' })
         emit({ type: 'qr', qr: 'weixin://qr' })
+        emit({ type: 'verify_code_required', retry: true, message: 'enter code' })
         emit({ type: 'connected', accountId: 'acct-1', userId: 'user-1', name: 'Alice' })
         emit({
           type: 'incoming',
@@ -111,6 +112,11 @@ describe('WeixinAdapter lifecycle', () => {
       await waitFor(() => events.some((e) => e.type === 'error') && messages.length === 1)
 
       expect(events.find((e) => e.type === 'qr')).toEqual({ type: 'qr', qr: 'weixin://qr' })
+      expect(events.find((e) => e.type === 'verify_code_required')).toEqual({
+        type: 'verify_code_required',
+        retry: true,
+        message: 'enter code',
+      })
       expect(events.find((e) => e.type === 'connected')).toEqual({
         type: 'connected',
         accountId: 'acct-1',

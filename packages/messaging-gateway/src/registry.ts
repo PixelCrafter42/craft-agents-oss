@@ -17,6 +17,7 @@ import { join } from 'node:path'
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
 import type { PushTarget } from '@craft-agent/shared/protocol'
 import type { CredentialManager } from '@craft-agent/shared/credentials'
+import type { AutomationMessagingTarget } from '@craft-agent/shared/automations'
 import type {
   ISessionManager,
   IMessagingGatewayRegistry,
@@ -108,21 +109,47 @@ export class MessagingGatewayRegistry implements IMessagingGatewayRegistry {
   constructor(private readonly opts: MessagingGatewayRegistryOptions) {
     this.log = (opts.logger ?? consoleLogger).child({ component: 'registry' })
 
-    // Install the automation→topic binder hook on the SessionManager so
-    // executePromptAutomation can route topic-bound sessions without the
+    // Install the automation messaging binder hook on the SessionManager so
+    // executePromptAutomation can route spawned sessions without the
     // SessionManager needing to import this package (avoids a package-level
     // circular dependency).
     opts.sessionManager.setAutomationBinder?.(async (input) => {
-      const result = await this.bindAutomationSession(input)
-      if (!result.ok) {
-        this.log.info('automation topic bind skipped', {
-          event: 'automation_topic_bind_skipped',
+      if (input.topicName) {
+        const result = await this.bindAutomationSession({
           workspaceId: input.workspaceId,
           sessionId: input.sessionId,
           topicName: input.topicName,
-          reason: result.reason,
-          error: result.error,
         })
+        if (!result.ok) {
+          // A configured route that fails to bind means automation output
+          // silently goes nowhere — surface it at warn so it shows up in logs.
+          this.log.warn('automation topic bind failed', {
+            event: 'automation_topic_bind_skipped',
+            workspaceId: input.workspaceId,
+            sessionId: input.sessionId,
+            topicName: input.topicName,
+            reason: result.reason,
+            error: result.error,
+          })
+        }
+      }
+
+      if (input.messagingTarget) {
+        const result = await this.bindAutomationMessagingTarget({
+          workspaceId: input.workspaceId,
+          sessionId: input.sessionId,
+          target: input.messagingTarget,
+        })
+        if (!result.ok) {
+          this.log.warn('automation messaging bind failed', {
+            event: 'automation_messaging_bind_skipped',
+            workspaceId: input.workspaceId,
+            sessionId: input.sessionId,
+            target: input.messagingTarget,
+            reason: result.reason,
+            error: result.error,
+          })
+        }
       }
     })
   }
@@ -623,6 +650,95 @@ export class MessagingGatewayRegistry implements IMessagingGatewayRegistry {
   }
 
   /**
+   * Register an output-only messaging target for an automation-spawned
+   * session. This does not mutate the persisted binding store and therefore
+   * does not change inbound routing for the target chat.
+   */
+  async bindAutomationMessagingTarget(args: {
+    workspaceId: string
+    sessionId: string
+    target: AutomationMessagingTarget
+  }): Promise<
+    | { ok: true; platform: PlatformType; channelId: string; threadId?: number; sourceBindingId?: string }
+    | {
+        ok: false
+        reason: 'invalid-target' | 'binding-not-found' | 'platform-not-configured' | 'no-adapter'
+        error?: string
+      }
+  > {
+    const state = this.workspaces.get(args.workspaceId) ?? this.bootstrapWorkspace(args.workspaceId)
+    const bindingStore = state.gateway.getBindingStore()
+
+    let platform: PlatformType | undefined
+    let channelId: string | undefined
+    let threadId: number | undefined
+    let channelName: string | undefined
+    let sourceBinding: ChannelBinding | undefined
+
+    const bindingId = args.target.bindingId?.trim()
+    if (bindingId) {
+      sourceBinding = bindingStore.findById(bindingId)
+      if (!sourceBinding) return { ok: false, reason: 'binding-not-found' }
+      platform = sourceBinding.platform
+      channelId = sourceBinding.channelId
+      threadId = sourceBinding.threadId
+      channelName = sourceBinding.channelName
+    } else {
+      const targetPlatform = args.target.platform
+      const targetChannelId = args.target.channelId?.trim()
+      if (!targetPlatform || !isKnownPlatform(targetPlatform)) {
+        return { ok: false, reason: 'invalid-target' }
+      }
+      if (targetChannelId) {
+        platform = targetPlatform
+        channelId = targetChannelId
+        threadId = args.target.threadId
+        channelName = args.target.channelName?.trim() || undefined
+        sourceBinding = bindingStore.findByChannel(platform, channelId, threadId)
+      } else {
+        sourceBinding = this.selectLatestEnabledBinding(bindingStore.getAll(), targetPlatform)
+        if (!sourceBinding) return { ok: false, reason: 'binding-not-found' }
+        platform = sourceBinding.platform
+        channelId = sourceBinding.channelId
+        threadId = sourceBinding.threadId
+        channelName = sourceBinding.channelName
+      }
+    }
+
+    const config = state.configStore.get()
+    if (!config.enabled || !config.platforms[platform]?.enabled) {
+      return { ok: false, reason: 'platform-not-configured' }
+    }
+
+    const adapter = state.gateway.getAdapter(platform)
+    if (!adapter) return { ok: false, reason: 'no-adapter' }
+
+    state.gateway.registerAutomationOutputTarget({
+      sessionId: args.sessionId,
+      platform,
+      channelId,
+      ...(threadId !== undefined ? { threadId } : {}),
+      ...(channelName ? { channelName } : {}),
+      ...(args.target.responseMode ? { responseMode: args.target.responseMode } : {}),
+      ...(sourceBinding ? { sourceBinding } : {}),
+    })
+
+    return {
+      ok: true,
+      platform,
+      channelId,
+      ...(threadId !== undefined ? { threadId } : {}),
+      ...(sourceBinding ? { sourceBindingId: sourceBinding.id } : {}),
+    }
+  }
+
+  private selectLatestEnabledBinding(bindings: ChannelBinding[], platform: PlatformType): ChannelBinding | undefined {
+    return bindings
+      .filter((binding) => binding.enabled && binding.platform === platform)
+      .sort((a, b) => b.createdAt - a.createdAt)[0]
+  }
+
+  /**
    * Drop a cached topic entry. Does NOT delete the topic in Telegram (the
    * bot has no signal that the user wants the history gone). Useful when
    * an automation is renamed/removed and the user wants the next use of
@@ -1029,6 +1145,14 @@ export class MessagingGatewayRegistry implements IMessagingGatewayRegistry {
     await this.startWeixinAdapter(workspaceId, state, { persistConfig: true, reason: 'user_connect' })
   }
 
+  async submitWeixinVerifyCode(workspaceId: string, code: string): Promise<void> {
+    const state = this.workspaces.get(workspaceId)
+    if (!state?.weixin) {
+      throw new Error('Weixin not started — call startWeixinConnect first')
+    }
+    state.weixin.submitVerifyCode(code)
+  }
+
   private async startWeixinAdapter(
     workspaceId: string,
     state: WorkspaceState,
@@ -1093,6 +1217,14 @@ export class MessagingGatewayRegistry implements IMessagingGatewayRegistry {
           connected: false,
           state: 'reconnect_required',
           lastError: 'QR scan required',
+        })
+        return
+      case 'verify_code_required':
+        this.setPlatformRuntime(workspaceId, state, 'weixin', {
+          configured: true,
+          connected: false,
+          state: 'reconnect_required',
+          lastError: event.message ?? 'Verification code required',
         })
         return
       case 'connected':

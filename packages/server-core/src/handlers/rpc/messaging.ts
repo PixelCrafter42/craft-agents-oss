@@ -121,6 +121,12 @@ export function registerMessagingHandlers(server: RpcServer, deps: HandlerDeps):
     return { success: true }
   })
 
+  server.handle(RPC_CHANNELS.messaging.WX_SUBMIT_VERIFY_CODE, async (ctx, code: string) => {
+    if (!ctx.workspaceId) throw new Error('Missing workspaceId')
+    await registry.submitWeixinVerifyCode(ctx.workspaceId, code)
+    return { success: true }
+  })
+
   // -------------------------------------------------------------------------
   // Access control
   // -------------------------------------------------------------------------

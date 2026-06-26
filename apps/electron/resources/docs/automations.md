@@ -519,6 +519,79 @@ If you haven't paired a supergroup yet:
 
 Verify by checking the supergroup row in Settings shows the group title. If automation runs fail later, `~/.craft-agent/logs/messaging-gateway.log` will show `automation_topic_bind_failed` with the underlying Telegram error.
 
+## Messaging Notifications
+
+Set `messagingTarget` on a matcher to send the output from an automation-spawned
+session to a messaging channel such as Weixin. This target is output-only: it
+does not change which session inbound messages from that chat route to.
+
+```json
+{
+  "cron": "0 9 * * *",
+  "messagingTarget": {
+    "platform": "weixin",
+    "responseMode": "final_only"
+  },
+  "actions": [
+    { "type": "prompt", "prompt": "Summarize today's priorities in 5 bullets." }
+  ]
+}
+```
+
+When only `platform` is set, Craft Agent automatically uses the latest enabled
+binding for that platform in the current workspace. You can still copy a
+specific existing messaging binding by id when you need to pin delivery to an
+exact chat:
+
+```json
+{
+  "cron": "0 9 * * *",
+  "messagingTarget": {
+    "bindingId": "existing-binding-id",
+    "responseMode": "final_only"
+  },
+  "actions": [
+    { "type": "prompt", "prompt": "Summarize today's priorities in 5 bullets." }
+  ]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `messagingTarget.bindingId` | string | Existing binding id to copy the platform, channel and thread from. |
+| `messagingTarget.platform` | `telegram`, `whatsapp`, `weixin`, or `lark` | Required when `bindingId` is omitted. If `channelId` is omitted, the latest enabled binding for this platform is used. |
+| `messagingTarget.channelId` | string | Optional platform-native channel id. Use this only when you need to target a specific channel without referencing a binding id. |
+| `messagingTarget.threadId` | number | Optional Telegram forum-topic id. Ignored by non-Telegram platforms. |
+| `messagingTarget.responseMode` | `final_only`, `progress`, or `streaming` | Defaults to `final_only` for concise notifications. |
+
+The target platform must be enabled and connected in Settings -> Messaging.
+
+### Configuring this by conversation
+
+If you create automations by asking the agent to edit this workspace's
+automation config, describe Weixin delivery like this:
+
+```text
+Create a scheduled automation for the current workspace.
+
+Trigger: every day at 09:00 in timezone Asia/Shanghai.
+
+Action: start a new automation session and run this prompt:
+"请生成今天的工作简报，控制在 5 条以内。"
+
+Delivery: send only the final assistant reply from that automation session to
+my existing Weixin messaging binding. Use output-only messagingTarget with
+platform set to weixin so Craft Agent automatically selects the current
+workspace's latest enabled Weixin binding. Do not ask me for a bindingId unless
+I explicitly need to target a different chat. Set responseMode to final_only.
+```
+
+For Weixin/WeChat notification automations, the important terms are:
+`weixin messaging binding`, `output-only messagingTarget`, `platform: weixin`,
+and `responseMode: final_only`. Avoid vague wording like "send with a WeChat
+connector"; in this app the automation output should be routed through the
+workspace's existing Weixin messaging binding.
+
 ## Complete Examples
 
 ### Daily Weather Report

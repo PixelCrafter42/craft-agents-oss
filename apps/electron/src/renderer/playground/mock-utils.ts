@@ -711,6 +711,11 @@ export const mockElectronAPI = {
     return { success: true }
   },
 
+  submitWeixinVerifyCode: async (code: string) => {
+    console.log('[Playground] submitWeixinVerifyCode called:', code)
+    return { success: true }
+  },
+
   onWeixinEvent: (
     callback: (payload: { workspaceId: string; event: WeixinUiEvent }) => void,
   ) => {

@@ -81,6 +81,24 @@ export interface WebhookAction {
 
 export type AutomationAction = PromptAction | WebhookAction
 
+export type AutomationMessagingPlatform = 'telegram' | 'whatsapp' | 'weixin' | 'lark'
+export type AutomationMessagingResponseMode = 'streaming' | 'progress' | 'final_only'
+
+export interface AutomationMessagingTarget {
+  /** Existing messaging binding to copy platform/channel/config from. */
+  bindingId?: string
+  /** Platform target. Required when bindingId is omitted. */
+  platform?: AutomationMessagingPlatform
+  /** Platform-native channel id. When omitted, the latest enabled binding for the platform is used. */
+  channelId?: string
+  /** Telegram forum-topic id. Ignored by non-Telegram platforms. */
+  threadId?: number
+  /** Display name used in logs/settings when no bindingId is provided. */
+  channelName?: string
+  /** Override how agent output is rendered. Defaults to final_only. */
+  responseMode?: AutomationMessagingResponseMode
+}
+
 // ============================================================================
 // Conditions (mirrored from packages/shared/src/automations/types.ts)
 // ============================================================================
@@ -229,6 +247,8 @@ export interface AutomationListItem {
    * supergroup (created on first use).
    */
   telegramTopic?: string
+  /** Output-only messaging target for sessions spawned by this automation. */
+  messagingTarget?: AutomationMessagingTarget
   /** Timestamp of last execution (ms since epoch) */
   lastExecutedAt?: number
 }
@@ -463,6 +483,11 @@ export function parseAutomationsConfig(json: unknown): AutomationListItem[] {
       const rawTopic = (matcher as { telegramTopic?: unknown }).telegramTopic
       const telegramTopic =
         typeof rawTopic === 'string' && rawTopic.trim().length > 0 ? rawTopic.trim() : undefined
+      const rawMessagingTarget = (matcher as { messagingTarget?: unknown }).messagingTarget
+      const messagingTarget =
+        rawMessagingTarget && typeof rawMessagingTarget === 'object'
+          ? rawMessagingTarget as AutomationMessagingTarget
+          : undefined
 
       items.push({
         id: matcher.id ?? `${eventName}-${index}`,
@@ -479,6 +504,7 @@ export function parseAutomationsConfig(json: unknown): AutomationListItem[] {
         conditions: matcher.conditions,
         actions,
         telegramTopic,
+        messagingTarget,
       })
       index++
     }

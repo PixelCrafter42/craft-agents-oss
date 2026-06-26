@@ -79,6 +79,10 @@ export class BindingStore {
     return this.bindings.filter((b) => b.sessionId === sessionId && b.enabled)
   }
 
+  findById(bindingId: string): ChannelBinding | undefined {
+    return this.bindings.find((b) => b.id === bindingId && b.enabled)
+  }
+
   getAll(): ChannelBinding[] {
     return [...this.bindings]
   }

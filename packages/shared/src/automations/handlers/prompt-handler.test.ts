@@ -169,6 +169,41 @@ describe('PromptHandler', () => {
 
       handler.dispose();
     });
+
+    it('should propagate messagingTarget from matcher to PendingPrompt', async () => {
+      const onPromptsReady = jest.fn();
+      const configProvider = createMockConfigProvider({
+        SchedulerTick: [{
+          cron: '* * * * *',
+          messagingTarget: {
+            platform: 'weixin',
+            channelId: 'wx-user-1',
+            responseMode: 'final_only',
+          },
+          actions: [{ type: 'prompt', prompt: 'Daily summary' }],
+        }],
+      });
+
+      const handler = new PromptHandler(createOptions({ onPromptsReady }), configProvider);
+      handler.subscribe(bus);
+
+      await bus.emit('SchedulerTick', {
+        workspaceId: 'test-workspace',
+        timestamp: Date.now(),
+        localTime: '2026-06-26T09:00:00+08:00',
+        utcTime: '2026-06-26T01:00:00Z',
+      });
+
+      const prompts: PendingPrompt[] = onPromptsReady.mock.calls[0]![0];
+      expect(prompts).toHaveLength(1);
+      expect(prompts[0]!.messagingTarget).toEqual({
+        platform: 'weixin',
+        channelId: 'wx-user-1',
+        responseMode: 'final_only',
+      });
+
+      handler.dispose();
+    });
   });
 
   describe('agent events are ignored', () => {

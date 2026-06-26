@@ -407,6 +407,7 @@ export const CHANNEL_MAP = {
   submitWhatsAppPhone: invoke(RPC_CHANNELS.messaging.WA_SUBMIT_PHONE),
   onWhatsAppEvent: listener(RPC_CHANNELS.messaging.WA_UI_EVENT),
   startWeixinConnect: invoke(RPC_CHANNELS.messaging.WX_START_CONNECT),
+  submitWeixinVerifyCode: invoke(RPC_CHANNELS.messaging.WX_SUBMIT_VERIFY_CODE),
   onWeixinEvent: listener(RPC_CHANNELS.messaging.WX_UI_EVENT),
 
   // Messaging access control (Phase 3)

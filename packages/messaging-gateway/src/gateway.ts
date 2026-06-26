@@ -40,7 +40,9 @@ import type {
   MessagingLogger,
   PlatformOwner,
   ChannelBinding,
+  ResponseMode,
 } from './types'
+import { normalizeBindingConfig } from './types'
 
 const MAX_MESSAGING_FILE_BYTES = 20 * 1024 * 1024
 const MESSAGING_FILE_PLATFORM_PRIORITY: PlatformType[] = ['telegram', 'weixin', 'lark', 'whatsapp']
@@ -140,6 +142,16 @@ interface PendingCompactAccept {
   createdAt: number
 }
 
+export interface AutomationOutputTarget {
+  sessionId: string
+  platform: PlatformType
+  channelId: string
+  threadId?: number
+  channelName?: string
+  responseMode?: ResponseMode
+  sourceBinding?: ChannelBinding
+}
+
 const COMPACT_ACCEPT_TTL_MS = 10 * 60 * 1000
 
 export class MessagingGateway {
@@ -152,6 +164,7 @@ export class MessagingGateway {
   private readonly renderer: Renderer
   private readonly planTokens: PlanTokenRegistry
   private readonly planMessages = new Map<string, PlanMessageRecord>()
+  private readonly automationOutputBindings = new Map<string, ChannelBinding[]>()
   /** Live permission prompts, keyed by `requestId`. See PermissionMessageRecord. */
   private readonly permissionMessages = new Map<string, PermissionMessageRecord>()
   private readonly pendingCompactAccepts = new Map<string, PendingCompactAccept>()
@@ -297,6 +310,50 @@ export class MessagingGateway {
     return this.adapters.get(platform)?.isConnected() ?? false
   }
 
+  registerAutomationOutputTarget(target: AutomationOutputTarget): ChannelBinding {
+    const responseMode = target.responseMode ?? 'final_only'
+    const config = normalizeBindingConfig(target.platform, {
+      ...target.sourceBinding?.config,
+      responseMode,
+      streamResponses: responseMode === 'streaming',
+    })
+
+    const binding: ChannelBinding = {
+      id: `automation-output:${target.sessionId}:${target.platform}:${target.channelId}:${target.threadId ?? 'default'}`,
+      workspaceId: this.workspaceId,
+      sessionId: target.sessionId,
+      platform: target.platform,
+      channelId: target.channelId,
+      ...(target.threadId !== undefined ? { threadId: target.threadId } : {}),
+      ...((target.channelName ?? target.sourceBinding?.channelName)
+        ? { channelName: (target.channelName ?? target.sourceBinding?.channelName)! }
+        : {}),
+      enabled: true,
+      createdAt: Date.now(),
+      config,
+    }
+
+    const existing = this.automationOutputBindings.get(target.sessionId) ?? []
+    const withoutSameTarget = existing.filter((b) =>
+      !(b.platform === binding.platform &&
+        b.channelId === binding.channelId &&
+        (b.threadId ?? undefined) === (binding.threadId ?? undefined)),
+    )
+    this.automationOutputBindings.set(target.sessionId, [...withoutSameTarget, binding])
+
+    this.log.info('automation output target registered', {
+      event: 'automation_output_target_registered',
+      sessionId: target.sessionId,
+      platform: target.platform,
+      channelId: target.channelId,
+      threadId: target.threadId,
+      sourceBindingId: target.sourceBinding?.id,
+      responseMode,
+    })
+
+    return binding
+  }
+
   // -------------------------------------------------------------------------
   // Lifecycle
   // -------------------------------------------------------------------------
@@ -383,7 +440,11 @@ export class MessagingGateway {
     // which is the visible side of #726.
     this.sweepStalePermissions(event)
 
-    const bindings = this.bindingStore.findBySession(event.sessionId)
+    const outputBindings = this.automationOutputBindings.get(event.sessionId) ?? []
+    const bindings = [
+      ...this.bindingStore.findBySession(event.sessionId),
+      ...outputBindings,
+    ]
     if (bindings.length === 0) return
     this.registerSessionMessagingCallbacks(event.sessionId)
 
@@ -408,6 +469,13 @@ export class MessagingGateway {
           error: err,
         })
       })
+    }
+
+    if (
+      outputBindings.length > 0 &&
+      (event.type === 'complete' || event.type === 'error' || event.type === 'typed_error')
+    ) {
+      this.automationOutputBindings.delete(event.sessionId)
     }
   }
 

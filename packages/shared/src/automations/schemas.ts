@@ -21,6 +21,46 @@ const ThinkingLevelInputSchema = z
   .transform((value) => normalizeThinkingLevel(value))
   .optional();
 
+const AutomationMessagingTargetSchema = z.object({
+  bindingId: z.string().min(1).optional(),
+  platform: z.enum(['telegram', 'whatsapp', 'weixin', 'lark']).optional(),
+  channelId: z.string().min(1).optional(),
+  threadId: z.number().int().optional(),
+  channelName: z.string().min(1).optional(),
+  responseMode: z.enum(['streaming', 'progress', 'final_only']).optional(),
+}).superRefine((data, ctx) => {
+  const hasBindingId = data.bindingId !== undefined;
+  const hasPlatform = data.platform !== undefined;
+  const hasChannelId = data.channelId !== undefined;
+
+  if (hasBindingId && (data.platform !== undefined || data.channelId !== undefined || data.threadId !== undefined || data.channelName !== undefined)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'messagingTarget with bindingId cannot also set platform, channelId, threadId, or channelName',
+      path: ['bindingId'],
+    });
+  }
+
+  if (!hasBindingId && !hasPlatform) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: hasChannelId
+        ? 'messagingTarget.channelId requires platform'
+        : 'messagingTarget must set bindingId or platform',
+      path: hasChannelId ? ['platform'] : ['bindingId'],
+    });
+    return;
+  }
+
+  if (!hasBindingId && !hasChannelId && (data.threadId !== undefined || data.channelName !== undefined)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'messagingTarget.threadId and channelName require channelId',
+      path: ['channelId'],
+    });
+  }
+});
+
 export const PromptActionSchema = z.object({
   type: z.literal('prompt'),
   prompt: z.string().min(1, 'Prompt cannot be empty'),
@@ -150,6 +190,9 @@ export const AutomationMatcherSchema = z.object({
   // Telegram forum-topic name (1–128 chars). Silently ignored at runtime when
   // no supergroup is paired or the Telegram adapter is not connected.
   telegramTopic: z.string().min(1).max(128).optional(),
+  // Output-only messaging target for automation-spawned sessions. Useful for
+  // Weixin/WhatsApp/Lark notifications without changing inbound chat routing.
+  messagingTarget: AutomationMessagingTargetSchema.optional(),
   actions: z.array(ActionDefinitionSchema).min(1, 'At least one action required'),
 });
 

@@ -101,6 +101,31 @@ export interface WebhookAction {
 
 export type AutomationAction = PromptAction | WebhookAction;
 
+export type AutomationMessagingPlatform = 'telegram' | 'whatsapp' | 'weixin' | 'lark';
+export type AutomationMessagingResponseMode = 'streaming' | 'progress' | 'final_only';
+
+/**
+ * Output-only messaging target for sessions spawned by an automation.
+ *
+ * When set, the created session's assistant output is rendered to the
+ * configured messaging channel without changing the channel's normal inbound
+ * session binding.
+ */
+export interface AutomationMessagingTarget {
+  /** Existing messaging binding to copy platform/channel/config from. */
+  bindingId?: string;
+  /** Platform target. Required when bindingId is omitted. */
+  platform?: AutomationMessagingPlatform;
+  /** Platform-native channel id. When omitted, the latest enabled binding for the platform is used. */
+  channelId?: string;
+  /** Telegram forum-topic id. Ignored by non-Telegram platforms. */
+  threadId?: number;
+  /** Display name used in logs/settings when no bindingId is provided. */
+  channelName?: string;
+  /** Override how agent output is rendered. Defaults to final_only. */
+  responseMode?: AutomationMessagingResponseMode;
+}
+
 // ============================================================================
 // Condition Types
 // ============================================================================
@@ -179,6 +204,14 @@ export interface AutomationMatcher {
    *   - The bot lacks "Manage Topics" permission in the supergroup
    */
   telegramTopic?: string;
+  /**
+   * Output-only messaging target for sessions spawned by this matcher.
+   *
+   * Unlike `telegramTopic`, this does not create or move bindings; it only
+   * routes outbound automation output to an existing or explicit messaging
+   * channel. Useful for Weixin/WhatsApp/Lark notifications.
+   */
+  messagingTarget?: AutomationMessagingTarget;
   actions: AutomationAction[];
 }
 
@@ -258,6 +291,8 @@ export interface PendingPrompt {
   thinkingLevel?: ThinkingLevel;
   /** Forum-topic name to bind the new session to (Telegram supergroup, when paired). */
   telegramTopic?: string;
+  /** Output-only messaging target for the created session. */
+  messagingTarget?: AutomationMessagingTarget;
 }
 
 export interface AutomationResult {

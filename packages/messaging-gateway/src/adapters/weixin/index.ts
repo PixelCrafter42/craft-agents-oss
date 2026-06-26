@@ -51,6 +51,7 @@ export interface WeixinConfig extends PlatformConfig {
 
 export type WeixinEvent =
   | { type: 'qr'; qr: string }
+  | { type: 'verify_code_required'; retry?: boolean; message?: string }
   | { type: 'connected'; accountId?: string; userId?: string; name?: string }
   | { type: 'disconnected'; reason?: string }
   | { type: 'unavailable'; reason: string; message: string }
@@ -249,6 +250,10 @@ export class WeixinAdapter implements PlatformAdapter {
     }
   }
 
+  submitVerifyCode(code: string): void {
+    this.sendCommand({ type: 'submit_verify_code', code })
+  }
+
   private sendCommand(cmd: WorkerCommand): void {
     if (!this.proc || !this.proc.stdin?.writable) {
       throw new Error('Weixin worker is not running')
@@ -311,6 +316,13 @@ export class WeixinAdapter implements PlatformAdapter {
         return
       case 'qr':
         this.fireEvent({ type: 'qr', qr: ev.qr })
+        return
+      case 'verify_code_required':
+        this.fireEvent({
+          type: 'verify_code_required',
+          retry: ev.retry,
+          message: ev.message,
+        })
         return
       case 'connected':
         this.connected = true

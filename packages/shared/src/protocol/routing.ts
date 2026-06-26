@@ -443,6 +443,7 @@ export const REMOTE_ELIGIBLE_CHANNELS = new Set<string>([
   RPC_CHANNELS.messaging.WA_SUBMIT_PHONE,
   RPC_CHANNELS.messaging.WA_UI_EVENT,
   RPC_CHANNELS.messaging.WX_START_CONNECT,
+  RPC_CHANNELS.messaging.WX_SUBMIT_VERIFY_CODE,
   RPC_CHANNELS.messaging.WX_UI_EVENT,
   // messaging access control — UI ↔ Server, per-platform owners + per-binding allow-list
   RPC_CHANNELS.messaging.GET_PLATFORM_OWNERS,

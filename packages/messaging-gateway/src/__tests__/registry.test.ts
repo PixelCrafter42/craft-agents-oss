@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os'
 import type {
   CredentialManager,
 } from '@craft-agent/shared/credentials'
+import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
 import type { ISessionManager } from '@craft-agent/server-core/handlers'
 
 import { MessagingGatewayRegistry } from '../registry'
@@ -92,6 +93,41 @@ function makeFakeTelegramAdapter(opts: FakeAdapterOptions = {}): {
   } as unknown as PlatformAdapter
 
   return { adapter, createCalls }
+}
+
+function makeFakeMessagingAdapter(platform: PlatformType): {
+  adapter: PlatformAdapter
+  sentTexts: Array<{ channelId: string; text: string }>
+} {
+  const sentTexts: Array<{ channelId: string; text: string }> = []
+  const adapter: PlatformAdapter = {
+    platform,
+    capabilities: {
+      messageEditing: false,
+      inlineButtons: false,
+      maxButtons: 0,
+      maxMessageLength: 4096,
+      markdown: 'whatsapp',
+      webhookSupport: false,
+    },
+    initialize: async () => {},
+    destroy: async () => {},
+    isConnected: () => true,
+    onMessage: () => {},
+    onButtonPress: () => {},
+    sendText: async (channelId: string, text: string) => {
+      sentTexts.push({ channelId, text })
+      return { platform, channelId, messageId: String(sentTexts.length) }
+    },
+    editMessage: async () => {},
+    sendButtons: async (channelId: string, text: string) => {
+      sentTexts.push({ channelId, text })
+      return { platform, channelId, messageId: String(sentTexts.length) }
+    },
+    sendTyping: async () => {},
+    sendFile: async (channelId: string) => ({ platform, channelId, messageId: 'file-1' }),
+  }
+  return { adapter, sentTexts }
 }
 
 interface Harness {
@@ -251,6 +287,150 @@ describe('MessagingGatewayRegistry.bindAutomationSession', () => {
     expect(binding.platform).toBe('telegram')
     expect(binding.channelId).toBe('-100777')
     expect(binding.threadId).toBe(100)
+  })
+})
+
+describe('MessagingGatewayRegistry.bindAutomationMessagingTarget', () => {
+  it('renders automation session output to Weixin without mutating persisted bindings', async () => {
+    const h = makeRegistry()
+    await h.registry.updateConfig(h.workspaceId, {
+      enabled: true,
+      platforms: {
+        weixin: { enabled: true },
+      } as never,
+    })
+    const { adapter, sentTexts } = makeFakeMessagingAdapter('weixin')
+    injectAdapter(h, adapter)
+
+    const result = await h.registry.bindAutomationMessagingTarget({
+      workspaceId: h.workspaceId,
+      sessionId: 'auto-s1',
+      target: {
+        platform: 'weixin',
+        channelId: 'wx-user-1',
+      },
+    })
+
+    expect(result.ok).toBe(true)
+    expect(h.registry.getBindings(h.workspaceId)).toHaveLength(0)
+
+    h.registry.onSessionEvent(
+      RPC_CHANNELS.sessions.EVENT,
+      { to: 'workspace', workspaceId: h.workspaceId },
+      { type: 'text_complete', sessionId: 'auto-s1', text: 'Daily summary' },
+    )
+    h.registry.onSessionEvent(
+      RPC_CHANNELS.sessions.EVENT,
+      { to: 'workspace', workspaceId: h.workspaceId },
+      { type: 'complete', sessionId: 'auto-s1' },
+    )
+
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(sentTexts).toEqual([{ channelId: 'wx-user-1', text: 'Daily summary' }])
+  })
+
+  it('copies an existing binding target by bindingId for output-only routing', async () => {
+    const h = makeRegistry()
+    await h.registry.updateConfig(h.workspaceId, {
+      enabled: true,
+      platforms: {
+        weixin: { enabled: true },
+      } as never,
+    })
+    const { adapter, sentTexts } = makeFakeMessagingAdapter('weixin')
+    injectAdapter(h, adapter)
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const state = (h.registry as any).workspaces.get(h.workspaceId)
+    const existing = state.gateway.getBindingStore().bind(
+      h.workspaceId,
+      'interactive-s1',
+      'weixin',
+      'wx-existing',
+      'Weixin User',
+    )
+
+    const result = await h.registry.bindAutomationMessagingTarget({
+      workspaceId: h.workspaceId,
+      sessionId: 'auto-s2',
+      target: { bindingId: existing.id },
+    })
+
+    expect(result.ok).toBe(true)
+    expect(h.registry.getBindings(h.workspaceId)).toHaveLength(1)
+    expect(h.registry.getBindings(h.workspaceId)[0]!.sessionId).toBe('interactive-s1')
+
+    h.registry.onSessionEvent(
+      RPC_CHANNELS.sessions.EVENT,
+      { to: 'workspace', workspaceId: h.workspaceId },
+      { type: 'text_complete', sessionId: 'auto-s2', text: 'Copied target summary' },
+    )
+    h.registry.onSessionEvent(
+      RPC_CHANNELS.sessions.EVENT,
+      { to: 'workspace', workspaceId: h.workspaceId },
+      { type: 'complete', sessionId: 'auto-s2' },
+    )
+
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(sentTexts).toEqual([{ channelId: 'wx-existing', text: 'Copied target summary' }])
+  })
+
+  it('auto-resolves a platform-only target to the latest enabled binding', async () => {
+    const h = makeRegistry()
+    await h.registry.updateConfig(h.workspaceId, {
+      enabled: true,
+      platforms: {
+        weixin: { enabled: true },
+      } as never,
+    })
+    const { adapter, sentTexts } = makeFakeMessagingAdapter('weixin')
+    injectAdapter(h, adapter)
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const state = (h.registry as any).workspaces.get(h.workspaceId)
+    state.gateway.getBindingStore().bind(
+      h.workspaceId,
+      'older-interactive',
+      'weixin',
+      'wx-older',
+      'Older Weixin User',
+    )
+    await new Promise((resolve) => setTimeout(resolve, 1))
+    const latest = state.gateway.getBindingStore().bind(
+      h.workspaceId,
+      'latest-interactive',
+      'weixin',
+      'wx-latest',
+      'Latest Weixin User',
+    )
+
+    const result = await h.registry.bindAutomationMessagingTarget({
+      workspaceId: h.workspaceId,
+      sessionId: 'auto-s3',
+      target: { platform: 'weixin' },
+    })
+
+    expect(result).toMatchObject({
+      ok: true,
+      platform: 'weixin',
+      channelId: 'wx-latest',
+      sourceBindingId: latest.id,
+    })
+    expect(h.registry.getBindings(h.workspaceId)).toHaveLength(2)
+
+    h.registry.onSessionEvent(
+      RPC_CHANNELS.sessions.EVENT,
+      { to: 'workspace', workspaceId: h.workspaceId },
+      { type: 'text_complete', sessionId: 'auto-s3', text: 'Auto-resolved summary' },
+    )
+    h.registry.onSessionEvent(
+      RPC_CHANNELS.sessions.EVENT,
+      { to: 'workspace', workspaceId: h.workspaceId },
+      { type: 'complete', sessionId: 'auto-s3' },
+    )
+
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(sentTexts).toEqual([{ channelId: 'wx-latest', text: 'Auto-resolved summary' }])
   })
 })
 

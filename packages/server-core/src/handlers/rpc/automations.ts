@@ -154,6 +154,7 @@ export function registerAutomationsHandlers(server: RpcServer, deps: HandlerDeps
           thinkingLevel: action.thinkingLevel,
           automationName: payload.automationName,
           telegramTopic: payload.telegramTopic,
+          messagingTarget: payload.messagingTarget,
         })
         results.push({
           type: 'prompt',

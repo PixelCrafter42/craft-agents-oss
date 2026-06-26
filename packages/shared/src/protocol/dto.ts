@@ -16,6 +16,7 @@ import type {
 } from '@craft-agent/core/types'
 import type { PermissionMode } from '../agent/mode-types'
 import type { ThinkingLevel } from '../agent/thinking-levels'
+import type { AutomationMessagingTarget } from '../automations/types'
 import type { CustomEndpointConfig } from '../config/llm-connections'
 import type {
   AuthRequest as SharedAuthRequest,
@@ -537,6 +538,8 @@ export interface TestAutomationPayload {
   labels?: string[]
   /** Forwarded from the matcher; routes test-run sessions into a Telegram topic when paired. */
   telegramTopic?: string
+  /** Forwarded from the matcher; output-only messaging target for test-run sessions. */
+  messagingTarget?: AutomationMessagingTarget
 }
 
 export type TestAutomationActionResult =

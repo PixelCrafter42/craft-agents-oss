@@ -266,6 +266,7 @@ export function AutomationInfoPage({
                 permissionMode: automation.permissionMode,
                 labels: automation.labels,
                 telegramTopic: automation.telegramTopic,
+                messagingTarget: automation.messagingTarget,
                 enabled: automation.enabled,
                 actions: automation.actions,
               }, null, 2)}\n\`\`\``}
