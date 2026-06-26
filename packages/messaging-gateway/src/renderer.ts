@@ -69,6 +69,8 @@ interface RenderState {
   processing: boolean
   /** Streaming: the message ID being edited (Telegram only). */
   streamingMessageId: string | null
+  /** Streaming: ephemeral Telegram draft id, when draft streaming is available. */
+  streamingDraftId: number | null
   /** Streaming: timer for next edit. */
   editTimer: ReturnType<typeof setTimeout> | null
   /** Streaming: length of text at last edit (to detect new content). */
@@ -89,8 +91,12 @@ interface RenderState {
   lastAssistantText: string
   /** Progress: id of the single evolving message for this run (null before first activity). */
   progressMessageId: string | null
+  /** Progress: ephemeral Telegram draft id, when draft streaming is available. */
+  progressDraftId: number | null
   /** Progress: last status label written to the bubble, to avoid redundant edits. */
   progressStatus: string | null
+  /** Set after draft API failure so this binding falls back to normal messages. */
+  draftsDisabled: boolean
 }
 
 const DEFAULT_EDIT_INTERVAL_MS = 3500
@@ -133,6 +139,7 @@ export type PermissionMessageRecorder = (
 export class Renderer {
   /** Per-binding render state. Keyed by binding.id */
   private states = new Map<string, RenderState>()
+  private draftCounter = Math.max(1, Date.now() % 2_147_483_647)
   private readonly planTokens: PlanTokenRegistry | undefined
   private readonly recordPlanMessage: PlanMessageRecorder | undefined
   private readonly recordPermissionMessage: PermissionMessageRecorder | undefined
@@ -154,13 +161,16 @@ export class Renderer {
         textBuffer: '',
         processing: false,
         streamingMessageId: null,
+        streamingDraftId: null,
         editTimer: null,
         lastEditedLength: 0,
         currentEditIntervalMs: DEFAULT_EDIT_INTERVAL_MS,
         finalBuffer: '',
         lastAssistantText: '',
         progressMessageId: null,
+        progressDraftId: null,
         progressStatus: null,
+        draftsDisabled: false,
       }
       this.states.set(bindingId, state)
     }
@@ -221,6 +231,10 @@ export class Renderer {
         state.textBuffer += delta
         state.processing = true
 
+        if (await this.trySendStreamingDraft(state, binding, adapter)) {
+          break
+        }
+
         if (adapter.capabilities.messageEditing) {
           await this.handleStreamingDelta(state, binding, adapter)
         }
@@ -231,7 +245,11 @@ export class Renderer {
         const text = typeof event.text === 'string' ? event.text : state.textBuffer
         this.cancelEditTimer(state)
 
-        if (state.streamingMessageId && adapter.capabilities.messageEditing) {
+        if (state.streamingDraftId && !state.streamingMessageId) {
+          if (text.trim()) {
+            await this.sendText(adapter, binding, text.trim())
+          }
+        } else if (state.streamingMessageId && adapter.capabilities.messageEditing) {
           if (text.trim()) {
             await this.tryEditMessage(adapter, binding, state.streamingMessageId, text.trim(), state)
           }
@@ -241,13 +259,16 @@ export class Renderer {
 
         state.textBuffer = ''
         state.streamingMessageId = null
+        state.streamingDraftId = null
         state.lastEditedLength = 0
         break
       }
 
       case 'complete': {
         this.cancelEditTimer(state)
-        if (state.textBuffer.trim() && !state.streamingMessageId) {
+        if (state.textBuffer.trim() && state.streamingDraftId && !state.streamingMessageId) {
+          await this.sendText(adapter, binding, state.textBuffer.trim())
+        } else if (state.textBuffer.trim() && !state.streamingMessageId) {
           await this.sendText(adapter, binding, state.textBuffer.trim())
         }
         this.resetRun(state)
@@ -259,6 +280,13 @@ export class Renderer {
           const toolName = typeof event.toolName === 'string' ? event.toolName : 'tool'
           const displayName =
             typeof event.toolDisplayName === 'string' ? event.toolDisplayName : toolName
+          if (state.streamingDraftId && state.textBuffer.trim() && !state.streamingMessageId) {
+            this.cancelEditTimer(state)
+            await this.sendText(adapter, binding, state.textBuffer.trim())
+            state.streamingDraftId = null
+            state.textBuffer = ''
+            state.lastEditedLength = 0
+          }
           if (state.streamingMessageId && state.textBuffer.trim()) {
             this.cancelEditTimer(state)
             await this.tryEditMessage(
@@ -325,6 +353,133 @@ export class Renderer {
     }, intervalMs)
   }
 
+  private async trySendStreamingDraft(
+    state: RenderState,
+    binding: ChannelBinding,
+    adapter: PlatformAdapter,
+  ): Promise<boolean> {
+    if (!this.canUseMessageDrafts(state, binding, adapter)) return false
+
+    if (!state.streamingDraftId) {
+      state.streamingDraftId = this.nextDraftId()
+      const sent = await this.trySendDraft(
+        state,
+        binding,
+        adapter,
+        state.streamingDraftId,
+        state.textBuffer,
+        true,
+      )
+      if (!sent) {
+        state.streamingDraftId = null
+        return false
+      }
+      state.lastEditedLength = state.textBuffer.length
+      this.scheduleStreamingDraft(state, binding, adapter)
+      return true
+    }
+
+    this.scheduleStreamingDraft(state, binding, adapter)
+    return true
+  }
+
+  private scheduleStreamingDraft(
+    state: RenderState,
+    binding: ChannelBinding,
+    adapter: PlatformAdapter,
+  ): void {
+    if (state.editTimer) return
+
+    const intervalMs = Math.max(binding.config.editIntervalMs, state.currentEditIntervalMs)
+
+    state.editTimer = setTimeout(async () => {
+      state.editTimer = null
+      if (!state.streamingDraftId) return
+      if (state.textBuffer.length <= state.lastEditedLength) return
+
+      const sent = await this.trySendDraft(
+        state,
+        binding,
+        adapter,
+        state.streamingDraftId,
+        state.textBuffer,
+        true,
+      )
+      if (sent) {
+        state.lastEditedLength = state.textBuffer.length
+      }
+
+      if (state.processing && !state.draftsDisabled) {
+        this.scheduleStreamingDraft(state, binding, adapter)
+      }
+    }, intervalMs)
+  }
+
+  private async ensureProgressDraft(
+    state: RenderState,
+    binding: ChannelBinding,
+    adapter: PlatformAdapter,
+    status: string,
+  ): Promise<boolean> {
+    if (!this.canUseMessageDrafts(state, binding, adapter)) return false
+    if (state.progressDraftId && state.progressStatus === status) return true
+    if (!state.progressDraftId) {
+      state.progressDraftId = this.nextDraftId()
+    }
+    const text = status === THINKING_LABEL ? '' : status
+    const sent = await this.trySendDraft(state, binding, adapter, state.progressDraftId, text, false)
+    if (!sent) {
+      state.progressDraftId = null
+      return false
+    }
+    state.progressStatus = status
+    return true
+  }
+
+  private async trySendDraft(
+    state: RenderState,
+    binding: ChannelBinding,
+    adapter: PlatformAdapter,
+    draftId: number,
+    text: string,
+    preferRich: boolean,
+  ): Promise<boolean> {
+    const opts = bindingOpts(binding)
+    if (preferRich && this.canUseRichMessageDrafts(binding, adapter) && shouldUseRichMessage(text, adapter)) {
+      try {
+        await adapter.sendRichMessageDraft!(binding.channelId, draftId, text, opts)
+        return true
+      } catch {
+        // Fall through to the stable regular draft API.
+      }
+    }
+
+    try {
+      await adapter.sendMessageDraft!(binding.channelId, draftId, text, opts)
+      return true
+    } catch {
+      state.draftsDisabled = true
+      return false
+    }
+  }
+
+  private canUseMessageDrafts(
+    state: RenderState,
+    binding: ChannelBinding,
+    adapter: PlatformAdapter,
+  ): boolean {
+    return binding.platform === 'telegram' &&
+      !state.draftsDisabled &&
+      adapter.capabilities.messageDrafts === true &&
+      typeof adapter.sendMessageDraft === 'function'
+  }
+
+  private canUseRichMessageDrafts(binding: ChannelBinding, adapter: PlatformAdapter): boolean {
+    return binding.platform === 'telegram' &&
+      adapter.capabilities.richMessageDrafts === true &&
+      typeof adapter.sendRichMessageDraft === 'function'
+  }
+
   // ---------------------------------------------------------------------------
   // Mode: progress (new default — single evolving message per run)
   // ---------------------------------------------------------------------------
@@ -355,6 +510,9 @@ export class Renderer {
         }
         // Intermediate text is dropped from the bubble. Make sure it exists and shows
         // thinking status so the user knows the run is alive.
+        if (await this.ensureProgressDraft(state, binding, adapter, THINKING_LABEL)) {
+          return
+        }
         await this.ensureProgressBubble(state, binding, adapter, THINKING_LABEL)
         return
       }
@@ -365,6 +523,9 @@ export class Renderer {
           typeof event.toolDisplayName === 'string' && event.toolDisplayName.length > 0
             ? event.toolDisplayName
             : toolName
+        if (await this.ensureProgressDraft(state, binding, adapter, `🔧 ${displayName}…`)) {
+          return
+        }
         await this.ensureProgressBubble(state, binding, adapter, `🔧 ${displayName}…`)
         return
       }
@@ -372,7 +533,9 @@ export class Renderer {
       case 'tool_result': {
         // Tool finished — revert the indicator to thinking until the next
         // tool_start or text_complete. Skip if we haven't posted yet (unlikely).
-        if (state.progressMessageId) {
+        if (state.progressDraftId) {
+          await this.ensureProgressDraft(state, binding, adapter, THINKING_LABEL)
+        } else if (state.progressMessageId) {
           await this.ensureProgressBubble(state, binding, adapter, THINKING_LABEL)
         }
         return
@@ -383,7 +546,11 @@ export class Renderer {
         // assistant text so a tool-terminated run still delivers a message
         // instead of freezing the bubble on "thinking…".
         const finalText = (state.finalBuffer.trim() || state.lastAssistantText.trim())
-        if (state.progressMessageId && adapter.capabilities.messageEditing) {
+        if (state.progressDraftId && !state.progressMessageId) {
+          if (finalText) {
+            await this.sendText(adapter, binding, finalText)
+          }
+        } else if (state.progressMessageId && adapter.capabilities.messageEditing) {
           if (finalText) {
             await this.tryEditMessage(
               adapter,
@@ -678,11 +845,13 @@ Approve in the desktop app to continue.`,
     this.cancelEditTimer(state)
     state.textBuffer = ''
     state.streamingMessageId = null
+    state.streamingDraftId = null
     state.lastEditedLength = 0
     state.processing = false
     state.finalBuffer = ''
     state.lastAssistantText = ''
     state.progressMessageId = null
+    state.progressDraftId = null
     state.progressStatus = null
   }
 
@@ -694,6 +863,15 @@ Approve in the desktop app to continue.`,
   ): Promise<SentMessage | undefined> {
     const maxLen = adapter.capabilities.maxMessageLength
     const opts = bindingOpts(binding)
+    if (canUseRichMessages(binding, adapter) && shouldUseRichMessage(text, adapter)) {
+      try {
+        return await adapter.sendRichMessage!(binding.channelId, text, opts)
+      } catch {
+        // Rich Messages are opportunistic. MarkdownV2 chunking remains the
+        // reliable fallback if a client or Bot API edge rejects rich syntax.
+      }
+    }
+
     if (text.length <= maxLen) {
       return adapter.sendText(binding.channelId, text, opts)
     }
@@ -704,6 +882,12 @@ Approve in the desktop app to continue.`,
       last = await adapter.sendText(binding.channelId, chunk, opts)
     }
     return last
+  }
+
+  private nextDraftId(): number {
+    this.draftCounter += 1
+    if (this.draftCounter >= 2_147_483_647) this.draftCounter = 1
+    return this.draftCounter
   }
 
   /** Clean up state for a removed binding. */
@@ -738,6 +922,27 @@ function truncateForAdapter(text: string, adapter: PlatformAdapter): string {
   const maxLen = adapter.capabilities.maxMessageLength
   if (text.length <= maxLen) return text
   return text.slice(0, maxLen - 4) + ' ...'
+}
+
+function canUseRichMessages(binding: ChannelBinding, adapter: PlatformAdapter): boolean {
+  return binding.platform === 'telegram' &&
+    adapter.capabilities.richMessages === true &&
+    typeof adapter.sendRichMessage === 'function'
+}
+
+function shouldUseRichMessage(text: string, adapter: PlatformAdapter): boolean {
+  return text.length > adapter.capabilities.maxMessageLength || hasRichMarkdown(text)
+}
+
+function hasRichMarkdown(text: string): boolean {
+  return /(^|\n)#{1,6}\s+\S/.test(text) ||
+    /(^|\n)\s*[-*+]\s+\[[ xX]\]\s+\S/.test(text) ||
+    /(^|\n)\|.+\|/.test(text) ||
+    /```/.test(text) ||
+    /\$\$[\s\S]+?\$\$/.test(text) ||
+    /(^|\n)>\s+\S/.test(text) ||
+    /(^|\n)\d+\.\s+\S/.test(text) ||
+    /(^|\n)\s*[-*+]\s+\S/.test(text)
 }
 
 function splitText(text: string, maxLen: number): string[] {

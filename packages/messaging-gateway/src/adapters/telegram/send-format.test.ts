@@ -3,11 +3,21 @@ import { TelegramAdapter } from './index'
 import { formatPlainTextForTelegram } from './format'
 
 interface ApiCall {
-  method: 'sendMessage' | 'editMessageText' | 'sendDocument' | 'sendVoice' | 'sendAudio'
+  method:
+    | 'sendMessage'
+    | 'editMessageText'
+    | 'sendDocument'
+    | 'sendVoice'
+    | 'sendAudio'
+    | 'sendMessageDraft'
+    | 'sendRichMessage'
+    | 'sendRichMessageDraft'
   chatId: number
   messageId?: number
+  draftId?: number
   text?: string
   other?: Record<string, unknown>
+  payload?: Record<string, unknown>
 }
 
 interface FakeTelegramApi {
@@ -37,12 +47,22 @@ interface FakeTelegramApi {
     audio: unknown,
     other?: Record<string, unknown>,
   ) => Promise<{ message_id: number }>
+  sendMessageDraft?: (
+    chatId: number,
+    draftId: number,
+    text: string,
+    other?: Record<string, unknown>,
+  ) => Promise<true>
+  raw?: {
+    sendRichMessage?: (payload: Record<string, unknown>) => Promise<{ message_id: number }>
+    sendRichMessageDraft?: (payload: Record<string, unknown>) => Promise<true>
+  }
 }
 
 function makeAdapter(api: FakeTelegramApi): TelegramAdapter {
   const adapter = new TelegramAdapter()
   ;(adapter as unknown as { bot: { api: FakeTelegramApi; token: string } }).bot = {
-    api,
+    api: { raw: {}, ...api },
     token: 'TEST_TOKEN',
   }
   return adapter
@@ -188,6 +208,84 @@ describe('TelegramAdapter MarkdownV2 sending', () => {
     await adapter.sendFile('42', Buffer.from('audio'), 'reply.mp3')
 
     expect(calls.map((c) => c.method)).toEqual(['sendVoice', 'sendAudio'])
+  })
+
+  it('streams regular message drafts with MarkdownV2 parse mode', async () => {
+    const calls: ApiCall[] = []
+    const adapter = makeAdapter({
+      async sendMessageDraft(chatId, draftId, text, other) {
+        calls.push({ method: 'sendMessageDraft', chatId, draftId, text, other })
+        return true
+      },
+    })
+
+    await adapter.sendMessageDraft('42', 123, '**working**', { threadId: 9 })
+
+    expect(calls).toEqual([
+      {
+        method: 'sendMessageDraft',
+        chatId: 42,
+        draftId: 123,
+        text: '*working*',
+        other: {
+          parse_mode: 'MarkdownV2',
+          message_thread_id: 9,
+        },
+      },
+    ])
+  })
+
+  it('sends rich messages through the raw Bot API', async () => {
+    const calls: ApiCall[] = []
+    const adapter = makeAdapter({
+      raw: {
+        async sendRichMessage(payload) {
+          calls.push({ method: 'sendRichMessage', chatId: Number(payload.chat_id), payload })
+          return { message_id: 10 }
+        },
+      },
+    })
+
+    await adapter.sendRichMessage('42', '# Report\n\n- item', { threadId: 9 })
+
+    expect(calls).toEqual([
+      {
+        method: 'sendRichMessage',
+        chatId: 42,
+        payload: {
+          chat_id: 42,
+          rich_message: { markdown: '# Report\n\n- item' },
+          message_thread_id: 9,
+        },
+      },
+    ])
+  })
+
+  it('streams rich message drafts through the raw Bot API', async () => {
+    const calls: ApiCall[] = []
+    const adapter = makeAdapter({
+      raw: {
+        async sendRichMessageDraft(payload) {
+          calls.push({ method: 'sendRichMessageDraft', chatId: Number(payload.chat_id), payload })
+          return true
+        },
+      },
+    })
+
+    await adapter.sendRichMessageDraft('42', 456, '# Draft', { threadId: 9 })
+
+    expect(calls).toEqual([
+      {
+        method: 'sendRichMessageDraft',
+        chatId: 42,
+        payload: {
+          chat_id: 42,
+          draft_id: 456,
+          rich_message: { markdown: '# Draft' },
+          message_thread_id: 9,
+        },
+      },
+    ])
   })
 
   it('retries entity parse failures as escaped plain text', async () => {

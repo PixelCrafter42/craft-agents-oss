@@ -68,6 +68,15 @@ export interface MessagingPlatformRuntimeInfo {
 export interface AdapterCapabilities {
   messageEditing: boolean
   inlineButtons: boolean
+  /**
+   * Platform supports ephemeral generated-message drafts. Telegram exposes
+   * this as sendMessageDraft/sendRichMessageDraft; other adapters omit it.
+   */
+  messageDrafts?: boolean
+  /** Platform supports Telegram-style rich messages for structured output. */
+  richMessages?: boolean
+  /** Platform supports ephemeral drafts backed by rich messages. */
+  richMessageDrafts?: boolean
   maxButtons: number
   maxMessageLength: number
   markdown: 'v2' | 'whatsapp' | 'lark-post'
@@ -198,6 +207,9 @@ export interface PlatformAdapter {
   sendButtons(channelId: string, text: string, buttons: InlineButton[], opts?: SendOptions): Promise<SentMessage>
   sendTyping(channelId: string, opts?: SendOptions): Promise<void>
   sendFile(channelId: string, file: Buffer, filename: string, caption?: string, opts?: SendOptions): Promise<SentMessage>
+  sendMessageDraft?(channelId: string, draftId: number, text: string, opts?: SendOptions): Promise<void>
+  sendRichMessage?(channelId: string, markdown: string, opts?: SendOptions): Promise<SentMessage>
+  sendRichMessageDraft?(channelId: string, draftId: number, markdown: string, opts?: SendOptions): Promise<void>
 
   /**
    * Clear the inline keyboard on a previously-sent message. Optional because

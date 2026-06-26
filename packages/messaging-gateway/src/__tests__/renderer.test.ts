@@ -28,9 +28,17 @@ import {
 // ---------------------------------------------------------------------------
 
 interface Call {
-  kind: 'sendText' | 'editMessage' | 'sendButtons' | 'sendTyping'
+  kind:
+    | 'sendText'
+    | 'editMessage'
+    | 'sendButtons'
+    | 'sendTyping'
+    | 'sendMessageDraft'
+    | 'sendRichMessage'
+    | 'sendRichMessageDraft'
   channelId: string
   messageId?: string
+  draftId?: number
   text?: string
 }
 
@@ -80,6 +88,17 @@ function makeAdapter(
     async sendFile(channelId: string): Promise<SentMessage> {
       const messageId = String(nextId++)
       return { platform: 'telegram', channelId, messageId }
+    },
+    async sendMessageDraft(channelId: string, draftId: number, text: string): Promise<void> {
+      calls.push({ kind: 'sendMessageDraft', channelId, draftId, text })
+    },
+    async sendRichMessage(channelId: string, text: string): Promise<SentMessage> {
+      const messageId = String(nextId++)
+      calls.push({ kind: 'sendRichMessage', channelId, text, messageId })
+      return { platform: 'telegram', channelId, messageId }
+    },
+    async sendRichMessageDraft(channelId: string, draftId: number, text: string): Promise<void> {
+      calls.push({ kind: 'sendRichMessageDraft', channelId, draftId, text })
     },
   }
 
@@ -199,6 +218,34 @@ describe('Renderer — progress mode (default)', () => {
     expect(sends[0]!.text).toBe('💭 thinking…')
     expect(edits.length).toBe(1)
     expect(edits[0]!.text).toBe('hello world')
+  })
+
+  it('uses Telegram drafts for progress status and rich messages for structured finals', async () => {
+    const adapter = makeAdapter({
+      messageDrafts: true,
+      richMessages: true,
+      richMessageDrafts: true,
+    })
+    const binding = makeBinding()
+    await play(renderer, binding, adapter, [
+      ev.toolStart('Read'),
+      ev.toolResult(),
+      ev.final('# Answer\n\n- one'),
+      ev.complete(),
+    ])
+
+    expect(adapter.calls.map((c) => c.kind)).toEqual([
+      'sendMessageDraft',
+      'sendMessageDraft',
+      'sendRichMessage',
+    ])
+    const drafts = adapter.calls.filter((c) => c.kind === 'sendMessageDraft')
+    expect(drafts[0]!.text).toBe('🔧 Read…')
+    expect(drafts[1]!.text).toBe('')
+    expect(drafts[0]!.draftId).toBe(drafts[1]!.draftId)
+
+    const rich = adapter.calls.find((c) => c.kind === 'sendRichMessage')
+    expect(rich?.text).toBe('# Answer\n\n- one')
   })
 
   it('drops intermediate text — never appears in any message', async () => {
@@ -389,6 +436,27 @@ describe('Renderer — streaming mode (legacy)', () => {
     expect(sends.length).toBe(2)
     expect(sends[0]!.text).toBe('first')
     expect(sends[1]!.text).toBe('second')
+  })
+
+  it('streams Telegram drafts and persists the final message', async () => {
+    const adapter = makeAdapter({
+      messageDrafts: true,
+      richMessages: true,
+      richMessageDrafts: true,
+    })
+    const binding = makeBinding({ responseMode: 'streaming' as ResponseMode })
+    await play(renderer, binding, adapter, [
+      ev.delta('# first'),
+      ev.completeText('# first'),
+      ev.complete(),
+    ])
+
+    expect(adapter.calls.map((c) => c.kind)).toEqual([
+      'sendRichMessageDraft',
+      'sendRichMessage',
+    ])
+    expect(adapter.calls[0]!.text).toBe('# first')
+    expect(adapter.calls[1]!.text).toBe('# first')
   })
 })
 

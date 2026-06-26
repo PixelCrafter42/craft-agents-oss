@@ -39,6 +39,7 @@ export type TelegramChatInfo =
  * with a user-visible reply instead of silently dropping.
  */
 const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
+const TELEGRAM_DRAFT_TEXT_LIMIT = 4096
 const TELEGRAM_PARSE_MODE = 'MarkdownV2' as const
 const TELEGRAM_VOICE_EXTENSIONS = new Set(['.ogg', '.oga', '.opus', '.mp3', '.m4a'])
 const TELEGRAM_AUDIO_EXTENSIONS = new Set(['.mp3', '.m4a'])
@@ -72,6 +73,31 @@ const NOOP_LOGGER: MessagingLogger = {
 type FetchInput = Parameters<typeof globalThis.fetch>[0]
 type FetchInit = Parameters<typeof globalThis.fetch>[1]
 type NativeFetchInit = NonNullable<FetchInit> & { duplex?: 'half' }
+
+interface TelegramRichMessagePayload {
+  html?: string
+  markdown?: string
+  is_rtl?: boolean
+  skip_entity_detection?: boolean
+}
+
+interface TelegramSendRichMessagePayload {
+  chat_id: number | string
+  rich_message: TelegramRichMessagePayload
+  message_thread_id?: number
+}
+
+interface TelegramSendRichMessageDraftPayload {
+  chat_id: number
+  draft_id: number
+  rich_message: TelegramRichMessagePayload
+  message_thread_id?: number
+}
+
+interface TelegramRawRichApi {
+  sendRichMessage(payload: TelegramSendRichMessagePayload): Promise<{ message_id: number }>
+  sendRichMessageDraft(payload: TelegramSendRichMessageDraftPayload): Promise<true>
+}
 
 function telegramFetch(input: FetchInput, init?: FetchInit): Promise<Response> {
   const body = init?.body
@@ -163,6 +189,20 @@ function isTelegramAudioFile(filename: string): boolean {
   return TELEGRAM_AUDIO_EXTENSIONS.has(extname(filename).toLowerCase())
 }
 
+function truncateDraftText(text: string): string {
+  if (text.length <= TELEGRAM_DRAFT_TEXT_LIMIT) return text
+  return `${text.slice(0, TELEGRAM_DRAFT_TEXT_LIMIT - 4)} ...`
+}
+
+function telegramChatId(channelId: string): number | string {
+  const numeric = Number(channelId)
+  return Number.isFinite(numeric) && channelId.trim() !== '' ? numeric : channelId
+}
+
+function telegramRichApi(bot: Bot): TelegramRawRichApi {
+  return (bot.api as unknown as { raw: TelegramRawRichApi }).raw
+}
+
 /**
  * DM-only guard. Retained because tests use it directly; new code paths
  * should call `isAcceptedChat()` which also accepts the workspace's
@@ -199,6 +239,9 @@ export class TelegramAdapter implements PlatformAdapter {
   readonly capabilities: AdapterCapabilities = {
     messageEditing: true,
     inlineButtons: true,
+    messageDrafts: true,
+    richMessages: true,
+    richMessageDrafts: true,
     maxButtons: 10,
     maxMessageLength: 4096,
     markdown: 'v2',
@@ -766,6 +809,62 @@ export class TelegramAdapter implements PlatformAdapter {
       platform: 'telegram',
       channelId,
       messageId: String(sent.message_id),
+    }
+  }
+
+  async sendMessageDraft(channelId: string, draftId: number, text: string, opts?: SendOptions): Promise<void> {
+    if (!this.bot) throw new Error('Telegram adapter not initialized')
+    const formatted = text ? truncateDraftText(formatForTelegram(text)) : ''
+    try {
+      await this.bot.api.sendMessageDraft(
+        Number(channelId),
+        draftId,
+        formatted,
+        sendTextOptions(opts),
+      )
+    } catch (err) {
+      if (!isEntityParseError(err)) throw err
+      this.log.warn('[telegram] sendMessageDraft Markdown parse failed; retrying escaped plain text', describeError(err))
+      await this.bot.api.sendMessageDraft(
+        Number(channelId),
+        draftId,
+        text ? truncateDraftText(formatPlainTextForTelegram(text)) : '',
+        sendTextOptions(opts),
+      )
+    }
+  }
+
+  async sendRichMessage(channelId: string, markdown: string, opts?: SendOptions): Promise<SentMessage> {
+    if (!this.bot) throw new Error('Telegram adapter not initialized')
+    try {
+      const sent = await telegramRichApi(this.bot).sendRichMessage({
+        chat_id: telegramChatId(channelId),
+        rich_message: { markdown },
+        ...threadParams(opts),
+      })
+      return {
+        platform: 'telegram',
+        channelId,
+        messageId: String(sent.message_id),
+      }
+    } catch (err) {
+      this.log.warn('[telegram] sendRichMessage failed; caller may fall back to regular text', describeError(err))
+      throw err
+    }
+  }
+
+  async sendRichMessageDraft(channelId: string, draftId: number, markdown: string, opts?: SendOptions): Promise<void> {
+    if (!this.bot) throw new Error('Telegram adapter not initialized')
+    try {
+      await telegramRichApi(this.bot).sendRichMessageDraft({
+        chat_id: Number(channelId),
+        draft_id: draftId,
+        rich_message: { markdown },
+        ...threadParams(opts),
+      })
+    } catch (err) {
+      this.log.warn('[telegram] sendRichMessageDraft failed; caller may fall back to regular draft', describeError(err))
+      throw err
     }
   }
 
