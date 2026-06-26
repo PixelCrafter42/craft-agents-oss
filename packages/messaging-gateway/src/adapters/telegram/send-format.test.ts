@@ -3,7 +3,7 @@ import { TelegramAdapter } from './index'
 import { formatPlainTextForTelegram } from './format'
 
 interface ApiCall {
-  method: 'sendMessage' | 'editMessageText' | 'sendDocument'
+  method: 'sendMessage' | 'editMessageText' | 'sendDocument' | 'sendVoice' | 'sendAudio'
   chatId: number
   messageId?: number
   text?: string
@@ -25,6 +25,16 @@ interface FakeTelegramApi {
   sendDocument?: (
     chatId: number,
     document: unknown,
+    other?: Record<string, unknown>,
+  ) => Promise<{ message_id: number }>
+  sendVoice?: (
+    chatId: number,
+    voice: unknown,
+    other?: Record<string, unknown>,
+  ) => Promise<{ message_id: number }>
+  sendAudio?: (
+    chatId: number,
+    audio: unknown,
     other?: Record<string, unknown>,
   ) => Promise<{ message_id: number }>
 }
@@ -137,6 +147,47 @@ describe('TelegramAdapter MarkdownV2 sending', () => {
         },
       },
     ])
+  })
+
+  it('sends Telegram-compatible audio files as native voice messages', async () => {
+    const calls: ApiCall[] = []
+    const adapter = makeAdapter({
+      async sendVoice(chatId, _voice, other) {
+        calls.push({ method: 'sendVoice', chatId, other })
+        return { message_id: 8 }
+      },
+    })
+
+    await adapter.sendFile('42', Buffer.from('audio'), 'reply.mp3', '**Voice reply**')
+
+    expect(calls).toEqual([
+      {
+        method: 'sendVoice',
+        chatId: 42,
+        other: {
+          caption: '*Voice reply*',
+          parse_mode: 'MarkdownV2',
+        },
+      },
+    ])
+  })
+
+  it('falls back from sendVoice to sendAudio for MP3 files', async () => {
+    const calls: ApiCall[] = []
+    const adapter = makeAdapter({
+      async sendVoice(chatId, _voice, other) {
+        calls.push({ method: 'sendVoice', chatId, other })
+        throw new Error('voice rejected')
+      },
+      async sendAudio(chatId, _audio, other) {
+        calls.push({ method: 'sendAudio', chatId, other })
+        return { message_id: 9 }
+      },
+    })
+
+    await adapter.sendFile('42', Buffer.from('audio'), 'reply.mp3')
+
+    expect(calls.map((c) => c.method)).toEqual(['sendVoice', 'sendAudio'])
   })
 
   it('retries entity parse failures as escaped plain text', async () => {

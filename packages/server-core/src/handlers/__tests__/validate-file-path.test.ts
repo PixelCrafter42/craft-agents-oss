@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test'
 import { homedir, tmpdir } from 'os'
-import { mkdir, writeFile } from 'fs/promises'
+import { mkdir, mkdtemp, realpath, writeFile } from 'fs/promises'
 import { join, sep } from 'path'
 import { validateFilePath } from '../utils'
 
@@ -18,6 +18,16 @@ describe('validateFilePath', () => {
     const path = join(tmp, 'craft-test.txt')
     const result = await validateFilePath(path)
     expect(result).toContain('craft-test.txt')
+  })
+
+  it('allows existing files inside temp directory after realpath resolution', async () => {
+    const dir = await mkdtemp(join(tmp, 'craft-validate-realpath-'))
+    const path = join(dir, 'voice.ogg')
+    await writeFile(path, 'x')
+
+    const result = await validateFilePath(path)
+
+    expect(result).toBe(await realpath(path))
   })
 
   it('denies paths outside all allowed directories', async () => {

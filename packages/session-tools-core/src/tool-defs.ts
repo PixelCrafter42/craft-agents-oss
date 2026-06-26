@@ -492,7 +492,7 @@ Shows which external chat apps are connected and can send/receive messages.`,
 
   send_messaging_file: `Send a local file to a messaging channel bound to this session.
 
-Use this only when the user asks you to deliver a generated file, report, image, or other artifact through the connected chat app. If no target is provided, the gateway sends to the first available platform in priority order: Telegram, WeChat, Lark, then WhatsApp. Provide channelId when a session has multiple bindings on the chosen platform, and threadId when Telegram topic bindings share the same channelId.`,
+Use this only when the user asks you to deliver a generated file, report, image, audio reply, or other artifact through the connected chat app. On Telegram, .ogg/.oga/.opus/.mp3/.m4a files are sent as native voice/audio messages when possible instead of plain documents. If no target is provided, the gateway sends to the first available platform in priority order: Telegram, WeChat, Lark, then WhatsApp. Provide channelId when a session has multiple bindings on the chosen platform, and threadId when Telegram topic bindings share the same channelId.`,
 
   unbind_messaging_channel: `Disconnect a messaging channel from the current session.
 Messages will no longer be forwarded between the chat app and this session.`,

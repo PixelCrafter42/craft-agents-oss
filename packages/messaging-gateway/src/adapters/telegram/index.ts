@@ -21,7 +21,7 @@ import type {
   ButtonPress,
   MessagingLogger,
 } from '../../types'
-import { formatForTelegram } from './format'
+import { formatForTelegram, formatPlainTextForTelegram } from './format'
 
 /**
  * Discriminated chat metadata returned by `getChatInfo`. Phase A's supergroup
@@ -39,6 +39,9 @@ export type TelegramChatInfo =
  * with a user-visible reply instead of silently dropping.
  */
 const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
+const TELEGRAM_PARSE_MODE = 'MarkdownV2' as const
+const TELEGRAM_VOICE_EXTENSIONS = new Set(['.ogg', '.oga', '.opus', '.mp3', '.m4a'])
+const TELEGRAM_AUDIO_EXTENSIONS = new Set(['.mp3', '.m4a'])
 
 /**
  * Minimal mime → extension fallback used when Telegram's `file_path` is
@@ -127,6 +130,37 @@ function describeError(err: unknown, depth = 0): Record<string, unknown> {
   }
   if (err && typeof err === 'object') return { value: String(err), raw: err as object }
   return { value: String(err) }
+}
+
+function isEntityParseError(err: unknown): boolean {
+  const description = err && typeof err === 'object'
+    ? String((err as { description?: unknown }).description ?? '')
+    : ''
+  const message = err instanceof Error ? err.message : String(err)
+  return /can't parse entities|entity/i.test(description || message)
+}
+
+function sendTextOptions(opts?: SendOptions): { parse_mode: typeof TELEGRAM_PARSE_MODE; message_thread_id?: number } {
+  return { parse_mode: TELEGRAM_PARSE_MODE, ...threadParams(opts) }
+}
+
+function sendCaptionOptions(
+  caption: string | undefined,
+  opts?: SendOptions,
+): { caption?: string; parse_mode?: typeof TELEGRAM_PARSE_MODE; message_thread_id?: number } {
+  const formattedCaption = caption ? formatForTelegram(caption) : undefined
+  return {
+    ...(formattedCaption ? { caption: formattedCaption, parse_mode: TELEGRAM_PARSE_MODE } : {}),
+    ...threadParams(opts),
+  }
+}
+
+function isTelegramVoiceFile(filename: string): boolean {
+  return TELEGRAM_VOICE_EXTENSIONS.has(extname(filename).toLowerCase())
+}
+
+function isTelegramAudioFile(filename: string): boolean {
+  return TELEGRAM_AUDIO_EXTENSIONS.has(extname(filename).toLowerCase())
 }
 
 /**
@@ -712,11 +746,22 @@ export class TelegramAdapter implements PlatformAdapter {
   async sendText(channelId: string, text: string, opts?: SendOptions): Promise<SentMessage> {
     if (!this.bot) throw new Error('Telegram adapter not initialized')
     const formatted = formatForTelegram(text)
-    const sent = await this.bot.api.sendMessage(
-      Number(channelId),
-      formatted,
-      threadParams(opts),
-    )
+    let sent: { message_id: number }
+    try {
+      sent = await this.bot.api.sendMessage(
+        Number(channelId),
+        formatted,
+        sendTextOptions(opts),
+      )
+    } catch (err) {
+      if (!isEntityParseError(err)) throw err
+      this.log.warn('[telegram] sendMessage Markdown parse failed; retrying escaped plain text', describeError(err))
+      sent = await this.bot.api.sendMessage(
+        Number(channelId),
+        formatPlainTextForTelegram(text),
+        sendTextOptions(opts),
+      )
+    }
     return {
       platform: 'telegram',
       channelId,
@@ -730,7 +775,20 @@ export class TelegramAdapter implements PlatformAdapter {
     // editMessageText is keyed by (chat_id, message_id) — Telegram does not
     // accept message_thread_id here. We accept the option for caller
     // uniformity but ignore it.
-    await this.bot.api.editMessageText(Number(channelId), Number(messageId), formatted)
+    try {
+      await this.bot.api.editMessageText(Number(channelId), Number(messageId), formatted, {
+        parse_mode: TELEGRAM_PARSE_MODE,
+      })
+    } catch (err) {
+      if (!isEntityParseError(err)) throw err
+      this.log.warn('[telegram] editMessage Markdown parse failed; retrying escaped plain text', describeError(err))
+      await this.bot.api.editMessageText(
+        Number(channelId),
+        Number(messageId),
+        formatPlainTextForTelegram(text),
+        { parse_mode: TELEGRAM_PARSE_MODE },
+      )
+    }
   }
 
   async sendButtons(channelId: string, text: string, buttons: InlineButton[], opts?: SendOptions): Promise<SentMessage> {
@@ -743,7 +801,8 @@ export class TelegramAdapter implements PlatformAdapter {
       }]),
     }
 
-    const sent = await this.bot.api.sendMessage(Number(channelId), text, {
+    const sent = await this.bot.api.sendMessage(Number(channelId), formatForTelegram(text), {
+      parse_mode: TELEGRAM_PARSE_MODE,
       reply_markup: keyboard,
       ...threadParams(opts),
     })
@@ -765,15 +824,37 @@ export class TelegramAdapter implements PlatformAdapter {
   async sendFile(channelId: string, file: Buffer, filename: string, caption?: string, opts?: SendOptions): Promise<SentMessage> {
     if (!this.bot) throw new Error('Telegram adapter not initialized')
 
-    const inputFile = new InputFile(file, filename)
-    const sent = await this.bot.api.sendDocument(
-      Number(channelId),
-      inputFile,
-      { caption, ...threadParams(opts) },
-    ).catch((err: unknown) => {
-      this.log.error('[telegram] sendDocument failed:', describeError(err))
-      throw err
-    })
+    const chatId = Number(channelId)
+    const makeInputFile = () => new InputFile(file, filename)
+    const options = sendCaptionOptions(caption, opts)
+    let sent: { message_id: number }
+
+    if (isTelegramVoiceFile(filename)) {
+      try {
+        sent = await this.bot.api.sendVoice(chatId, makeInputFile(), options)
+      } catch (err) {
+        this.log.warn('[telegram] sendVoice failed; falling back for audio file:', describeError(err))
+        if (isTelegramAudioFile(filename)) {
+          try {
+            sent = await this.bot.api.sendAudio(chatId, makeInputFile(), options)
+          } catch (audioErr) {
+            this.log.warn('[telegram] sendAudio fallback failed; sending as document:', describeError(audioErr))
+            sent = await this.bot.api.sendDocument(chatId, makeInputFile(), options)
+          }
+        } else {
+          sent = await this.bot.api.sendDocument(chatId, makeInputFile(), options)
+        }
+      }
+    } else {
+      sent = await this.bot.api.sendDocument(
+        chatId,
+        makeInputFile(),
+        options,
+      ).catch((err: unknown) => {
+        this.log.error('[telegram] sendDocument failed:', describeError(err))
+        throw err
+      })
+    }
 
     return {
       platform: 'telegram',

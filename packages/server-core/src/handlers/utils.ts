@@ -77,6 +77,21 @@ function recoverEmbeddedWindowsAbsolutePath(filePath: string): string {
   return filePath
 }
 
+async function getAllowedDirCandidates(dir: string): Promise<string[]> {
+  const normalizedDir = normalize(dir)
+  const candidates = [normalizedDir]
+
+  try {
+    const realDir = normalize(await realpath(normalizedDir))
+    if (realDir !== normalizedDir) candidates.push(realDir)
+  } catch {
+    // Nonexistent additional dirs are still useful for validating paths that
+    // will be created later, so keep the normalized candidate.
+  }
+
+  return candidates
+}
+
 /**
  * Validates that a file path is within allowed directories to prevent path traversal attacks.
  * Allowed directories: user's home directory, /tmp, and any additional dirs passed by the caller
@@ -116,11 +131,14 @@ export async function validateFilePath(
     tmpdir(),
     ...(additionalAllowedDirs ?? []),
   ].filter(Boolean)
+  const allowedDirCandidates = (await Promise.all(
+    allowedDirs.map((dir) => getAllowedDirCandidates(dir)),
+  )).flat()
+  const normalizedReal = normalize(realFilePath)
 
   // Check if the real path is within an allowed directory (cross-platform)
-  const isAllowed = allowedDirs.some(dir => {
+  const isAllowed = allowedDirCandidates.some(dir => {
     const normalizedDir = normalize(dir)
-    const normalizedReal = normalize(realFilePath)
     return normalizedReal.startsWith(normalizedDir + sep) || normalizedReal === normalizedDir
   })
 
