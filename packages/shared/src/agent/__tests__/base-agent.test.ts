@@ -5,20 +5,32 @@
  * Tests model/thinking configuration, permission mode, source management,
  * and lifecycle management.
  */
-import { describe, it, expect, beforeEach } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { AbortReason } from '../backend/types.ts';
 import {
   TestAgent,
   createMockBackendConfig,
+  createMockSession,
   createMockSource,
+  createMockWorkspace,
   collectEvents,
 } from './test-utils.ts';
 
 describe('BaseAgent', () => {
   let agent: TestAgent;
+  const tempDirs: string[] = [];
 
   beforeEach(() => {
     agent = new TestAgent(createMockBackendConfig());
+  });
+
+  afterEach(() => {
+    for (const dir of tempDirs.splice(0)) {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   describe('Model Configuration', () => {
@@ -184,6 +196,35 @@ describe('BaseAgent', () => {
       await collectEvents(agent.chat('test message'));
       expect(agent.chatCalls).toHaveLength(1);
       expect(agent.chatCalls[0]?.message).toBe('test message');
+    });
+
+    it('should apply explicit skill slugs even when the message has no skill mention', async () => {
+      const workspaceRoot = mkdtempSync(join(tmpdir(), 'base-agent-skill-'));
+      tempDirs.push(workspaceRoot);
+      const skillDir = join(workspaceRoot, 'skills', 'dida');
+      mkdirSync(skillDir, { recursive: true });
+      writeFileSync(
+        join(skillDir, 'SKILL.md'),
+        [
+          '---',
+          'name: Dida',
+          'description: Manage Dida tasks',
+          '---',
+          'Use the Dida CLI to manage tasks.',
+        ].join('\n'),
+      );
+
+      agent = new TestAgent(createMockBackendConfig({
+        workspace: createMockWorkspace({ rootPath: workspaceRoot }),
+        session: createMockSession({ workspaceRootPath: workspaceRoot }),
+      }));
+
+      await collectEvents(agent.chat('今晚收拾床铺', undefined, { skillSlugs: ['dida'] }));
+
+      expect(agent.chatCalls).toHaveLength(1);
+      expect(agent.chatCalls[0]?.message).toContain('Before proceeding with the user\'s request');
+      expect(agent.chatCalls[0]?.message).toContain(join(skillDir, 'SKILL.md'));
+      expect(agent.chatCalls[0]?.message).toContain('今晚收拾床铺');
     });
 
     it('should track abort calls', async () => {

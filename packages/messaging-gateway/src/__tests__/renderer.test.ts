@@ -241,7 +241,8 @@ describe('Renderer — progress mode (default)', () => {
     ])
     const drafts = adapter.calls.filter((c) => c.kind === 'sendMessageDraft')
     expect(drafts[0]!.text).toBe('🔧 Read…')
-    expect(drafts[1]!.text).toBe('')
+    expect(drafts[1]!.text).toBe('💭 thinking…')
+    expect(drafts.every((d) => d.text && d.text.length > 0)).toBe(true)
     expect(drafts[0]!.draftId).toBe(drafts[1]!.draftId)
 
     const rich = adapter.calls.find((c) => c.kind === 'sendRichMessage')

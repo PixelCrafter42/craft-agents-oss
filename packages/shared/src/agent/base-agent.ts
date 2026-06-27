@@ -65,7 +65,7 @@ import { buildTitlePrompt, buildRegenerateTitlePrompt, validateTitle } from '../
 
 // Skill extraction for Codex/Copilot backends (Claude uses native SDK Skill tool)
 import { parseMentions, resolveSkillMentions, resolveSourceMentions, resolveFileMentions } from '../mentions/index.ts';
-import { loadAllSkills } from '../skills/storage.ts';
+import { loadAllSkills, loadSkillBySlug } from '../skills/storage.ts';
 
 // ============================================================
 // Mini Agent Configuration
@@ -927,7 +927,7 @@ ${formattedMessages}
    *   - cleanMessage: Message with mentions stripped, or default directive
    *   - missingSkills: Array of skill slugs that were mentioned but not found
    */
-  protected extractSkillPaths(message: string): {
+  protected extractSkillPaths(message: string, explicitSkillSlugs: string[] = []): {
     skillPaths: Map<string, string>;
     cleanMessage: string;
     missingSkills: string[];
@@ -957,6 +957,27 @@ ${formattedMessages}
         } else {
           this.debug(`[extractSkillPaths] SKILL.md not found: ${skillMdPath}`);
         }
+      }
+    }
+
+    for (const slug of explicitSkillSlugs) {
+      if (!slug || skillPaths.has(slug)) continue;
+
+      const skill = skills.find(s => s.slug === slug) ?? loadSkillBySlug(workspaceRoot, slug, projectRoot);
+      if (!skill) {
+        if (!parsed.invalidSkills.includes(slug)) {
+          parsed.invalidSkills.push(slug);
+        }
+        continue;
+      }
+
+      const skillMdPath = join(skill.path, 'SKILL.md');
+      if (existsSync(skillMdPath)) {
+        skillPaths.set(slug, skillMdPath);
+        this.debug(`[extractSkillPaths] Resolved explicit skill ${slug} → ${skillMdPath}`);
+      } else if (!parsed.invalidSkills.includes(slug)) {
+        parsed.invalidSkills.push(slug);
+        this.debug(`[extractSkillPaths] Explicit skill SKILL.md not found: ${skillMdPath}`);
       }
     }
 
@@ -1010,7 +1031,7 @@ ${formattedMessages}
     attachments?: FileAttachment[],
     options?: ChatOptions
   ): AsyncGenerator<AgentEvent> {
-    const { skillPaths, cleanMessage, missingSkills } = this.extractSkillPaths(message);
+    const { skillPaths, cleanMessage, missingSkills } = this.extractSkillPaths(message, options?.skillSlugs);
     if (missingSkills.length > 0) {
       yield { type: 'error', message: `Skill(s) not found: ${missingSkills.join(', ')}` };
       yield { type: 'complete' };

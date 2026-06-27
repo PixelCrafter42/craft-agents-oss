@@ -6,12 +6,19 @@
  * /pair <code>   — finish a session-initiated pairing flow
  * /unbind        — disconnect channel
  * /help          — show available commands
+ * /menu          — show interactive Telegram-style menu
+ * /skills        — list Craft skills available to the bound session
+ * /use <skill>   — invoke a Craft skill for the bound session
  * /status        — show current binding
  * /stop          — abort the current agent run
  */
 
+import type { Workspace } from '@craft-agent/core/types'
 import type { ISessionManager } from '@craft-agent/server-core/handlers'
+import type { Session } from '@craft-agent/shared/protocol'
+import { loadAllSkills, loadSkillBySlug, type LoadedSkill } from '@craft-agent/shared/skills'
 import {
+  evaluateBindingAccess,
   evaluatePreBindingAccess,
   executeRejection,
   readPlatformAccessMode,
@@ -21,9 +28,14 @@ import {
 import type { BindingStore } from './binding-store'
 import type { PendingSendersStore } from './pending-senders'
 import type {
+  ButtonPress,
+  ChannelBinding,
+  InlineButton,
+  InlineButtonRow,
   IncomingMessage,
   MessagingConfig,
   MessagingLogger,
+  PlatformCommand,
   PlatformAdapter,
   PlatformOwner,
   PlatformType,
@@ -100,6 +112,49 @@ export interface AccessControlDeps {
  * `/help` is informational.
  */
 const ALWAYS_ALLOWED_COMMANDS = new Set(['/pair', '/help'])
+const SKILL_SHORTCUT_PREFIX = 's_'
+const MAX_SKILLS_IN_REPLY = 40
+const MENU_SKILLS_PAGE_SIZE = 6
+const PENDING_SKILL_TTL_MS = 5 * 60 * 1000
+const TELEGRAM_COMMAND_MAX_LEN = 32
+
+export interface SkillCommandResolver {
+  listSkills(workspaceRoot: string, projectRoot?: string): LoadedSkill[]
+  loadSkill(workspaceRoot: string, slug: string, projectRoot?: string): LoadedSkill | null
+}
+
+export interface CommandRuntimeDeps {
+  skillResolver?: SkillCommandResolver
+  ensureSessionCallbacks?: (sessionId: string) => void
+}
+
+interface SkillCommandEntry {
+  command: string
+  skill: LoadedSkill
+}
+
+interface SkillCommandContext {
+  binding: ChannelBinding
+  session: Session
+  workspace: Workspace
+  replyOpts: { threadId?: number }
+}
+
+interface PendingSkillInvocation {
+  skillSlug: string
+  skillName: string
+  expiresAt: number
+}
+
+const DEFAULT_SKILL_RESOLVER: SkillCommandResolver = {
+  listSkills: loadAllSkills,
+  loadSkill: loadSkillBySlug,
+}
+
+const BASE_COMMAND_MENU: PlatformCommand[] = [
+  { command: 'menu', description: 'Open the interactive menu' },
+  { command: 'pair', description: 'Redeem a pairing code' },
+]
 
 /**
  * Telegram (and other Bot-API platforms) lets users address commands to
@@ -117,10 +172,93 @@ export function parseCommand(text: string): { cmd: string; args: string } {
   return { cmd: '/' + m[1]!.toLowerCase(), args: (m[2] ?? '').trim() }
 }
 
+function compareSkills(a: LoadedSkill, b: LoadedSkill): number {
+  const aName = a.metadata.name || a.slug
+  const bName = b.metadata.name || b.slug
+  return aName.localeCompare(bName) || a.slug.localeCompare(b.slug)
+}
+
+function compactWhitespace(value: string | undefined): string {
+  return (value ?? '').replace(/\s+/g, ' ').trim()
+}
+
+function truncateText(value: string, max: number): string {
+  if (value.length <= max) return value
+  return `${value.slice(0, Math.max(0, max - 3)).trimEnd()}...`
+}
+
+function hashSlug(slug: string): string {
+  let hash = 0x811c9dc5
+  for (let i = 0; i < slug.length; i++) {
+    hash ^= slug.charCodeAt(i)
+    hash = Math.imul(hash, 0x01000193)
+  }
+  return (hash >>> 0).toString(36).padStart(7, '0').slice(0, 4)
+}
+
+function sanitizeSkillAliasBase(slug: string): string {
+  const base = slug
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .replace(/_+/g, '_')
+  return base || 'skill'
+}
+
+function uniqueSkillCommand(base: string, slug: string, used: Set<string>): string {
+  let command = `${SKILL_SHORTCUT_PREFIX}${base}`.slice(0, TELEGRAM_COMMAND_MAX_LEN).replace(/_+$/g, '')
+  if (!used.has(command)) return command
+
+  const hash = hashSlug(slug)
+  const maxBaseLen = TELEGRAM_COMMAND_MAX_LEN - SKILL_SHORTCUT_PREFIX.length - hash.length - 1
+  const hashedBase = base.slice(0, maxBaseLen).replace(/_+$/g, '') || 'skill'
+  command = `${SKILL_SHORTCUT_PREFIX}${hashedBase}_${hash}`
+
+  let suffix = 2
+  while (used.has(command)) {
+    const suffixText = String(suffix++)
+    const maxWithSuffix = TELEGRAM_COMMAND_MAX_LEN - SKILL_SHORTCUT_PREFIX.length - hash.length - suffixText.length - 2
+    const suffixedBase = base.slice(0, maxWithSuffix).replace(/_+$/g, '') || 'skill'
+    command = `${SKILL_SHORTCUT_PREFIX}${suffixedBase}_${hash}_${suffixText}`
+  }
+  return command
+}
+
+function buildSkillCommandEntries(skills: LoadedSkill[]): SkillCommandEntry[] {
+  const used = new Set<string>()
+  return [...skills].sort(compareSkills).map((skill) => {
+    const command = uniqueSkillCommand(sanitizeSkillAliasBase(skill.slug), skill.slug, used)
+    used.add(command)
+    return { command, skill }
+  })
+}
+
+function parseSkillInvocationArgs(args: string): { skill: string; prompt: string } | null {
+  const trimmed = args.trim()
+  if (!trimmed) return null
+  const m = trimmed.match(/^(\S+)(?:\s+([\s\S]+))?$/)
+  if (!m) return null
+  const skill = m[1]!.trim()
+  const prompt = (m[2] ?? '').trim()
+  if (!skill || !prompt) return null
+  return { skill, prompt }
+}
+
+function chunkButtons(buttons: InlineButton[], columns: number): InlineButtonRow[] {
+  const rows: InlineButtonRow[] = []
+  for (let i = 0; i < buttons.length; i += columns) {
+    rows.push(buttons.slice(i, i + columns))
+  }
+  return rows
+}
+
 export class Commands {
   private readonly log: MessagingLogger
   private readonly access: AccessControlDeps
+  private readonly skillResolver: SkillCommandResolver
+  private readonly ensureSessionCallbacks?: (sessionId: string) => void
   private readonly recentRejectReplies = new Map<string, number>()
+  private readonly pendingSkillInvocations = new Map<string, PendingSkillInvocation>()
 
   constructor(
     private readonly sessionManager: ISessionManager,
@@ -132,9 +270,12 @@ export class Commands {
       getWorkspaceConfig: () => ({ enabled: false, platforms: {} }),
       seedOwnerOnFirstPair: async () => [],
     },
+    runtimeDeps: CommandRuntimeDeps = {},
   ) {
     this.log = logger
     this.access = access
+    this.skillResolver = runtimeDeps.skillResolver ?? DEFAULT_SKILL_RESOLVER
+    this.ensureSessionCallbacks = runtimeDeps.ensureSessionCallbacks
   }
 
   async handle(adapter: PlatformAdapter, msg: IncomingMessage): Promise<void> {
@@ -172,6 +313,14 @@ export class Commands {
       await this.handleUnbind(adapter, msg)
     } else if (cmd === '/help') {
       await this.handleHelp(adapter, msg)
+    } else if (cmd === '/menu') {
+      await this.handleMenu(adapter, msg)
+    } else if (cmd === '/skills') {
+      await this.handleSkills(adapter, msg)
+    } else if (cmd === '/use' || cmd === '/skill') {
+      await this.handleUse(adapter, msg)
+    } else if (cmd.startsWith(`/${SKILL_SHORTCUT_PREFIX}`)) {
+      await this.handleSkillShortcut(adapter, msg, cmd.slice(1))
     } else {
       // Sender passed the access gate (owner or open workspace) and typed
       // free-form text into a chat with no binding. Show the help prompt.
@@ -181,6 +330,8 @@ export class Commands {
         '/new [name] — start a new session\n' +
         '/bind — connect to an existing session\n' +
         '/pair <code> — redeem a pairing code from the app\n' +
+        '/menu — open interactive menu\n' +
+        '/skills — list Craft skills after binding\n' +
         '/help — show all commands',
         replyOpts,
       )
@@ -236,6 +387,16 @@ export class Commands {
       case '/help':
         await this.handleHelp(adapter, msg)
         return true
+      case '/menu':
+        await this.handleMenu(adapter, msg)
+        return true
+      case '/skills':
+        await this.handleSkills(adapter, msg)
+        return true
+      case '/use':
+      case '/skill':
+        await this.handleUse(adapter, msg)
+        return true
       case '/status':
         await this.handleStatus(adapter, msg)
         return true
@@ -243,6 +404,10 @@ export class Commands {
         await this.handleStop(adapter, msg)
         return true
       default:
+        if (cmd.startsWith(`/${SKILL_SHORTCUT_PREFIX}`)) {
+          await this.handleSkillShortcut(adapter, msg, cmd.slice(1))
+          return true
+        }
         return false
     }
   }
@@ -255,6 +420,7 @@ export class Commands {
     adapter: PlatformAdapter,
     msg: IncomingMessage,
     reason: AccessRejectReason,
+    extra: { bindingId?: string; sessionId?: string } = {},
   ): Promise<void> {
     await executeRejection(
       adapter,
@@ -265,12 +431,374 @@ export class Commands {
         ...(this.access.pendingStore ? { pendingStore: this.access.pendingStore } : {}),
       },
       this.log,
+      extra,
     )
   }
 
   // -------------------------------------------------------------------------
   // Command handlers
   // -------------------------------------------------------------------------
+
+  async consumePendingSkill(adapter: PlatformAdapter, msg: IncomingMessage): Promise<boolean> {
+    const text = msg.text.trim()
+    if (!text || text.startsWith('/') || msg.attachments?.length) return false
+
+    const key = this.pendingSkillKey(msg)
+    const pending = this.pendingSkillInvocations.get(key)
+    if (!pending) return false
+    if (Date.now() > pending.expiresAt) {
+      this.pendingSkillInvocations.delete(key)
+      return false
+    }
+
+    const context = await this.resolveBoundSkillContext(adapter, msg)
+    if (!context) {
+      this.pendingSkillInvocations.delete(key)
+      return true
+    }
+
+    const skill = this.resolveSkill(context, pending.skillSlug)
+    if (!skill) {
+      this.pendingSkillInvocations.delete(key)
+      await adapter.sendText(
+        msg.channelId,
+        `Skill no longer available: ${pending.skillSlug}`,
+        context.replyOpts,
+      )
+      return true
+    }
+
+    this.pendingSkillInvocations.delete(key)
+    await this.invokeSkill(adapter, msg, context, skill, text)
+    return true
+  }
+
+  async handleMenuButton(adapter: PlatformAdapter, press: ButtonPress): Promise<boolean> {
+    if (!press.buttonId.startsWith('menu:')) return false
+
+    const msg = this.messageFromButtonPress(press)
+    const replyOpts = press.threadId !== undefined ? { threadId: press.threadId } : {}
+    if (adapter.clearButtons && press.messageId) {
+      await adapter.clearButtons(press.channelId, press.messageId, replyOpts).catch(() => {})
+    }
+
+    const parts = press.buttonId.split(':')
+    const action = parts[1] ?? ''
+    switch (action) {
+      case 'home':
+        await this.sendHomeMenu(adapter, msg)
+        return true
+      case 'new':
+        await this.handleNew(adapter, { ...msg, text: '/new' })
+        return true
+      case 'sessions':
+        await this.sendSessionsMenu(adapter, msg)
+        return true
+      case 'skills':
+        await this.sendSkillsMenu(adapter, msg, Number(parts[2] ?? 0) || 0)
+        return true
+      case 'skill':
+        await this.sendSkillDetailMenu(adapter, msg, parts[2] ?? '')
+        return true
+      case 'use':
+        await this.armPendingSkill(adapter, msg, parts[2] ?? '')
+        return true
+      case 'cancel_use':
+        this.pendingSkillInvocations.delete(this.pendingSkillKey(msg))
+        await adapter.sendText(press.channelId, 'Skill prompt cancelled.', replyOpts)
+        return true
+      case 'status':
+        await this.handleStatus(adapter, msg)
+        return true
+      case 'stop':
+        await this.handleStop(adapter, msg)
+        return true
+      case 'pair_help':
+        await adapter.sendText(
+          press.channelId,
+          'Pairing: generate a 6-digit code in the Craft Agents app, then send /pair <code> here.',
+          replyOpts,
+        )
+        return true
+      case 'help':
+        await this.handleHelp(adapter, msg)
+        return true
+      case 'close':
+        return true
+      default:
+        return true
+    }
+  }
+
+  private async handleMenu(adapter: PlatformAdapter, msg: IncomingMessage): Promise<void> {
+    await this.syncCompactCommandMenu(adapter, msg)
+    if (!adapter.capabilities.inlineButtons) {
+      await this.handleHelp(adapter, msg)
+      return
+    }
+    await this.sendHomeMenu(adapter, msg)
+  }
+
+  private async sendHomeMenu(adapter: PlatformAdapter, msg: IncomingMessage): Promise<void> {
+    const replyOpts = msg.threadId !== undefined ? { threadId: msg.threadId } : {}
+    const binding = this.bindingStore.findByChannel(adapter.platform, msg.channelId, msg.threadId)
+    const session = binding ? await this.sessionManager.getSession(binding.sessionId) : null
+    const boundLine = binding
+      ? `Bound to "${session?.name || binding.sessionId.slice(0, 8)}".`
+      : 'No session is bound to this chat.'
+
+    const rows: InlineButtonRow[] = binding
+      ? [
+          [
+            { id: 'menu:skills:0', label: 'Skills' },
+            { id: 'menu:status', label: 'Status' },
+          ],
+          [
+            { id: 'menu:sessions', label: 'Sessions' },
+            { id: 'menu:stop', label: 'Stop' },
+          ],
+          [
+            { id: 'menu:new', label: 'New Session' },
+            { id: 'menu:help', label: 'Help' },
+          ],
+          [{ id: 'menu:close', label: 'Close' }],
+        ]
+      : [
+          [
+            { id: 'menu:new', label: 'New Session' },
+            { id: 'menu:sessions', label: 'Bind Session' },
+          ],
+          [
+            { id: 'menu:pair_help', label: 'Pair Help' },
+            { id: 'menu:help', label: 'Help' },
+          ],
+          [{ id: 'menu:close', label: 'Close' }],
+        ]
+
+    await this.sendButtonRows(
+      adapter,
+      msg.channelId,
+      `Craft Agents Menu\n\n${boundLine}\nWhat do you want to do?`,
+      rows,
+      replyOpts,
+    )
+  }
+
+  private async sendSessionsMenu(adapter: PlatformAdapter, msg: IncomingMessage): Promise<void> {
+    const replyOpts = msg.threadId !== undefined ? { threadId: msg.threadId } : {}
+    const recent = this.getRecentSessions()
+    if (recent.length === 0) {
+      await this.sendButtonRows(
+        adapter,
+        msg.channelId,
+        'No sessions found. Create a new session?',
+        [
+          [{ id: 'menu:new', label: 'New Session' }],
+          [{ id: 'menu:home', label: 'Back' }],
+        ],
+        replyOpts,
+      )
+      return
+    }
+
+    const maxSessionButtons = Math.max(1, adapter.capabilities.maxButtons - 1)
+    const sessionButtons = recent.slice(0, maxSessionButtons).map((s) => ({
+      id: `bind:${s.id}`,
+      label: truncateText(s.name || s.id.slice(0, 8), 30),
+      data: s.id,
+    }))
+    await this.sendButtonRows(
+      adapter,
+      msg.channelId,
+      'Recent sessions:',
+      [
+        ...chunkButtons(sessionButtons, 2),
+        [{ id: 'menu:home', label: 'Back' }],
+      ],
+      replyOpts,
+    )
+  }
+
+  private async sendSkillsMenu(
+    adapter: PlatformAdapter,
+    msg: IncomingMessage,
+    page: number,
+  ): Promise<void> {
+    const context = await this.resolveBoundSkillContext(adapter, msg)
+    if (!context) return
+
+    let entries: SkillCommandEntry[]
+    try {
+      entries = buildSkillCommandEntries(
+        this.skillResolver.listSkills(context.workspace.rootPath, context.session.workingDirectory),
+      )
+    } catch (err) {
+      this.log.error('failed to list skills for interactive menu', {
+        event: 'skill_menu_list_failed',
+        workspaceId: context.workspace.id,
+        sessionId: context.binding.sessionId,
+        error: err,
+      })
+      await adapter.sendText(msg.channelId, 'Failed to load Craft skills for this session.', context.replyOpts)
+      return
+    }
+
+    if (entries.length === 0) {
+      await this.sendButtonRows(
+        adapter,
+        msg.channelId,
+        'No Craft skills found for this session.',
+        [[{ id: 'menu:home', label: 'Back' }]],
+        context.replyOpts,
+      )
+      return
+    }
+
+    const pageCount = Math.max(1, Math.ceil(entries.length / MENU_SKILLS_PAGE_SIZE))
+    const safePage = Math.min(Math.max(0, page), pageCount - 1)
+    const pageEntries = entries.slice(
+      safePage * MENU_SKILLS_PAGE_SIZE,
+      safePage * MENU_SKILLS_PAGE_SIZE + MENU_SKILLS_PAGE_SIZE,
+    )
+    const nav: InlineButton[] = []
+    if (safePage > 0) nav.push({ id: `menu:skills:${safePage - 1}`, label: 'Prev' })
+    if (safePage + 1 < pageCount) nav.push({ id: `menu:skills:${safePage + 1}`, label: 'Next' })
+
+    await this.sendButtonRows(
+      adapter,
+      msg.channelId,
+      `Craft skills for "${context.session.name || context.session.id.slice(0, 8)}"\nPage ${safePage + 1}/${pageCount}. Choose a skill:`,
+      [
+        ...pageEntries.map((entry) => [{
+          id: `menu:skill:${entry.command}`,
+          label: truncateText(compactWhitespace(entry.skill.metadata.name) || entry.skill.slug, 42),
+        }]),
+        ...(nav.length ? [nav] : []),
+        [{ id: 'menu:home', label: 'Back to Menu' }],
+      ],
+      context.replyOpts,
+    )
+    await this.syncCompactCommandMenu(adapter, msg)
+  }
+
+  private async sendSkillDetailMenu(
+    adapter: PlatformAdapter,
+    msg: IncomingMessage,
+    command: string,
+  ): Promise<void> {
+    const context = await this.resolveBoundSkillContext(adapter, msg)
+    if (!context) return
+
+    const entry = this.resolveSkillEntryByCommand(context, command)
+    if (!entry) {
+      await this.sendButtonRows(
+        adapter,
+        msg.channelId,
+        'Skill shortcut expired. Refresh the skills menu.',
+        [
+          [{ id: 'menu:skills:0', label: 'Refresh Skills' }],
+          [{ id: 'menu:home', label: 'Back to Menu' }],
+        ],
+        context.replyOpts,
+      )
+      return
+    }
+
+    const name = compactWhitespace(entry.skill.metadata.name) || entry.skill.slug
+    const description = compactWhitespace(entry.skill.metadata.description)
+    const descriptionLine = description ? `\n${truncateText(description, 500)}` : ''
+    await this.sendButtonRows(
+      adapter,
+      msg.channelId,
+      `${name}\n${entry.skill.slug}${descriptionLine}\n\nUse this skill for your next message?`,
+      [
+        [{ id: `menu:use:${entry.command}`, label: 'Use Next Message' }],
+        [
+          { id: 'menu:skills:0', label: 'Back to Skills' },
+          { id: 'menu:home', label: 'Main Menu' },
+        ],
+      ],
+      context.replyOpts,
+    )
+  }
+
+  private async armPendingSkill(
+    adapter: PlatformAdapter,
+    msg: IncomingMessage,
+    command: string,
+  ): Promise<void> {
+    const context = await this.resolveBoundSkillContext(adapter, msg)
+    if (!context) return
+
+    const entry = this.resolveSkillEntryByCommand(context, command)
+    if (!entry) {
+      await adapter.sendText(msg.channelId, 'Skill shortcut expired. Run /menu and choose the skill again.', context.replyOpts)
+      return
+    }
+
+    const skillName = compactWhitespace(entry.skill.metadata.name) || entry.skill.slug
+    this.pendingSkillInvocations.set(this.pendingSkillKey(msg), {
+      skillSlug: entry.skill.slug,
+      skillName,
+      expiresAt: Date.now() + PENDING_SKILL_TTL_MS,
+    })
+
+    await this.sendButtonRows(
+      adapter,
+      msg.channelId,
+      `Ready. Your next text message will use "${skillName}".`,
+      [[{ id: 'menu:cancel_use', label: 'Cancel' }]],
+      context.replyOpts,
+    )
+  }
+
+  private async sendButtonRows(
+    adapter: PlatformAdapter,
+    channelId: string,
+    text: string,
+    rows: InlineButtonRow[],
+    opts: { threadId?: number },
+  ): Promise<void> {
+    const filteredRows = rows
+      .map((row) => row.filter(Boolean))
+      .filter((row) => row.length > 0)
+    if (adapter.sendButtonRows) {
+      await adapter.sendButtonRows(channelId, text, filteredRows, opts)
+      return
+    }
+    await adapter.sendButtons(channelId, text, filteredRows.flat(), opts)
+  }
+
+  private messageFromButtonPress(press: ButtonPress): IncomingMessage {
+    return {
+      platform: press.platform,
+      channelId: press.channelId,
+      ...(press.threadId !== undefined ? { threadId: press.threadId } : {}),
+      messageId: press.messageId,
+      senderId: press.senderId,
+      ...(press.senderName ? { senderName: press.senderName } : {}),
+      ...(press.senderUsername ? { senderUsername: press.senderUsername } : {}),
+      ...(press.senderIsBot ? { senderIsBot: true } : {}),
+      text: '',
+      timestamp: Date.now(),
+      raw: press,
+    }
+  }
+
+  private pendingSkillKey(sender: Pick<IncomingMessage, 'platform' | 'channelId' | 'threadId' | 'senderId'>): string {
+    return `${sender.platform}:${sender.channelId}:${sender.threadId ?? ''}:${sender.senderId}`
+  }
+
+  private resolveSkillEntryByCommand(
+    context: SkillCommandContext,
+    command: string,
+  ): SkillCommandEntry | null {
+    if (!command) return null
+    const entries = buildSkillCommandEntries(
+      this.skillResolver.listSkills(context.workspace.rootPath, context.session.workingDirectory),
+    )
+    return entries.find((entry) => entry.command === command) ?? null
+  }
 
   private async handleNew(adapter: PlatformAdapter, msg: IncomingMessage): Promise<void> {
     const name = parseCommand(msg.text).args || undefined
@@ -603,6 +1131,301 @@ export class Commands {
     }
   }
 
+  private async handleSkills(adapter: PlatformAdapter, msg: IncomingMessage): Promise<void> {
+    const context = await this.resolveBoundSkillContext(adapter, msg)
+    if (!context) return
+
+    let skills: LoadedSkill[]
+    try {
+      skills = this.skillResolver.listSkills(
+        context.workspace.rootPath,
+        context.session.workingDirectory,
+      )
+    } catch (err) {
+      this.log.error('failed to list skills for chat command', {
+        event: 'skill_command_list_failed',
+        workspaceId: context.workspace.id,
+        sessionId: context.binding.sessionId,
+        error: err,
+      })
+      await adapter.sendText(msg.channelId, 'Failed to load Craft skills for this session.', context.replyOpts)
+      return
+    }
+
+    if (skills.length === 0) {
+      await adapter.sendText(
+        msg.channelId,
+        'No Craft skills found for this session.',
+        context.replyOpts,
+      )
+      return
+    }
+
+    const entries = buildSkillCommandEntries(skills)
+    let visibleEntries = entries.slice(0, Math.min(MAX_SKILLS_IN_REPLY, entries.length))
+    let text = this.formatSkillsReply(context.session, visibleEntries, entries.length)
+    while (text.length > adapter.capabilities.maxMessageLength && visibleEntries.length > 5) {
+      visibleEntries = visibleEntries.slice(0, -5)
+      text = this.formatSkillsReply(context.session, visibleEntries, entries.length)
+    }
+
+    await adapter.sendText(msg.channelId, text, context.replyOpts)
+    await this.syncCompactCommandMenu(adapter, msg)
+  }
+
+  private async handleUse(adapter: PlatformAdapter, msg: IncomingMessage): Promise<void> {
+    const { args } = parseCommand(msg.text)
+    const parsed = parseSkillInvocationArgs(args)
+    const replyOpts = msg.threadId !== undefined ? { threadId: msg.threadId } : {}
+    if (!parsed) {
+      await adapter.sendText(
+        msg.channelId,
+        'Usage: /use <skill-slug> <prompt>\n\nRun /skills to see available skills and shortcuts.',
+        replyOpts,
+      )
+      return
+    }
+
+    const context = await this.resolveBoundSkillContext(adapter, msg)
+    if (!context) return
+
+    let skill: LoadedSkill | null
+    try {
+      skill = this.resolveSkill(context, parsed.skill)
+    } catch (err) {
+      this.log.error('failed to resolve skill for chat command', {
+        event: 'skill_command_resolve_failed',
+        workspaceId: context.workspace.id,
+        sessionId: context.binding.sessionId,
+        skillRef: parsed.skill,
+        error: err,
+      })
+      await adapter.sendText(msg.channelId, 'Failed to load Craft skills for this session.', context.replyOpts)
+      return
+    }
+
+    if (!skill) {
+      await adapter.sendText(
+        msg.channelId,
+        `Skill not found: ${parsed.skill}\n\nRun /skills to see available skills.`,
+        context.replyOpts,
+      )
+      return
+    }
+
+    await this.invokeSkill(adapter, msg, context, skill, parsed.prompt)
+  }
+
+  private async handleSkillShortcut(
+    adapter: PlatformAdapter,
+    msg: IncomingMessage,
+    command: string,
+  ): Promise<void> {
+    const { args } = parseCommand(msg.text)
+    const prompt = args.trim()
+    const replyOpts = msg.threadId !== undefined ? { threadId: msg.threadId } : {}
+    if (!prompt) {
+      await adapter.sendText(
+        msg.channelId,
+        `Usage: /${command} <prompt>\n\nRun /skills to see skill shortcuts.`,
+        replyOpts,
+      )
+      return
+    }
+
+    const context = await this.resolveBoundSkillContext(adapter, msg)
+    if (!context) return
+
+    let entries: SkillCommandEntry[]
+    try {
+      entries = buildSkillCommandEntries(
+        this.skillResolver.listSkills(context.workspace.rootPath, context.session.workingDirectory),
+      )
+    } catch (err) {
+      this.log.error('failed to resolve skill shortcut for chat command', {
+        event: 'skill_shortcut_resolve_failed',
+        workspaceId: context.workspace.id,
+        sessionId: context.binding.sessionId,
+        command,
+        error: err,
+      })
+      await adapter.sendText(msg.channelId, 'Failed to load Craft skills for this session.', context.replyOpts)
+      return
+    }
+
+    const entry = entries.find((candidate) => candidate.command === command)
+    if (!entry) {
+      await adapter.sendText(
+        msg.channelId,
+        `Unknown skill shortcut: /${command}\n\nRun /skills to refresh the available shortcuts.`,
+        context.replyOpts,
+      )
+      return
+    }
+
+    await this.invokeSkill(adapter, msg, context, entry.skill, prompt)
+  }
+
+  private async invokeSkill(
+    adapter: PlatformAdapter,
+    msg: IncomingMessage,
+    context: SkillCommandContext,
+    skill: LoadedSkill,
+    prompt: string,
+  ): Promise<void> {
+    try {
+      this.ensureSessionCallbacks?.(context.binding.sessionId)
+      await adapter.sendTyping(msg.channelId, context.replyOpts).catch(() => {})
+      await this.sessionManager.sendMessage(
+        context.binding.sessionId,
+        prompt,
+        undefined,
+        undefined,
+        { skillSlugs: [skill.slug] },
+      )
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : 'Unknown error'
+      this.log.error('failed to invoke skill from chat command', {
+        event: 'skill_command_invoke_failed',
+        workspaceId: context.workspace.id,
+        sessionId: context.binding.sessionId,
+        skillSlug: skill.slug,
+        error: err,
+      })
+      await adapter.sendText(
+        msg.channelId,
+        `Failed to start skill run: ${errorMsg}`,
+        context.replyOpts,
+      )
+    }
+  }
+
+  private resolveSkill(context: SkillCommandContext, skillRef: string): LoadedSkill | null {
+    const direct = this.skillResolver.loadSkill(
+      context.workspace.rootPath,
+      skillRef,
+      context.session.workingDirectory,
+    )
+    if (direct) return direct
+
+    const normalized = skillRef.toLowerCase()
+    return this.skillResolver
+      .listSkills(context.workspace.rootPath, context.session.workingDirectory)
+      .find((skill) =>
+        skill.slug.toLowerCase() === normalized ||
+        skill.metadata.name.toLowerCase() === normalized
+      ) ?? null
+  }
+
+  private async resolveBoundSkillContext(
+    adapter: PlatformAdapter,
+    msg: IncomingMessage,
+  ): Promise<SkillCommandContext | null> {
+    const replyOpts = msg.threadId !== undefined ? { threadId: msg.threadId } : {}
+    const binding = this.bindingStore.findByChannel(adapter.platform, msg.channelId, msg.threadId)
+    if (!binding) {
+      await adapter.sendText(
+        msg.channelId,
+        'No session bound. Use /bind, /new, or /pair first.',
+        replyOpts,
+      )
+      return null
+    }
+
+    const verdict = evaluateBindingAccess({
+      msg,
+      workspaceConfig: this.access.getWorkspaceConfig(),
+      binding,
+    })
+    if (!verdict.allow) {
+      await this.sendRejection(adapter, msg, verdict.reason, {
+        bindingId: binding.id,
+        sessionId: binding.sessionId,
+      })
+      return null
+    }
+
+    const session = await this.sessionManager.getSession(binding.sessionId)
+    if (!session) {
+      await adapter.sendText(msg.channelId, 'Session no longer exists.', replyOpts)
+      return null
+    }
+
+    const workspace = this.resolveWorkspaceForSession(session, binding)
+    if (!workspace) {
+      await adapter.sendText(
+        msg.channelId,
+        'Workspace not found for this session.',
+        replyOpts,
+      )
+      return null
+    }
+
+    return { binding, session, workspace, replyOpts }
+  }
+
+  private resolveWorkspaceForSession(
+    session: Session,
+    binding: ChannelBinding,
+  ): Workspace | null {
+    const getWorkspaces = (this.sessionManager as Partial<Pick<ISessionManager, 'getWorkspaces'>>).getWorkspaces
+    if (typeof getWorkspaces !== 'function') return null
+    const workspaceId = session.workspaceId || binding.workspaceId || this.workspaceId
+    return getWorkspaces.call(this.sessionManager).find((workspace) => workspace.id === workspaceId) ?? null
+  }
+
+  private formatSkillsReply(
+    session: Session,
+    entries: SkillCommandEntry[],
+    total: number,
+  ): string {
+    const sessionName = session.name || session.id.slice(0, 8)
+    const lines = entries.map((entry) => {
+      const name = truncateText(compactWhitespace(entry.skill.metadata.name) || entry.skill.slug, 48)
+      const description = truncateText(compactWhitespace(entry.skill.metadata.description), 90)
+      const suffix = description ? `: ${description}` : ''
+      return `- ${name} (${entry.skill.slug})${suffix}`
+    })
+    const more = total > entries.length
+      ? `\n... ${total - entries.length} more skills hidden. Use /menu for the paged skill picker.`
+      : ''
+
+    return [
+      `Craft skills for "${sessionName}" (${total}):`,
+      lines.join('\n'),
+      more,
+      '',
+      'Use /menu for buttons, or /use <skill-slug> <prompt> if you prefer text commands.',
+    ].filter(Boolean).join('\n')
+  }
+
+  private async syncCompactCommandMenu(
+    adapter: PlatformAdapter,
+    msg: IncomingMessage,
+  ): Promise<void> {
+    if (!adapter.setCommandMenu) return
+
+    try {
+      await adapter.setCommandMenu(
+        BASE_COMMAND_MENU,
+        { channelId: msg.channelId },
+      )
+      this.log.info('chat command menu synced with skills', {
+        event: 'compact_command_menu_synced',
+        platform: adapter.platform,
+        channelId: msg.channelId,
+        commandCount: BASE_COMMAND_MENU.length,
+      })
+    } catch (err) {
+      this.log.warn('failed to sync compact chat command menu', {
+        event: 'compact_command_menu_sync_failed',
+        platform: adapter.platform,
+        channelId: msg.channelId,
+        error: err,
+      })
+    }
+  }
+
   private async handleStatus(adapter: PlatformAdapter, msg: IncomingMessage): Promise<void> {
     const replyOpts = msg.threadId !== undefined ? { threadId: msg.threadId } : {}
     const binding = this.bindingStore.findByChannel(adapter.platform, msg.channelId, msg.threadId)
@@ -652,6 +1475,9 @@ export class Commands {
       bindLine +
       '/bind <id> — bind to specific session\n' +
       '/pair <code> — redeem an app-generated pairing code\n' +
+      '/menu — open interactive menu\n' +
+      '/skills — list Craft skills for this session\n' +
+      '/use <skill> <prompt> — run with a Craft skill\n' +
       '/unbind — disconnect this chat\n' +
       '/status — show current binding\n' +
       '/stop — abort current agent run\n' +

@@ -18,8 +18,11 @@ import type {
   SendOptions,
   SentMessage,
   InlineButton,
+  InlineButtonRow,
   ButtonPress,
   MessagingLogger,
+  PlatformCommand,
+  CommandMenuOptions,
 } from '../../types'
 import { formatForTelegram, formatPlainTextForTelegram } from './format'
 
@@ -43,6 +46,24 @@ const TELEGRAM_DRAFT_TEXT_LIMIT = 4096
 const TELEGRAM_PARSE_MODE = 'MarkdownV2' as const
 const TELEGRAM_VOICE_EXTENSIONS = new Set(['.ogg', '.oga', '.opus', '.mp3', '.m4a'])
 const TELEGRAM_AUDIO_EXTENSIONS = new Set(['.mp3', '.m4a'])
+const TELEGRAM_COMMAND_NAME_RE = /^[a-z0-9_]{1,32}$/
+
+const TELEGRAM_BASE_COMMAND_MENU: PlatformCommand[] = [
+  { command: 'menu', description: 'Open the interactive menu' },
+  { command: 'pair', description: 'Redeem a pairing code' },
+]
+
+type TelegramCommandScope =
+  | { type: 'default' }
+  | { type: 'all_private_chats' }
+  | { type: 'all_group_chats' }
+  | { type: 'all_chat_administrators' }
+  | { type: 'chat'; chat_id: number | string }
+
+interface TelegramCommandMenuTarget {
+  label: string
+  scope: TelegramCommandScope
+}
 
 /**
  * Minimal mime → extension fallback used when Telegram's `file_path` is
@@ -201,6 +222,36 @@ function telegramChatId(channelId: string): number | string {
 
 function telegramRichApi(bot: Bot): TelegramRawRichApi {
   return (bot.api as unknown as { raw: TelegramRawRichApi }).raw
+}
+
+function normalizeCommandMenu(commands: PlatformCommand[]): PlatformCommand[] {
+  const seen = new Set<string>()
+  const out: PlatformCommand[] = []
+  for (const command of commands) {
+    const name = command.command.trim().replace(/^\//, '').toLowerCase()
+    const description = command.description.trim().slice(0, 256)
+    if (!TELEGRAM_COMMAND_NAME_RE.test(name) || !description || seen.has(name)) continue
+    seen.add(name)
+    out.push({ command: name, description })
+    if (out.length >= 100) break
+  }
+  return out
+}
+
+function commandMenuTargets(opts?: CommandMenuOptions): TelegramCommandMenuTarget[] {
+  if (opts?.channelId) {
+    return [{
+      label: 'chat',
+      scope: { type: 'chat', chat_id: telegramChatId(opts.channelId) },
+    }]
+  }
+
+  return [
+    { label: 'default', scope: { type: 'default' } },
+    { label: 'all_private_chats', scope: { type: 'all_private_chats' } },
+    { label: 'all_group_chats', scope: { type: 'all_group_chats' } },
+    { label: 'all_chat_administrators', scope: { type: 'all_chat_administrators' } },
+  ]
 }
 
 /**
@@ -564,10 +615,36 @@ export class TelegramAdapter implements PlatformAdapter {
       throw err
     }
 
+    await this.syncDefaultCommandMenu()
+
     this.destroyed = false
     this.reconnectAttempts = 0
     this.startPolling()
     // Do NOT set this.connected = true here — wait for onStart.
+  }
+
+  async setCommandMenu(commands: PlatformCommand[], opts?: CommandMenuOptions): Promise<void> {
+    if (!this.bot) throw new Error('Telegram adapter not initialized')
+    const normalized = normalizeCommandMenu(commands)
+    await withTimeout(
+      Promise.all(commandMenuTargets(opts).map((target) =>
+        this.bot!.api.setMyCommands(normalized, { scope: target.scope })
+      )),
+      10_000,
+      opts?.channelId ? 'setMyCommands:chat' : 'setMyCommands:global-scopes',
+    )
+  }
+
+  private async syncDefaultCommandMenu(): Promise<void> {
+    try {
+      await this.setCommandMenu(TELEGRAM_BASE_COMMAND_MENU)
+      this.log.info('[telegram] command menu synced', {
+        event: 'telegram_commands_synced',
+        commandCount: TELEGRAM_BASE_COMMAND_MENU.length,
+      })
+    } catch (err) {
+      this.log.warn('[telegram] setMyCommands failed (non-fatal):', describeError(err))
+    }
   }
 
   /**
@@ -891,13 +968,19 @@ export class TelegramAdapter implements PlatformAdapter {
   }
 
   async sendButtons(channelId: string, text: string, buttons: InlineButton[], opts?: SendOptions): Promise<SentMessage> {
+    return this.sendButtonRows(channelId, text, buttons.map((button) => [button]), opts)
+  }
+
+  async sendButtonRows(channelId: string, text: string, rows: InlineButtonRow[], opts?: SendOptions): Promise<SentMessage> {
     if (!this.bot) throw new Error('Telegram adapter not initialized')
 
     const keyboard = {
-      inline_keyboard: buttons.map((b) => [{
-        text: b.label,
-        callback_data: b.id,
-      }]),
+      inline_keyboard: rows
+        .filter((row) => row.length > 0)
+        .map((row) => row.map((b) => ({
+          text: b.label,
+          callback_data: b.id,
+        }))),
     }
 
     const sent = await this.bot.api.sendMessage(Number(channelId), formatForTelegram(text), {

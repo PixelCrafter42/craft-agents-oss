@@ -57,6 +57,10 @@ interface FakeTelegramApi {
     sendRichMessage?: (payload: Record<string, unknown>) => Promise<{ message_id: number }>
     sendRichMessageDraft?: (payload: Record<string, unknown>) => Promise<true>
   }
+  setMyCommands?: (
+    commands: readonly { command: string; description: string }[],
+    other?: Record<string, unknown>,
+  ) => Promise<true>
 }
 
 function makeAdapter(api: FakeTelegramApi): TelegramAdapter {
@@ -144,6 +148,77 @@ describe('TelegramAdapter MarkdownV2 sending', () => {
         },
       },
     ])
+  })
+
+  it('sends inline keyboard rows for interactive menus', async () => {
+    const calls: ApiCall[] = []
+    const adapter = makeAdapter({
+      async sendMessage(chatId, text, other) {
+        calls.push({ method: 'sendMessage', chatId, text, other })
+        return { message_id: 2 }
+      },
+    })
+
+    await adapter.sendButtonRows('42', 'Menu', [
+      [
+        { id: 'menu:skills:0', label: 'Skills' },
+        { id: 'menu:status', label: 'Status' },
+      ],
+      [{ id: 'menu:home', label: 'Back' }],
+    ])
+
+    expect(calls[0]?.other?.reply_markup).toEqual({
+      inline_keyboard: [
+        [
+          { text: 'Skills', callback_data: 'menu:skills:0' },
+          { text: 'Status', callback_data: 'menu:status' },
+        ],
+        [{ text: 'Back', callback_data: 'menu:home' }],
+      ],
+    })
+  })
+
+  it('syncs command menus across Telegram global command scopes', async () => {
+    const calls: { commands: readonly { command: string; description: string }[]; other?: Record<string, unknown> }[] = []
+    const adapter = makeAdapter({
+      async setMyCommands(commands, other) {
+        calls.push({ commands, other })
+        return true
+      },
+    })
+
+    await adapter.setCommandMenu([
+      { command: 'menu', description: 'Open the interactive menu' },
+      { command: 'pair', description: 'Redeem a pairing code' },
+    ])
+
+    expect(calls.map((call) => (call.other?.scope as { type: string } | undefined)?.type)).toEqual([
+      'default',
+      'all_private_chats',
+      'all_group_chats',
+      'all_chat_administrators',
+    ])
+    expect(calls.every((call) => call.commands.map((command) => command.command).join(',') === 'menu,pair')).toBe(true)
+  })
+
+  it('syncs command menus for the current Telegram chat scope', async () => {
+    const calls: { commands: readonly { command: string; description: string }[]; other?: Record<string, unknown> }[] = []
+    const adapter = makeAdapter({
+      async setMyCommands(commands, other) {
+        calls.push({ commands, other })
+        return true
+      },
+    })
+
+    await adapter.setCommandMenu(
+      [{ command: 'menu', description: 'Open the interactive menu' }],
+      { channelId: '42' },
+    )
+
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.other).toEqual({
+      scope: { type: 'chat', chat_id: 42 },
+    })
   })
 
   it('passes parse_mode for document captions', async () => {

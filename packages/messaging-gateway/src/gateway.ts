@@ -222,6 +222,9 @@ export class MessagingGateway {
       opts.pairingConsumer,
       this.log.child({ component: 'commands' }),
       this.accessDeps,
+      {
+        ensureSessionCallbacks: (sessionId) => this.registerSessionMessagingCallbacks(sessionId),
+      },
     )
     this.router = new Router(
       opts.sessionManager,
@@ -391,6 +394,9 @@ export class MessagingGateway {
 
   private wireAdapter(adapter: PlatformAdapter): void {
     adapter.onMessage(async (msg: IncomingMessage) => {
+      const consumedPendingSkill = await this.commands.consumePendingSkill(adapter, msg)
+      if (consumedPendingSkill) return
+
       const isCommand = msg.text.trim().startsWith('/')
       if (isCommand) {
         const handled = await this.commands.handleCommand(adapter, msg)
@@ -654,6 +660,10 @@ export class MessagingGateway {
         return
       }
 
+      if (adapter.clearButtons && press.messageId) {
+        await adapter.clearButtons(press.channelId, press.messageId, pressOpts).catch(() => {})
+      }
+
       this.bindingStore.bind(
         this.workspaceId,
         session.id,
@@ -670,6 +680,11 @@ export class MessagingGateway {
         pressOpts,
       )
       return
+    }
+
+    if (press.buttonId.startsWith('menu:')) {
+      const handled = await this.commands.handleMenuButton(adapter, press)
+      if (handled) return
     }
 
     if (press.buttonId.startsWith('perm:')) {
@@ -892,6 +907,25 @@ export class MessagingGateway {
         msg: this.synthesizeMsgForGate(press),
         workspaceConfig: this.accessDeps.getWorkspaceConfig(),
       })
+    } else if (press.buttonId.startsWith('menu:')) {
+      const binding = this.bindingStore.findByChannel(
+        press.platform,
+        press.channelId,
+        press.threadId,
+      )
+      if (binding) {
+        extra = { bindingId: binding.id, sessionId: binding.sessionId }
+        verdict = evaluateBindingAccess({
+          msg: this.synthesizeMsgForGate(press),
+          workspaceConfig: this.accessDeps.getWorkspaceConfig(),
+          binding,
+        })
+      } else {
+        verdict = evaluatePreBindingAccess({
+          msg: this.synthesizeMsgForGate(press),
+          workspaceConfig: this.accessDeps.getWorkspaceConfig(),
+        })
+      }
     } else if (
       press.buttonId.startsWith('perm:') ||
       press.buttonId.startsWith('plan:')

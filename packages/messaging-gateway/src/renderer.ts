@@ -426,8 +426,7 @@ export class Renderer {
     if (!state.progressDraftId) {
       state.progressDraftId = this.nextDraftId()
     }
-    const text = status === THINKING_LABEL ? '' : status
-    const sent = await this.trySendDraft(state, binding, adapter, state.progressDraftId, text, false)
+    const sent = await this.trySendDraft(state, binding, adapter, state.progressDraftId, status, false)
     if (!sent) {
       state.progressDraftId = null
       return false

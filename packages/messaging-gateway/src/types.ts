@@ -146,6 +146,22 @@ export interface InlineButton {
   data?: string
 }
 
+export type InlineButtonRow = InlineButton[]
+
+export interface PlatformCommand {
+  /** Bot-API command name without the leading slash. */
+  command: string
+  description: string
+}
+
+export interface CommandMenuOptions {
+  /**
+   * Platform-native channel/chat id. Telegram applies this at chat scope; forum
+   * topics inside a supergroup share the same chat-scoped menu.
+   */
+  channelId?: string
+}
+
 export interface ButtonPress {
   platform: PlatformType
   channelId: string
@@ -205,11 +221,13 @@ export interface PlatformAdapter {
   sendText(channelId: string, text: string, opts?: SendOptions): Promise<SentMessage>
   editMessage(channelId: string, messageId: string, text: string, opts?: SendOptions): Promise<void>
   sendButtons(channelId: string, text: string, buttons: InlineButton[], opts?: SendOptions): Promise<SentMessage>
+  sendButtonRows?(channelId: string, text: string, rows: InlineButtonRow[], opts?: SendOptions): Promise<SentMessage>
   sendTyping(channelId: string, opts?: SendOptions): Promise<void>
   sendFile(channelId: string, file: Buffer, filename: string, caption?: string, opts?: SendOptions): Promise<SentMessage>
   sendMessageDraft?(channelId: string, draftId: number, text: string, opts?: SendOptions): Promise<void>
   sendRichMessage?(channelId: string, markdown: string, opts?: SendOptions): Promise<SentMessage>
   sendRichMessageDraft?(channelId: string, draftId: number, markdown: string, opts?: SendOptions): Promise<void>
+  setCommandMenu?(commands: PlatformCommand[], opts?: CommandMenuOptions): Promise<void>
 
   /**
    * Clear the inline keyboard on a previously-sent message. Optional because

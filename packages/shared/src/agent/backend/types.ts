@@ -299,6 +299,8 @@ export interface ChatOptions {
   isRetry?: boolean;
   /** Override thinking level for this message only */
   thinkingOverride?: ThinkingLevel;
+  /** Skill slugs selected outside the raw message text, e.g. from connector menus. */
+  skillSlugs?: string[];
 }
 
 /**
