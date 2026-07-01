@@ -60,10 +60,9 @@ describe('sendMessage durability', () => {
     let ackedMessageId: string | null = null
     let onDiskAtAck = false
 
-    // sendMessage continues past the ack into agent-init, which would throw
-    // because we haven't called `setSessionPlatform()` in this minimal test
-    // harness. That's fine — we only care about the persist+flush+ack ordering
-    // that happens before agent-init. Catch the post-ack rejection.
+    // sendMessage continues past the ack into agent-init, which reports an
+    // error event because this minimal harness does not call setSessionPlatform().
+    // We only care about the persist+flush+ack ordering before agent-init.
     await sm
       .sendMessage(
         sessionId,
@@ -78,7 +77,6 @@ describe('sendMessage durability', () => {
           onDiskAtAck = readPersistedMessageIds(sessionId).includes(messageId)
         },
       )
-      .catch(() => { /* expected post-ack agent-init failure */ })
 
     expect(ackedMessageId).not.toBeNull()
     expect(onDiskAtAck).toBe(true)

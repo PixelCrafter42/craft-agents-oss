@@ -129,6 +129,30 @@ export interface CustomEndpointConfig {
 export type MidStreamBehavior = 'steer' | 'queue';
 
 /**
+ * A single fallback target for failed model turns.
+ *
+ * `connectionSlug` identifies the credentials/provider route, while `model`
+ * identifies the model to use within that connection. Keeping both fields lets
+ * fallback recover from auth/provider-specific outages as well as model-specific
+ * failures.
+ */
+export interface LlmModelFallbackCandidate {
+  connectionSlug: string;
+  model: string;
+}
+
+/**
+ * Global ordered model fallback settings.
+ *
+ * When enabled, the session layer tries these candidates in order after an
+ * eligible provider/model failure before surfacing the error to the user.
+ */
+export interface LlmModelFallbackSettings {
+  enabled: boolean;
+  candidates: LlmModelFallbackCandidate[];
+}
+
+/**
  * LLM Connection configuration.
  * Stored in config.llmConnections array.
  */

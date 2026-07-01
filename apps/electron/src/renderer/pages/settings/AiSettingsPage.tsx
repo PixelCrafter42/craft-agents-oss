@@ -16,13 +16,13 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { Button } from '@/components/ui/button'
 import { HeaderMenu } from '@/components/ui/HeaderMenu'
 import { routes } from '@/lib/navigate'
-import { X, MoreHorizontal, Pencil, Trash2, Star, ChevronDown, ChevronRight, CheckCircle2, AlertTriangle, RefreshCcw, Settings2, MessageSquareMore, Zap, Clock, Check } from 'lucide-react'
+import { X, MoreHorizontal, Pencil, Trash2, Star, ChevronDown, ChevronRight, CheckCircle2, AlertTriangle, RefreshCcw, Settings2, MessageSquareMore, Zap, Clock, Check, ArrowUp, ArrowDown, Plus } from 'lucide-react'
 import type { CredentialHealthStatus, CredentialHealthIssue } from '../../../shared/types'
 import { Spinner, FullscreenOverlayBase } from '@craft-agent/ui'
 import { useSetAtom } from 'jotai'
 import { fullscreenOverlayOpenAtom } from '@/atoms/overlay'
 import { motion, AnimatePresence } from 'motion/react'
-import type { LlmConnectionWithStatus, ThinkingLevel, WorkspaceSettings, Workspace } from '../../../shared/types'
+import type { LlmConnectionWithStatus, LlmModelFallbackSettings, ThinkingLevel, WorkspaceSettings, Workspace } from '../../../shared/types'
 import { DEFAULT_THINKING_LEVEL, THINKING_LEVELS } from '@craft-agent/shared/agent/thinking-levels'
 import type { DetailsPageMeta } from '@/lib/navigation-registry'
 import {
@@ -43,7 +43,9 @@ import { ConnectionIcon } from '@/components/icons/ConnectionIcon'
 import {
   SettingsSection,
   SettingsCard,
+  SettingsCardContent,
   SettingsRow,
+  SettingsMenuSelect,
   SettingsMenuSelectRow,
   SettingsToggle,
 } from '@/components/settings'
@@ -96,6 +98,178 @@ function getModelOptionsForConnection(
     description: m.description,
     descriptionKey: m.descriptionKey,
   }))
+}
+
+const EMPTY_FALLBACK_SETTINGS: LlmModelFallbackSettings = {
+  enabled: false,
+  candidates: [],
+}
+
+interface FallbackModelsSettingsProps {
+  llmConnections: LlmConnectionWithStatus[]
+  settings: LlmModelFallbackSettings
+  onChange: (settings: LlmModelFallbackSettings) => void
+}
+
+function FallbackModelsSettings({ llmConnections, settings, onChange }: FallbackModelsSettingsProps) {
+  const { t } = useTranslation()
+
+  const connectionOptions = useMemo(() => llmConnections.map(conn => ({
+    value: conn.slug,
+    label: conn.name,
+    description: conn.providerType === 'anthropic' ? 'Anthropic API' :
+                 conn.providerType === 'pi' ? 'Craft Agents Backend' :
+                 conn.providerType === 'pi_compat' ? (conn.baseUrl?.toLowerCase().includes('manifest.build') ? 'Manifest' : 'Craft Agents Backend Compatible') :
+                 conn.providerType || 'Unknown',
+  })), [llmConnections])
+
+  const firstUsableConnection = useMemo(() => {
+    return llmConnections.find(conn => getModelOptionsForConnection(conn).length > 0)
+  }, [llmConnections])
+
+  const updateSettings = useCallback((next: LlmModelFallbackSettings) => {
+    onChange({
+      enabled: next.enabled,
+      candidates: next.candidates.filter(c => c.connectionSlug && c.model),
+    })
+  }, [onChange])
+
+  const updateCandidate = useCallback((index: number, candidate: LlmModelFallbackSettings['candidates'][number]) => {
+    const candidates = [...settings.candidates]
+    candidates[index] = candidate
+    updateSettings({ ...settings, candidates })
+  }, [settings, updateSettings])
+
+  const handleConnectionChange = useCallback((index: number, connectionSlug: string) => {
+    const connection = llmConnections.find(conn => conn.slug === connectionSlug)
+    const firstModel = getModelOptionsForConnection(connection)[0]?.value ?? connection?.defaultModel ?? ''
+    updateCandidate(index, { connectionSlug, model: firstModel })
+  }, [llmConnections, updateCandidate])
+
+  const handleAdd = useCallback(() => {
+    if (!firstUsableConnection) return
+    const firstModel = getModelOptionsForConnection(firstUsableConnection)[0]?.value ?? firstUsableConnection.defaultModel ?? ''
+    updateSettings({
+      ...settings,
+      candidates: [...settings.candidates, { connectionSlug: firstUsableConnection.slug, model: firstModel }],
+    })
+  }, [firstUsableConnection, settings, updateSettings])
+
+  const handleRemove = useCallback((index: number) => {
+    updateSettings({
+      ...settings,
+      candidates: settings.candidates.filter((_, i) => i !== index),
+    })
+  }, [settings, updateSettings])
+
+  const handleMove = useCallback((index: number, direction: -1 | 1) => {
+    const target = index + direction
+    if (target < 0 || target >= settings.candidates.length) return
+    const candidates = [...settings.candidates]
+    const current = candidates[index]
+    const next = candidates[target]
+    if (!current || !next) return
+    candidates[index] = next
+    candidates[target] = current
+    updateSettings({ ...settings, candidates })
+  }, [settings, updateSettings])
+
+  return (
+    <SettingsSection title={t("settings.ai.fallback.title")} description={t("settings.ai.fallback.desc")}>
+      <SettingsCard>
+        <SettingsToggle
+          label={t("settings.ai.fallback.enabled")}
+          description={t("settings.ai.fallback.enabledDesc")}
+          checked={settings.enabled}
+          onCheckedChange={(enabled) => updateSettings({ ...settings, enabled })}
+        />
+        {settings.enabled && (
+          <SettingsCardContent className="space-y-3">
+            {settings.candidates.length === 0 ? (
+              <div className="text-sm text-muted-foreground">
+                {t("settings.ai.fallback.empty")}
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {settings.candidates.map((candidate, index) => {
+                  const connection = llmConnections.find(conn => conn.slug === candidate.connectionSlug)
+                  const modelOptions = getModelOptionsForConnection(connection).map(o => ({
+                    ...o,
+                    description: o.descriptionKey ? t(o.descriptionKey) : o.description,
+                  }))
+                  return (
+                    <div key={`${candidate.connectionSlug}-${candidate.model}-${index}`} className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] gap-2 items-center">
+                      <SettingsMenuSelect
+                        value={candidate.connectionSlug}
+                        onValueChange={(slug) => handleConnectionChange(index, slug)}
+                        options={connectionOptions}
+                        placeholder={t("settings.ai.connection")}
+                        menuWidth={260}
+                      />
+                      <SettingsMenuSelect
+                        value={candidate.model}
+                        onValueChange={(model) => updateCandidate(index, { ...candidate, model })}
+                        options={modelOptions}
+                        placeholder={t("settings.ai.model")}
+                        disabled={!connection}
+                        searchable
+                        menuWidth={300}
+                      />
+                      <div className="flex items-center gap-1">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8"
+                          title={t("settings.ai.fallback.moveUp")}
+                          disabled={index === 0}
+                          onClick={() => handleMove(index, -1)}
+                        >
+                          <ArrowUp className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8"
+                          title={t("settings.ai.fallback.moveDown")}
+                          disabled={index === settings.candidates.length - 1}
+                          onClick={() => handleMove(index, 1)}
+                        >
+                          <ArrowDown className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 text-destructive hover:text-destructive"
+                          title={t("settings.ai.fallback.remove")}
+                          onClick={() => handleRemove(index)}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-8"
+              disabled={!firstUsableConnection}
+              onClick={handleAdd}
+            >
+              <Plus className="h-4 w-4 mr-2" />
+              {t("settings.ai.fallback.addCandidate")}
+            </Button>
+          </SettingsCardContent>
+        )}
+      </SettingsCard>
+    </SettingsSection>
+  )
 }
 
 export const meta: DetailsPageMeta = {
@@ -628,6 +802,7 @@ export default function AiSettingsPage() {
   const [rtkStatus, setRtkStatus] = useState<{ installed: boolean; path: string | null; version: string | null } | null>(null)
   const [rtkRechecking, setRtkRechecking] = useState(false)
   const [rtkGain, setRtkGain] = useState<{ totalCommands: number; totalInput: number; totalOutput: number; totalSaved: number; avgSavingsPct: number; totalTimeMs: number; avgTimeMs: number } | null>(null)
+  const [fallbackSettings, setFallbackSettings] = useState<LlmModelFallbackSettings>(EMPTY_FALLBACK_SETTINGS)
 
   // Validation state per connection
   const [validationStates, setValidationStates] = useState<Record<string, {
@@ -665,6 +840,9 @@ export default function AiSettingsPage() {
 
         const status = await window.electronAPI.getRtkStatus()
         setRtkStatus(status)
+
+        const fallback = await window.electronAPI.getLlmModelFallbackSettings()
+        setFallbackSettings(fallback)
 
         // Check credential health for potential issues (corruption, machine migration)
         const health = await window.electronAPI.getCredentialHealth()
@@ -967,6 +1145,25 @@ export default function AiSettingsPage() {
     await window.electronAPI?.setRtkEnabled(enabled)
   }, [])
 
+  const handleFallbackSettingsChange = useCallback(async (next: LlmModelFallbackSettings) => {
+    if (!window.electronAPI) return
+    const previous = fallbackSettings
+    setFallbackSettings(next)
+    try {
+      const result = await window.electronAPI.setLlmModelFallbackSettings(next)
+      if (!result.success) {
+        setFallbackSettings(previous)
+        toast.error(result.error || t("settings.ai.fallback.updateFailed"))
+      } else {
+        const saved = await window.electronAPI.getLlmModelFallbackSettings()
+        setFallbackSettings(saved)
+      }
+    } catch (error) {
+      setFallbackSettings(previous)
+      toast.error(t("settings.ai.fallback.updateFailed"))
+    }
+  }, [fallbackSettings, t])
+
   const handleRecheckRtk = useCallback(async () => {
     setRtkRechecking(true)
     try {
@@ -1054,6 +1251,14 @@ export default function AiSettingsPage() {
                   />
                 </SettingsCard>
               </SettingsSection>
+              )}
+
+              {llmConnections.length > 0 && (
+                <FallbackModelsSettings
+                  llmConnections={llmConnections}
+                  settings={fallbackSettings}
+                  onChange={handleFallbackSettingsChange}
+                />
               )}
 
               {/* Workspace Overrides - only show if connections exist */}

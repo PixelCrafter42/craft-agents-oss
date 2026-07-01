@@ -8,7 +8,7 @@ import { basename, dirname, join } from 'path'
 import { existsSync } from 'fs'
 import { readFile, writeFile, mkdir } from 'fs/promises'
 import { randomUUID } from 'node:crypto'
-import { type AgentEvent, setPermissionMode, hydratePreviousPermissionMode, getPermissionModeDiagnostics, type PermissionMode, unregisterSessionScopedToolCallbacks, mergeSessionScopedToolCallbacks, AbortReason, type AuthRequest, type AuthResult, type CredentialAuthRequest, type BrowserPaneFns, generateConversationSummary } from '@craft-agent/shared/agent'
+import { type AgentEvent, setPermissionMode, hydratePreviousPermissionMode, getPermissionModeDiagnostics, type PermissionMode, unregisterSessionScopedToolCallbacks, mergeSessionScopedToolCallbacks, AbortReason, type AuthRequest, type AuthResult, type CredentialAuthRequest, type BrowserPaneFns, generateConversationSummary, parseError, type AgentError } from '@craft-agent/shared/agent'
 import {
   resolveSessionConnection,
   createBackendFromConnection,
@@ -20,7 +20,7 @@ import {
   type BackendHostRuntimeContext,
   type PostInitResult,
 } from '@craft-agent/shared/agent/backend'
-import { getLlmConnection, getLlmConnections, getDefaultLlmConnection, getDefaultThinkingLevel, resetManagedAnthropicAuthEnvVars, resolveMidStreamBehavior } from '@craft-agent/shared/config'
+import { getLlmConnection, getLlmConnections, getDefaultLlmConnection, getDefaultThinkingLevel, getLlmModelFallbackSettings, getModelDisplayName, resetManagedAnthropicAuthEnvVars, resolveMidStreamBehavior } from '@craft-agent/shared/config'
 import { PrivilegedExecutionBroker } from '@craft-agent/server-core/services'
 import { isValidWorkingDirectory } from '../utils/path-validation'
 import { InitGate } from '@craft-agent/server-core/domain'
@@ -98,6 +98,7 @@ import { ensureLabelsExist } from '@craft-agent/shared/labels/crud'
 import { loadStatusConfig } from '@craft-agent/shared/statuses/storage'
 import { AutomationSystem, createPromptHistoryEntry, appendAutomationHistoryEntry, type AutomationSystemMetadataSnapshot, type AutomationMessagingTarget } from '@craft-agent/shared/automations'
 import { buildBackendRuntimeSignature, buildRestartRequiredSignature, filterAttachmentsForModelInput } from './runtime-config'
+import { buildModelFallbackSequence, isModelFallbackEligibleError, modelFallbackKey, type ResolvedModelFallbackCandidate } from './model-fallback'
 
 // Import from server-core domain utilities
 import { sanitizeForTitle, shouldActivateBrowserOverlay, normalizeBrowserToolName, rollbackFailedBranchCreation, releaseBrowserOwnershipOnForcedStop } from '@craft-agent/server-core/domain'
@@ -888,6 +889,14 @@ interface ManagedSession {
   authRetryAttempted?: boolean
   // Flag indicating auth retry is in progress (to prevent complete handler from interfering)
   authRetryInProgress?: boolean
+  // Runtime-only model fallback state for the active sendMessage turn.
+  modelFallbackState?: {
+    attemptedKeys: Set<string>
+    userMessageId?: string
+    recoveryContext?: string
+    inProgress?: boolean
+    suppressGeneration?: number
+  }
   // Whether this session is hidden from session list (e.g., mini edit sessions)
   hidden?: boolean
   branchFromMessageId?: string
@@ -5608,6 +5617,7 @@ export class SessionManager implements ISessionManager {
      * directly (tests, intra-server flows) to leave the existing pin in place.
      */
     rpcContext?: { callerClientId?: string },
+    _isModelFallbackRetry?: boolean,
   ): Promise<void> {
     const managed = this.sessions.get(sessionId)
     if (!managed) {
@@ -5782,6 +5792,8 @@ export class SessionManager implements ISessionManager {
       }
     }
 
+    this.ensureModelFallbackState(managed, userMessage.id, _isModelFallbackRetry === true)
+
     // Evaluate auto-label rules against the user message (common path for both
     // fresh and queued messages). Scans regex patterns configured on labels,
     // then merges any new matches into the session's label array.
@@ -5921,7 +5933,31 @@ export class SessionManager implements ISessionManager {
     // Get or create the agent (lazy loading). Its internal cold-session build at
     // ~L2956 now sees fresh tokens (or correctly-needs_auth failed sources, since
     // ensureFreshToken mirrors the disk write to source.config in-memory).
-    const agent = await this.getOrCreateAgent(managed)
+    let agent: AgentInstance
+    try {
+      agent = await this.getOrCreateAgent(managed)
+    } catch (error) {
+      sessionLog.error('Error creating agent:', error)
+      const parsedError = this.parseAgentErrorForCurrentBackend(managed, error)
+      if (await this.tryStartModelFallback(sessionId, managed, parsedError)) {
+        sendSpan.mark('agent.create.model_fallback')
+        sendSpan.setMetadata('fallback_error', parsedError.code)
+        sendSpan.end()
+        return
+      }
+
+      sessionRuntimeHooks.captureException(error, { errorSource: 'agent-create', sessionId })
+      sendSpan.mark('agent.create.error')
+      sendSpan.setMetadata('error', error instanceof Error ? error.message : String(error))
+      sendSpan.end()
+      this.sendEvent({
+        type: 'error',
+        sessionId,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      }, managed.workspace.id)
+      this.onProcessingStopped(sessionId, 'error')
+      return
+    }
     sendSpan.mark('agent.ready')
 
     // Always set all sources for context (even if none are enabled), including built-ins
@@ -5982,6 +6018,12 @@ export class SessionManager implements ISessionManager {
         effectiveMessage = `${message}\n\n<system-reminder>The previous assistant response was interrupted by the user and may be incomplete. Do not repeat or continue the interrupted response unless asked. Focus on the new message above.</system-reminder>`
         managed.wasInterrupted = false
       }
+      const fallbackState = managed.modelFallbackState
+      const fallbackRecoveryContext = fallbackState?.recoveryContext
+      if (fallbackRecoveryContext) {
+        effectiveMessage = fallbackRecoveryContext + effectiveMessage
+        fallbackState.recoveryContext = undefined
+      }
 
       const messageBackendContext = resolveBackendContext({
         sessionConnectionSlug: managed.llmConnection,
@@ -6027,6 +6069,13 @@ export class SessionManager implements ISessionManager {
         // Process the event first
         await this.processEvent(managed, event)
 
+        if (managed.modelFallbackState?.suppressGeneration === myGeneration) {
+          sessionLog.info('Model fallback handoff started from event, exiting old generation')
+          sendSpan.mark('chat.event.model_fallback_handoff')
+          sendSpan.end()
+          return
+        }
+
         // Fallback: Capture SDK session ID if the onSdkSessionIdUpdate callback didn't fire.
         // Primary capture happens in getOrCreateAgent() via onSdkSessionIdUpdate callback,
         // which immediately flushes to disk. This fallback handles edge cases where the
@@ -6045,6 +6094,13 @@ export class SessionManager implements ISessionManager {
         // Handle complete event - SDK always sends this (even after interrupt)
         // This is the central place where processing ends
         if (event.type === 'complete') {
+          if (managed.modelFallbackState?.suppressGeneration === myGeneration) {
+            sessionLog.info('Chat completed after model fallback handoff, skipping old-generation completion handling')
+            sendSpan.mark('chat.complete.model_fallback_handoff')
+            sendSpan.end()
+            return
+          }
+
           // Skip normal completion handling if auth retry is in progress
           // The retry will handle its own completion
           if (managed.authRetryInProgress) {
@@ -6083,6 +6139,18 @@ export class SessionManager implements ISessionManager {
             // (_sessionDir singleton can be clobbered by concurrent sessions).
             const sessionErrorPath = getSessionStoragePath(managed.workspace.rootPath, managed.id)
             const apiError = getLastApiError(sessionErrorPath)
+
+            if (apiError) {
+              const parsedApiError = this.parseAgentErrorForCurrentBackend(
+                managed,
+                new Error(`${apiError.status} ${apiError.statusText}: ${apiError.message}`),
+              )
+              if (await this.tryStartModelFallback(sessionId, managed, parsedApiError)) {
+                sendSpan.mark('chat.complete.model_fallback')
+                sendSpan.end()
+                return
+              }
+            }
 
             if (apiError && apiError.status === 400) {
               const isImageError = apiError.message?.includes('image exceeds')
@@ -6151,6 +6219,13 @@ export class SessionManager implements ISessionManager {
       )
 
       if (isAbortError) {
+        if (managed.modelFallbackState?.suppressGeneration === myGeneration) {
+          sessionLog.info('Chat abort after model fallback handoff, skipping old-generation abort handling')
+          sendSpan.mark('chat.aborted.model_fallback_handoff')
+          sendSpan.end()
+          return
+        }
+
         // Extract abort reason if available (safety net for unexpected abort propagation)
         const reason = (error as DOMException).cause as AbortReason | undefined
 
@@ -6169,6 +6244,14 @@ export class SessionManager implements ISessionManager {
         sessionLog.error('Error in chat:', error)
         sessionLog.error('Error message:', error instanceof Error ? error.message : String(error))
         sessionLog.error('Error stack:', error instanceof Error ? error.stack : 'No stack')
+
+        const parsedError = this.parseAgentErrorForCurrentBackend(managed, error)
+        if (await this.tryStartModelFallback(sessionId, managed, parsedError)) {
+          sendSpan.mark('chat.error.model_fallback')
+          sendSpan.setMetadata('fallback_error', parsedError.code)
+          sendSpan.end()
+          return
+        }
 
         // Report chat/SDK errors via runtime hooks (Electron can forward to Sentry)
         sessionRuntimeHooks.captureException(error, { errorSource: 'chat', sessionId })
@@ -6273,6 +6356,250 @@ export class SessionManager implements ISessionManager {
 
     // NOTE: We don't clear isProcessing or send complete event here anymore.
     // The event loop will drain remaining events and call onProcessingStopped when done.
+  }
+
+  private ensureModelFallbackState(
+    managed: ManagedSession,
+    userMessageId: string,
+    isFallbackRetry: boolean,
+  ): void {
+    if (!isFallbackRetry || !managed.modelFallbackState) {
+      managed.modelFallbackState = {
+        attemptedKeys: new Set<string>(),
+      }
+    }
+
+    managed.modelFallbackState.userMessageId = userMessageId
+    managed.modelFallbackState.inProgress = false
+    this.markCurrentModelFallbackAttempt(managed)
+  }
+
+  private markCurrentModelFallbackAttempt(managed: ManagedSession): void {
+    const state = managed.modelFallbackState
+    if (!state) return
+
+    const workspaceConfig = loadWorkspaceConfig(managed.workspace.rootPath)
+    const context = resolveBackendContext({
+      sessionConnectionSlug: managed.llmConnection,
+      workspaceDefaultConnectionSlug: workspaceConfig?.defaults?.defaultLlmConnection,
+      managedModel: managed.model,
+    })
+    if (!context.connection || !context.resolvedModel) return
+
+    state.attemptedKeys.add(modelFallbackKey({
+      connectionSlug: context.connection.slug,
+      model: context.resolvedModel,
+    }))
+  }
+
+  private hasModelOutputAfterUser(managed: ManagedSession, userMessageId: string): boolean {
+    if (managed.streamingText.trim().length > 0) return true
+
+    const userIndex = managed.messages.findIndex(m => m.id === userMessageId)
+    if (userIndex === -1) return false
+
+    return managed.messages.slice(userIndex + 1).some(m =>
+      m.role === 'assistant' ||
+      m.role === 'tool' ||
+      m.role === 'plan'
+    )
+  }
+
+  private buildModelFallbackRecoveryContext(managed: ManagedSession, userMessageId: string): string | undefined {
+    const relevantMessages = managed.messages
+      .filter(m => (m.role === 'user' || m.role === 'assistant') && !m.isIntermediate && m.id !== userMessageId)
+      .slice(-6)
+
+    if (relevantMessages.length === 0) return undefined
+
+    const formatted = relevantMessages.map(m => {
+      const role = m.role === 'user' ? 'User' : 'Assistant'
+      const content = m.content.length > 1000
+        ? `${m.content.slice(0, 1000)}...[truncated]`
+        : m.content
+      return `[${role}]: ${content}`
+    }).join('\n\n')
+
+    return `<conversation_recovery>
+The previous provider session cannot be reused after switching models/providers. Here is the recent conversation context:
+
+${formatted}
+
+Please continue the conversation naturally from where we left off.
+</conversation_recovery>
+
+`
+  }
+
+  private parseAgentErrorForCurrentBackend(managed: ManagedSession, error: unknown): AgentError {
+    const workspaceConfig = loadWorkspaceConfig(managed.workspace.rootPath)
+    const context = resolveBackendContext({
+      sessionConnectionSlug: managed.llmConnection,
+      workspaceDefaultConnectionSlug: workspaceConfig?.defaults?.defaultLlmConnection,
+      managedModel: managed.model,
+    })
+    return parseError(error, {
+      providerType: context.connection?.providerType,
+      piAuthProvider: context.connection?.piAuthProvider,
+    })
+  }
+
+  private getNextModelFallbackCandidate(managed: ManagedSession): ResolvedModelFallbackCandidate | null {
+    const state = managed.modelFallbackState
+    if (!state) return null
+
+    const workspaceConfig = loadWorkspaceConfig(managed.workspace.rootPath)
+    const context = resolveBackendContext({
+      sessionConnectionSlug: managed.llmConnection,
+      workspaceDefaultConnectionSlug: workspaceConfig?.defaults?.defaultLlmConnection,
+      managedModel: managed.model,
+    })
+
+    const candidates = buildModelFallbackSequence({
+      settings: getLlmModelFallbackSettings(),
+      connections: getLlmConnections(),
+      currentConnectionSlug: context.connection?.slug,
+      currentModel: context.resolvedModel,
+      attemptedKeys: state.attemptedKeys,
+    })
+
+    return candidates[0] ?? null
+  }
+
+  private async tryStartModelFallback(
+    sessionId: string,
+    managed: ManagedSession,
+    error: Pick<AgentError, 'code' | 'title' | 'message'>,
+  ): Promise<boolean> {
+    if (!isModelFallbackEligibleError(error.code)) return false
+    if (!managed.lastSentMessage) return false
+
+    const state = managed.modelFallbackState
+    const userMessageId = state?.userMessageId
+    if (!state || !userMessageId) return false
+    if (state.inProgress) return true
+
+    if (this.hasModelOutputAfterUser(managed, userMessageId)) {
+      sessionLog.info('Model fallback skipped because the turn already produced assistant/tool output', {
+        sessionId,
+        errorCode: error.code,
+      })
+      return false
+    }
+
+    const candidate = this.getNextModelFallbackCandidate(managed)
+    if (!candidate) {
+      sessionLog.info('Model fallback exhausted or disabled', {
+        sessionId,
+        errorCode: error.code,
+      })
+      return false
+    }
+
+    const workspaceConfig = loadWorkspaceConfig(managed.workspace.rootPath)
+    const previousContext = resolveBackendContext({
+      sessionConnectionSlug: managed.llmConnection,
+      workspaceDefaultConnectionSlug: workspaceConfig?.defaults?.defaultLlmConnection,
+      managedModel: managed.model,
+    })
+    const previousConnectionSlug = previousContext.connection?.slug ?? managed.llmConnection
+    const previousModel = previousContext.resolvedModel ?? managed.model
+    const switchingConnection = previousConnectionSlug !== candidate.connectionSlug
+    const retryMessage = managed.lastSentMessage
+    const retryAttachments = managed.lastSentAttachments
+    const retryStoredAttachments = managed.lastSentStoredAttachments
+    const retryOptions = managed.lastSentOptions
+
+    state.inProgress = true
+    state.suppressGeneration = managed.processingGeneration
+    state.attemptedKeys.add(modelFallbackKey(candidate))
+    state.recoveryContext = switchingConnection
+      ? this.buildModelFallbackRecoveryContext(managed, userMessageId)
+      : undefined
+
+    sessionLog.info('Starting model fallback retry', {
+      sessionId,
+      errorCode: error.code,
+      fromConnection: previousConnectionSlug,
+      fromModel: previousModel,
+      toConnection: candidate.connectionSlug,
+      toModel: candidate.model,
+      switchingConnection,
+    })
+
+    this.sendEvent({
+      type: 'info',
+      sessionId,
+      level: 'warning',
+      message: `Retrying with ${candidate.connection.name} / ${getModelDisplayName(candidate.model)} after ${error.title || error.code}.`,
+      timestamp: this.monotonic(),
+    }, managed.workspace.id)
+
+    this.setProcessing(managed, false)
+    managed.stopRequested = false
+    managed.llmConnection = candidate.connectionSlug
+    managed.model = candidate.model
+    managed.connectionLocked = true
+
+    if (switchingConnection) {
+      managed.sdkSessionId = undefined
+      managed.branchFromSdkSessionId = undefined
+      managed.branchFromSessionPath = undefined
+      managed.branchFromSdkCwd = undefined
+      managed.branchFromSdkTurnId = undefined
+      if (managed.branchFromMessageId) {
+        managed.branchContextStrategy = 'seeded-fresh-session'
+        managed.branchSeedApplied = true
+      }
+      resetSummarizationClient()
+    }
+
+    this.sendEvent({
+      type: 'connection_changed',
+      sessionId,
+      connectionSlug: candidate.connectionSlug,
+      supportsBranching: resolveSupportsBranching(managed),
+    }, managed.workspace.id)
+    this.sendEvent({
+      type: 'session_model_changed',
+      sessionId,
+      model: candidate.model,
+    }, managed.workspace.id)
+
+    await this.disposeManagedAgentRuntime(managed, 'model fallback')
+    this.persistSession(managed)
+    await this.flushSession(managed.id)
+
+    setImmediate(() => {
+      const current = this.sessions.get(sessionId)
+      if (!current?.modelFallbackState) return
+      current.modelFallbackState.inProgress = false
+
+      this.sendMessage(
+        sessionId,
+        retryMessage,
+        retryAttachments,
+        retryStoredAttachments,
+        retryOptions,
+        userMessageId,
+        false,
+        undefined,
+        undefined,
+        true,
+      ).catch(retryError => {
+        current.modelFallbackState = undefined
+        sessionLog.error(`Model fallback retry failed for ${sessionId}:`, retryError)
+        sessionRuntimeHooks.captureException(retryError, { errorSource: 'model-fallback', sessionId })
+        this.sendEvent({
+          type: 'error',
+          sessionId,
+          error: retryError instanceof Error ? retryError.message : String(retryError),
+        }, current.workspace.id)
+        this.onProcessingStopped(sessionId, 'error')
+      })
+    })
+
+    return true
   }
 
   /**
@@ -6386,6 +6713,9 @@ export class SessionManager implements ISessionManager {
     // 1. Cleanup state
     this.setProcessing(managed, false)
     managed.stopRequested = false  // Reset for next turn
+    if (!managed.modelFallbackState?.inProgress) {
+      managed.modelFallbackState = undefined
+    }
 
     const turnStartFinalMessageId = managed.turnStartFinalMessageId
     managed.turnStartFinalMessageId = undefined
@@ -7403,6 +7733,11 @@ export class SessionManager implements ISessionManager {
           break
         }
 
+        const parsedPlainError = this.parseAgentErrorForCurrentBackend(managed, new Error(event.message))
+        if (await this.tryStartModelFallback(sessionId, managed, parsedPlainError)) {
+          break
+        }
+
         // AgentEvent uses `message` not `error`
         const errorMessage: Message = {
           id: generateMessageId(),
@@ -7442,6 +7777,10 @@ export class SessionManager implements ISessionManager {
 
         if (isAuthError && this.attemptAuthRetry(sessionId, managed, workspaceId, event.error.code)) {
           // Don't add error message or send to renderer - we're handling it via retry
+          break
+        }
+
+        if (await this.tryStartModelFallback(sessionId, managed, event.error)) {
           break
         }
 

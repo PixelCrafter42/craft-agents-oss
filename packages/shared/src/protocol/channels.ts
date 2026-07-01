@@ -183,6 +183,8 @@ export const RPC_CHANNELS = {
     TEST: 'LLM_Connection:test',
     SET_DEFAULT: 'LLM_Connection:setDefault',
     SET_WORKSPACE_DEFAULT: 'LLM_Connection:setWorkspaceDefault',
+    GET_FALLBACK_SETTINGS: 'LLM_Connection:getFallbackSettings',
+    SET_FALLBACK_SETTINGS: 'LLM_Connection:setFallbackSettings',
     REFRESH_MODELS: 'LLM_Connection:refreshModels',
     CHANGED: 'LLM_Connection:changed',
   },

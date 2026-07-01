@@ -41,7 +41,7 @@ export type {
 import type { Workspace, AuthType } from '@craft-agent/core/types';
 
 // Import LLM connection types and constants
-import type { LlmConnection } from './llm-connections.ts';
+import type { LlmConnection, LlmModelFallbackCandidate, LlmModelFallbackSettings } from './llm-connections.ts';
 import { isValidProviderAuthCombination, getDefaultModelsForConnection, getDefaultModelForConnection, isPiProvider, toBedrockNativeId, type LlmProviderType } from './llm-connections.ts';
 import {
   getModelProvider,
@@ -56,6 +56,7 @@ export interface StoredConfig {
   // LLM Connections (authoritative source for auth and model config)
   llmConnections?: LlmConnection[];
   defaultLlmConnection?: string;  // Slug of default connection for new sessions
+  llmModelFallback?: LlmModelFallbackSettings;  // Ordered fallback targets for failed model turns
   defaultThinkingLevel?: ThinkingLevel;  // App-level default thinking level for new sessions
 
   workspaces: Workspace[];
@@ -2591,6 +2592,50 @@ export function getLlmConnection(slug: string): LlmConnection | null {
   return connections.find(c => c.slug === slug) || null;
 }
 
+function normalizeLlmModelFallbackSettings(
+  settings?: Partial<LlmModelFallbackSettings> | null
+): LlmModelFallbackSettings {
+  const seen = new Set<string>();
+  const candidates: LlmModelFallbackCandidate[] = [];
+
+  for (const candidate of settings?.candidates ?? []) {
+    const connectionSlug = candidate?.connectionSlug?.trim();
+    const model = candidate?.model?.trim();
+    if (!connectionSlug || !model) continue;
+
+    const key = `${connectionSlug}\u0000${model}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    candidates.push({ connectionSlug, model });
+  }
+
+  return {
+    enabled: settings?.enabled === true,
+    candidates,
+  };
+}
+
+/**
+ * Get global ordered model fallback settings.
+ */
+export function getLlmModelFallbackSettings(): LlmModelFallbackSettings {
+  const config = loadStoredConfig();
+  return normalizeLlmModelFallbackSettings(config?.llmModelFallback);
+}
+
+/**
+ * Persist global ordered model fallback settings.
+ * Empty candidates and duplicate connection/model pairs are dropped.
+ */
+export function setLlmModelFallbackSettings(settings: LlmModelFallbackSettings): boolean {
+  const config = loadStoredConfig();
+  if (!config) return false;
+
+  config.llmModelFallback = normalizeLlmModelFallbackSettings(settings);
+  saveConfig(config);
+  return true;
+}
+
 /**
  * Add a new LLM connection.
  * @param connection - Connection to add (slug must be unique)
@@ -2732,6 +2777,13 @@ export function deleteLlmConnection(slug: string): boolean {
   // If deleted connection was the default, reset to first remaining or clear
   if (config.defaultLlmConnection === slug) {
     config.defaultLlmConnection = connections.length > 0 ? connections[0]!.slug : undefined;
+  }
+
+  if (config.llmModelFallback?.candidates?.length) {
+    config.llmModelFallback = normalizeLlmModelFallbackSettings({
+      ...config.llmModelFallback,
+      candidates: config.llmModelFallback.candidates.filter(c => c.connectionSlug !== slug),
+    });
   }
 
   saveConfig(config);

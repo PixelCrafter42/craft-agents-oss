@@ -1,5 +1,5 @@
 import { RPC_CHANNELS, type LlmConnectionSetup } from '@craft-agent/shared/protocol'
-import { getLlmConnections, getLlmConnection, addLlmConnection, updateLlmConnection, deleteLlmConnection, getDefaultLlmConnection, setDefaultLlmConnection, touchLlmConnection, isCompatProvider, isAnthropicProvider, getDefaultModelsForConnection, getDefaultModelForConnection, type LlmConnection, type LlmConnectionWithStatus, toBedrockNativeId, deriveBedrockRegionPrefix } from '@craft-agent/shared/config'
+import { getLlmConnections, getLlmConnection, addLlmConnection, updateLlmConnection, deleteLlmConnection, getDefaultLlmConnection, setDefaultLlmConnection, getLlmModelFallbackSettings, setLlmModelFallbackSettings, touchLlmConnection, isCompatProvider, isAnthropicProvider, getDefaultModelsForConnection, getDefaultModelForConnection, type LlmConnection, type LlmConnectionWithStatus, type LlmModelFallbackSettings, toBedrockNativeId, deriveBedrockRegionPrefix } from '@craft-agent/shared/config'
 import { getCredentialManager } from '@craft-agent/shared/credentials'
 import { setSetupDeferred } from '@craft-agent/shared/config/storage'
 import {
@@ -28,6 +28,8 @@ export const HANDLED_CHANNELS = [
   RPC_CHANNELS.llmConnections.TEST,
   RPC_CHANNELS.llmConnections.SET_DEFAULT,
   RPC_CHANNELS.llmConnections.SET_WORKSPACE_DEFAULT,
+  RPC_CHANNELS.llmConnections.GET_FALLBACK_SETTINGS,
+  RPC_CHANNELS.llmConnections.SET_FALLBACK_SETTINGS,
   RPC_CHANNELS.llmConnections.REFRESH_MODELS,
   RPC_CHANNELS.chatgpt.START_OAUTH,
   RPC_CHANNELS.chatgpt.COMPLETE_OAUTH,
@@ -569,6 +571,23 @@ export function registerLlmConnectionsHandlers(server: RpcServer, deps: HandlerD
       return { success: true }
     } catch (error) {
       deps.platform.logger?.error('Failed to set workspace default LLM connection:', error)
+      return { success: false, error: error instanceof Error ? error.message : 'Unknown error' }
+    }
+  })
+
+  server.handle(RPC_CHANNELS.llmConnections.GET_FALLBACK_SETTINGS, async (): Promise<LlmModelFallbackSettings> => {
+    return getLlmModelFallbackSettings()
+  })
+
+  server.handle(RPC_CHANNELS.llmConnections.SET_FALLBACK_SETTINGS, async (_ctx, settings: LlmModelFallbackSettings): Promise<{ success: boolean; error?: string }> => {
+    try {
+      const success = setLlmModelFallbackSettings(settings)
+      if (success) {
+        deps.platform.logger?.info(`LLM model fallback settings updated: enabled=${settings.enabled} candidates=${settings.candidates.length}`)
+      }
+      return { success, error: success ? undefined : 'Failed to save fallback settings' }
+    } catch (error) {
+      deps.platform.logger?.error('Failed to save LLM model fallback settings:', error)
       return { success: false, error: error instanceof Error ? error.message : 'Unknown error' }
     }
   })

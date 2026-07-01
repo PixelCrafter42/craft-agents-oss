@@ -369,6 +369,8 @@ export const CHANNEL_MAP = {
   testLlmConnection: invoke(RPC_CHANNELS.llmConnections.TEST),
   setDefaultLlmConnection: invoke(RPC_CHANNELS.llmConnections.SET_DEFAULT),
   setWorkspaceDefaultLlmConnection: invoke(RPC_CHANNELS.llmConnections.SET_WORKSPACE_DEFAULT),
+  getLlmModelFallbackSettings: invoke(RPC_CHANNELS.llmConnections.GET_FALLBACK_SETTINGS),
+  setLlmModelFallbackSettings: invoke(RPC_CHANNELS.llmConnections.SET_FALLBACK_SETTINGS),
 
   // Automations
   getAutomations: invoke(RPC_CHANNELS.automations.GET),
