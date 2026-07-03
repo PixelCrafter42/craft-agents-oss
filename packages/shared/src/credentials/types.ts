@@ -34,7 +34,9 @@ export type CredentialType =
   | 'source_basic'       // Basic auth (base64 encoded user:pass)
   | 'source_cookie'      // Browser Cookie credentials for API sources
   // Messaging gateway credentials (keyed by workspaceId + platform)
-  | 'messaging_bearer';  // Platform tokens (e.g., Telegram bot token)
+  | 'messaging_bearer'   // Platform tokens (e.g., Telegram bot token)
+  // Desktop inbound webhook credentials (keyed by workspaceId + triggerId)
+  | 'webhook_secret';
 
 /** Valid credential types for validation */
 const VALID_CREDENTIAL_TYPES: readonly CredentialType[] = [
@@ -51,6 +53,7 @@ const VALID_CREDENTIAL_TYPES: readonly CredentialType[] = [
   'source_basic',
   'source_cookie',
   'messaging_bearer',
+  'webhook_secret',
 ] as const;
 
 /** Check if a string is a valid CredentialType */
@@ -147,9 +150,19 @@ const MESSAGING_CREDENTIAL_TYPES = [
   'messaging_bearer',
 ] as const;
 
+/** Desktop inbound webhook credential types */
+const WEBHOOK_CREDENTIAL_TYPES = [
+  'webhook_secret',
+] as const;
+
 /** Check if type is a messaging credential */
 function isMessagingCredential(type: CredentialType): boolean {
   return (MESSAGING_CREDENTIAL_TYPES as readonly string[]).includes(type);
+}
+
+/** Check if type is a webhook credential */
+function isWebhookCredential(type: CredentialType): boolean {
+  return (WEBHOOK_CREDENTIAL_TYPES as readonly string[]).includes(type);
 }
 
 /** LLM connection credential types */
@@ -200,6 +213,14 @@ export function credentialIdToAccount(id: CredentialId): string {
   // Messaging-scoped format:
   // messaging_bearer::{workspaceId}::{platform}
   if (isMessagingCredential(id.type) && id.workspaceId && id.name) {
+    parts.push(id.workspaceId);
+    parts.push(id.name);
+    return parts.join(CREDENTIAL_DELIMITER);
+  }
+
+  // Webhook-scoped format:
+  // webhook_secret::{workspaceId}::{triggerId}
+  if (isWebhookCredential(id.type) && id.workspaceId && id.name) {
     parts.push(id.workspaceId);
     parts.push(id.name);
     return parts.join(CREDENTIAL_DELIMITER);
@@ -270,6 +291,12 @@ export function accountToCredentialId(account: string): CredentialId | null {
   // Messaging-scoped format:
   // messaging_bearer::{workspaceId}::{platform}
   if (isMessagingCredential(type) && parts.length === 3) {
+    return { type, workspaceId: parts[1], name: parts[2] };
+  }
+
+  // Webhook-scoped format:
+  // webhook_secret::{workspaceId}::{triggerId}
+  if (isWebhookCredential(type) && parts.length === 3) {
     return { type, workspaceId: parts[1], name: parts[2] };
   }
 

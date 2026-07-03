@@ -36,6 +36,14 @@ describe('parseError proxy interception handling', () => {
   })
 })
 
+describe('parseError network error handling', () => {
+  it('maps certificate verification failures to network_error', () => {
+    const parsed = parseError(new Error('unknown certificate verification error'))
+
+    expect(parsed.code).toBe('network_error')
+  })
+})
+
 describe('parseError tool-support classification', () => {
   // Regression for the misclassification in the screenshot: an Anthropic
   // cache_control TTL ordering error mentioning `tools` in its hint string

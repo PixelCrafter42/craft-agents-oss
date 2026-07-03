@@ -16,6 +16,8 @@ import type {
   SessionToolCallbacks,
   FileSystemInterface,
   CredentialManagerInterface,
+  LlmConnectionInfo,
+  LlmCredentialManagerInterface,
   ValidatorInterface,
   LoadedSource,
   StdioMcpConfig,
@@ -63,6 +65,9 @@ import { isGoogleOAuthConfigured as isGoogleOAuthConfiguredImpl } from '../auth/
 import { debug } from '../utils/debug.ts';
 import { getSessionPlansPath, getSessionPath, getSessionDataPath } from '../sessions/storage.ts';
 import { updatePreferences as updatePreferencesImpl } from '../config/preferences.ts';
+import { getCredentialManager } from '../credentials/index.ts';
+import { refreshChatGptTokens } from '../auth/chatgpt-oauth.ts';
+import { getLlmConnections } from '../config/storage.ts';
 
 // Re-export types that may be needed by consumers
 export type { SessionToolContext, SessionToolCallbacks } from '@craft-agent/session-tools-core';
@@ -76,6 +81,8 @@ export interface ClaudeContextOptions {
   workspaceId: string;
   onPlanSubmitted: (planPath: string) => void;
   onAuthRequest: (request: unknown) => void;
+  workingDirectory?: string;
+  llmConnectionSlug?: string;
 }
 
 /**
@@ -89,7 +96,7 @@ export interface ClaudeContextOptions {
  * - Icon management
  */
 export function createClaudeContext(options: ClaudeContextOptions): SessionToolContext {
-  const { sessionId, workspacePath, workspaceId, onPlanSubmitted, onAuthRequest } = options;
+  const { sessionId, workspacePath, workspaceId, onPlanSubmitted, onAuthRequest, workingDirectory, llmConnectionSlug } = options;
 
   // File system implementation
   const fs: FileSystemInterface = {
@@ -172,6 +179,21 @@ export function createClaudeContext(options: ClaudeContextOptions): SessionToolC
     },
   };
 
+  const llmCredentialManager: LlmCredentialManagerInterface = {
+    getOAuth: async (connectionSlug: string) => {
+      return getCredentialManager().getLlmOAuth(connectionSlug);
+    },
+    setOAuth: async (connectionSlug: string, credentials) => {
+      await getCredentialManager().setLlmOAuth(connectionSlug, credentials);
+    },
+    refreshOAuth: async (connectionSlug: string, credentials) => {
+      if (!credentials.refreshToken) return null;
+      const refreshed = await refreshChatGptTokens(credentials.refreshToken);
+      await getCredentialManager().setLlmOAuth(connectionSlug, refreshed);
+      return refreshed;
+    },
+  };
+
   // MCP validation
   const validateStdioMcpConnection = async (config: StdioMcpConfig): Promise<StdioValidationResult> => {
     try {
@@ -220,10 +242,19 @@ export function createClaudeContext(options: ClaudeContextOptions): SessionToolC
     plansFolderPath: getSessionPlansPath(workspacePath, sessionId),
     sessionPath: getSessionPath(workspacePath, sessionId),
     dataPath: getSessionDataPath(workspacePath, sessionId),
+    workingDirectory,
+    llmConnectionSlug,
     callbacks,
     fs,
     validators,
     credentialManager,
+    llmCredentialManager,
+    listLlmConnections: (): LlmConnectionInfo[] => getLlmConnections().map(connection => ({
+      slug: connection.slug,
+      providerType: connection.providerType,
+      authType: connection.authType,
+      piAuthProvider: connection.piAuthProvider,
+    })),
     updatePreferences: (updates: Record<string, unknown>) => {
       updatePreferencesImpl(updates as any);
     },

@@ -63,6 +63,10 @@ export type { RenderTemplateArgs } from './render-template.ts';
 export { handleSendDeveloperFeedback } from './send-developer-feedback.ts';
 export type { SendDeveloperFeedbackArgs } from './send-developer-feedback.ts';
 
+// Codex Image Generation
+export { handleCodexGenerateImage } from './codex-generate-image.ts';
+export type { CodexGenerateImageArgs, CodexImageOutputFormat } from './codex-generate-image.ts';
+
 // Session Self-Management
 export { handleSetSessionLabels } from './set-session-labels.ts';
 export type { SetSessionLabelsArgs } from './set-session-labels.ts';

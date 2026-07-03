@@ -117,6 +117,9 @@ export type {
   SessionToolCallbacks,
   FileSystemInterface,
   CredentialManagerInterface,
+  LlmOAuthCredential,
+  LlmConnectionInfo,
+  LlmCredentialManagerInterface,
   ValidatorInterface,
   LoadedSource,
   // MCP validation types
@@ -168,6 +171,8 @@ export {
   handleRenderTemplate,
   // Send Developer Feedback
   handleSendDeveloperFeedback,
+  // Codex Image Generation
+  handleCodexGenerateImage,
   // Messaging Gateway
   handleSendMessagingFile,
 } from './handlers/index.ts';
@@ -188,6 +193,8 @@ export type {
   ScriptSandboxArgs,
   RenderTemplateArgs,
   SendDeveloperFeedbackArgs,
+  CodexGenerateImageArgs,
+  CodexImageOutputFormat,
   SendMessagingFileArgs,
 } from './handlers/index.ts';
 
@@ -206,6 +213,7 @@ export {
   TransformDataSchema,
   ScriptSandboxSchema,
   RenderTemplateSchema,
+  CodexGenerateImageSchema,
   SendMessagingFileSchema,
   // Browser tool schema
   BrowserToolSchema,

@@ -1076,6 +1076,7 @@
   "settings.tools.builtInBrowser": "組み込みブラウザ",
   "settings.tools.builtInBrowserDesc": "Playwright、Puppeteer、またはブラウザMCPサーバーなどの外部ブラウザツールを使用する場合は無効にしてください。",
   "settings.tools.title": "ツール",
+  "settings.webhooks.description": "外部Webhookトリガー用のローカルリスナー",
   "settings.workspace.advanced": "詳細設定",
   "settings.workspace.atLeast2Modes": "少なくとも2つのモードが必要です",
   "settings.workspace.defaultMode": "デフォルトモード",

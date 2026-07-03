@@ -42,6 +42,26 @@ describe('PiAgent subprocess error handling', () => {
     agent.destroy()
   })
 
+  it('maps certificate verification subprocess errors to typed network_error events', () => {
+    const agent = new PiAgent(createConfig())
+
+    const enqueued: any[] = []
+    ;(agent as any).eventQueue.enqueue = (event: any) => {
+      enqueued.push(event)
+    }
+
+    ;(agent as any).handleLine(JSON.stringify({
+      type: 'error',
+      message: 'unknown certificate verification error',
+    }))
+
+    expect(enqueued).toHaveLength(1)
+    expect(enqueued[0].type).toBe('typed_error')
+    expect(enqueued[0].error.code).toBe('network_error')
+
+    agent.destroy()
+  })
+
   it('does not enqueue chat errors for mini_completion_error messages', () => {
     const agent = new PiAgent(createConfig())
 

@@ -1076,6 +1076,7 @@
   "settings.tools.builtInBrowser": "Integrierter Browser",
   "settings.tools.builtInBrowserDesc": "Deaktivieren, wenn Sie externe Browser-Werkzeuge wie Playwright, Puppeteer oder Browser-MCP-Server verwenden.",
   "settings.tools.title": "Werkzeuge",
+  "settings.webhooks.description": "Lokaler Listener für externe Webhook-Trigger",
   "settings.workspace.advanced": "Erweitert",
   "settings.workspace.atLeast2Modes": "Mindestens 2 Modi erforderlich",
   "settings.workspace.defaultMode": "Standardmodus",

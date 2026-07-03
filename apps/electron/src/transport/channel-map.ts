@@ -152,6 +152,14 @@ export const CHANNEL_MAP = {
   getServerConfig: invoke(RPC_CHANNELS.settings.GET_SERVER_CONFIG),
   setServerConfig: invoke(RPC_CHANNELS.settings.SET_SERVER_CONFIG),
   getServerStatus: invoke(RPC_CHANNELS.settings.GET_SERVER_STATUS),
+  getDesktopWebhookListenerConfig: invoke(RPC_CHANNELS.webhooks.GET_LISTENER_CONFIG),
+  setDesktopWebhookListenerConfig: invoke(RPC_CHANNELS.webhooks.SET_LISTENER_CONFIG),
+  getDesktopWebhookListenerStatus: invoke(RPC_CHANNELS.webhooks.GET_LISTENER_STATUS),
+  checkDesktopWebhookListener: invoke(RPC_CHANNELS.webhooks.CHECK_LISTENER),
+  sendDesktopWebhookLocalTest: invoke(RPC_CHANNELS.webhooks.SEND_LOCAL_TEST),
+  getDesktopWebhookTriggerSecret: invoke(RPC_CHANNELS.webhooks.GET_TRIGGER_SECRET),
+  rotateDesktopWebhookTriggerSecret: invoke(RPC_CHANNELS.webhooks.ROTATE_TRIGGER_SECRET),
+  getDesktopWebhookDeliveries: invoke(RPC_CHANNELS.webhooks.GET_DELIVERIES),
 
   // Settings - API Setup
   setupLlmConnection: invoke(RPC_CHANNELS.settings.SETUP_LLM_CONNECTION),

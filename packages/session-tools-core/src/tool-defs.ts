@@ -34,6 +34,7 @@ import { handleTransformData } from './handlers/transform-data.ts';
 import { handleScriptSandbox } from './handlers/script-sandbox.ts';
 import { handleRenderTemplate } from './handlers/render-template.ts';
 import { handleSendDeveloperFeedback } from './handlers/send-developer-feedback.ts';
+import { handleCodexGenerateImage } from './handlers/codex-generate-image.ts';
 import { handleSetSessionLabels } from './handlers/set-session-labels.ts';
 import { handleSetSessionStatus } from './handlers/set-session-status.ts';
 import { handleGetSessionInfo } from './handlers/get-session-info.ts';
@@ -151,6 +152,14 @@ export const RenderTemplateSchema = z.object({
 
 export const SendDeveloperFeedbackSchema = z.object({
   message: z.string().describe('Freeform markdown feedback — be detailed, use headings, lists, code blocks. Include what happened, what you expected, what would help, or any ideas/suggestions.'),
+});
+
+export const CodexGenerateImageSchema = z.object({
+  prompt: z.string().min(1).describe('The image prompt. Be specific about subject, composition, style, text, and constraints.'),
+  model: z.string().optional().describe('Codex model that should invoke image generation. Defaults to gpt-5.5.'),
+  outputFormat: z.enum(['png', 'jpeg', 'webp']).optional().describe('Output image format. Defaults to png.'),
+  connectionSlug: z.string().optional().describe('Optional LLM connection slug for a ChatGPT Plus/Pro Codex OAuth connection. Defaults to the current session connection, then configured openai-codex OAuth connections.'),
+  fileName: z.string().optional().describe('Optional output filename stem. Directory components are ignored; the image is always saved under this session data directory.'),
 });
 
 // Browser tool schema (single CLI-like tool for all browser actions)
@@ -460,6 +469,12 @@ Only use 'attachments' for existing file paths on disk — the tool reads them a
 
 Use this to share anything that would help improve the product — issues you hit, ideas for better tools, suggestions for improved workflows, or patterns you notice. Write in markdown with as much detail as possible. This is your direct line to the developers.`,
 
+  codex_generate_image: `Generate a raster image using the user's ChatGPT Plus/Pro Codex subscription via the OpenAI Codex ChatGPT backend image_generation tool.
+
+Use this when the user explicitly asks to create a bitmap image, illustration, photo, sprite, icon draft, banner, texture, or other generated visual asset. Do not call it without a clear image-generation request because it consumes the user's Codex/ChatGPT image quota.
+
+The tool uses stored ChatGPT Plus/Pro Codex OAuth credentials; it does not require an OPENAI_API_KEY. It saves the image under the current session data directory and returns an image-preview block that can be shown to the user.`,
+
   set_session_labels: `Set labels on the current session or a specific session by ID. Replaces all existing labels.
 
 Use this to tag sessions for filtering or to trigger label-based automations (LabelAdd/LabelRemove events).
@@ -556,6 +571,7 @@ export const SESSION_TOOL_DEFS: SessionToolDef[] = [
   { name: 'script_sandbox', description: TOOL_DESCRIPTIONS.script_sandbox, inputSchema: ScriptSandboxSchema, executionMode: 'registry', safeMode: 'allow', handler: handleScriptSandbox },
   { name: 'render_template', description: TOOL_DESCRIPTIONS.render_template, inputSchema: RenderTemplateSchema, executionMode: 'registry', safeMode: 'allow', handler: handleRenderTemplate },
   { name: 'send_developer_feedback', description: TOOL_DESCRIPTIONS.send_developer_feedback, inputSchema: SendDeveloperFeedbackSchema, executionMode: 'registry', safeMode: 'allow', handler: handleSendDeveloperFeedback },
+  { name: 'codex_generate_image', description: TOOL_DESCRIPTIONS.codex_generate_image, inputSchema: CodexGenerateImageSchema, executionMode: 'registry', safeMode: 'block', handler: handleCodexGenerateImage },
   { name: 'call_llm', description: TOOL_DESCRIPTIONS.call_llm, inputSchema: CallLlmSchema, executionMode: 'backend', safeMode: 'allow', readOnly: true, handler: null },
   { name: 'spawn_session', description: TOOL_DESCRIPTIONS.spawn_session, inputSchema: SpawnSessionSchema, executionMode: 'backend', safeMode: 'block', handler: null },
   // Browser tool (backend-specific — requires BrowserPaneManager in Electron)

@@ -1076,6 +1076,7 @@
   "settings.tools.builtInBrowser": "Wbudowana przeglądarka",
   "settings.tools.builtInBrowserDesc": "Wyłącz, jeśli używasz zewnętrznych narzędzi przeglądarki, takich jak Playwright, Puppeteer lub serwery MCP przeglądarki.",
   "settings.tools.title": "Narzędzia",
+  "settings.webhooks.description": "Lokalny nasłuch dla zewnętrznych wyzwalaczy webhook",
   "settings.workspace.advanced": "Zaawansowane",
   "settings.workspace.atLeast2Modes": "Wymagane co najmniej 2 tryby",
   "settings.workspace.defaultMode": "Domyślny tryb",

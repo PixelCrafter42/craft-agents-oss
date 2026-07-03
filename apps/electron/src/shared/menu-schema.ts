@@ -388,6 +388,7 @@ const SETTINGS_ICONS: Record<SettingsSubpage, string> = {
   labels: 'Tag',
   messaging: 'MessageSquare',
   server: 'Server',
+  webhooks: 'Webhook',
   shortcuts: 'Keyboard',
   preferences: 'UserCircle',
 }

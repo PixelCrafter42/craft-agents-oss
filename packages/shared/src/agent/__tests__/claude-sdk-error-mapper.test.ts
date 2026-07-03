@@ -57,6 +57,18 @@ describe('mapClaudeSdkAssistantError', () => {
     expect(error.message.toLowerCase()).toContain('internet connection');
   });
 
+  it('maps certificate verification failures as network_error', () => {
+    const error = mapClaudeSdkAssistantError('unknown', {
+      ...baseContext,
+      actualError: {
+        errorType: 'error',
+        message: 'unknown certificate verification error',
+      },
+    });
+
+    expect(error.code).toBe('network_error');
+  });
+
   describe('invalid_request — 1M context specialization', () => {
     it('maps invalid_request with context-1m hint to 1M-context-specific error', () => {
       const error = mapClaudeSdkAssistantError('invalid_request', {

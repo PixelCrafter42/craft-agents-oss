@@ -208,6 +208,16 @@ export const LOCAL_ONLY_CHANNELS = new Set<string>([
   RPC_CHANNELS.settings.GET_SERVER_CONFIG,
   RPC_CHANNELS.settings.SET_SERVER_CONFIG,
   RPC_CHANNELS.settings.GET_SERVER_STATUS,
+
+  // desktop webhooks — local listener and local encrypted secrets
+  RPC_CHANNELS.webhooks.GET_LISTENER_CONFIG,
+  RPC_CHANNELS.webhooks.SET_LISTENER_CONFIG,
+  RPC_CHANNELS.webhooks.GET_LISTENER_STATUS,
+  RPC_CHANNELS.webhooks.CHECK_LISTENER,
+  RPC_CHANNELS.webhooks.SEND_LOCAL_TEST,
+  RPC_CHANNELS.webhooks.GET_TRIGGER_SECRET,
+  RPC_CHANNELS.webhooks.ROTATE_TRIGGER_SECRET,
+  RPC_CHANNELS.webhooks.GET_DELIVERIES,
 ])
 
 // ---------------------------------------------------------------------------

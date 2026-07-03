@@ -43,6 +43,28 @@ describe('parseAutomationsConfig', () => {
     expect(items[0].actions[0].type).toBe('prompt')
   })
 
+  it('parses WebhookReceived automations', () => {
+    const config = {
+      version: 2,
+      webhookTriggers: {
+        notion_pages: {
+          source: 'notion',
+          eventType: 'database.page.created',
+        },
+      },
+      automations: {
+        WebhookReceived: [{
+          matcher: '^notion:database\\.page\\.created$',
+          actions: [{ type: 'prompt', prompt: 'Handle page' }],
+        }],
+      },
+    }
+    const items = parseAutomationsConfig(config)
+    expect(items).toHaveLength(1)
+    expect(items[0].event).toBe('WebhookReceived')
+    expect(items[0].summary).toBe('Matches: ^notion:database\\.page\\.created$')
+  })
+
   it('parses multiple events with multiple matchers', () => {
     const config = {
       version: 2,

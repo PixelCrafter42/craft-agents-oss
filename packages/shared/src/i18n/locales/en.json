@@ -1076,6 +1076,7 @@
   "settings.tools.builtInBrowser": "Built-in browser",
   "settings.tools.builtInBrowserDesc": "Disable if you use external browser tools like Playwright, Puppeteer, or browser MCP servers.",
   "settings.tools.title": "Tools",
+  "settings.webhooks.description": "Local listener for external webhook triggers",
   "settings.workspace.advanced": "Advanced",
   "settings.workspace.atLeast2Modes": "At least 2 modes required",
   "settings.workspace.defaultMode": "Default mode",

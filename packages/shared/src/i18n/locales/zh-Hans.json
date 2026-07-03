@@ -1076,6 +1076,7 @@
   "settings.tools.builtInBrowser": "内置浏览器",
   "settings.tools.builtInBrowserDesc": "如果使用外部浏览器工具 (如 Playwright、Puppeteer 或浏览器 MCP 服务器) 则禁用。",
   "settings.tools.title": "工具",
+  "settings.webhooks.description": "用于外部 webhook 触发器的本地监听器",
   "settings.workspace.advanced": "高级",
   "settings.workspace.atLeast2Modes": "至少需要 2 种模式",
   "settings.workspace.defaultMode": "默认模式",

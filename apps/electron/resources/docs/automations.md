@@ -70,6 +70,7 @@ craft-agent automation validate
 | `PermissionModeChange` | Permission mode changed | New mode name |
 | `FlagChange` | Session flagged/unflagged | `true` or `false` |
 | `SessionStatusChange` | Session status changed | New status (e.g., `done`, `in_progress`) |
+| `WebhookReceived` | Desktop webhook listener received an external webhook | `${source}:${eventType}` (e.g., `notion:database.page.created`) |
 | `SchedulerTick` | Runs every minute | Uses cron matching |
 
 > **Note:** `TodoStateChange` is a deprecated alias for `SessionStatusChange`. Existing configs using the old name will continue to work but will show a deprecation warning during validation.
@@ -91,6 +92,105 @@ craft-agent automation validate
 | `PreCompact` | Before context compaction | - |
 | `PermissionRequest` | Permission requested | - |
 | `Setup` | Initial setup | - |
+
+## Inbound Webhook Triggers
+
+The desktop app can run a local HTTP listener for external webhooks. It is separate from Craft server mode and defaults to:
+
+```text
+http://127.0.0.1:9797
+```
+
+Configure it in **Settings → Webhooks**:
+
+- Enable the local webhook listener.
+- Keep `127.0.0.1:9797` for local-only use.
+- Set Public base URL to your Cloudflare Tunnel HTTPS URL when exposing it to services such as Notion.
+- Use **Check local listener** to call `GET /health`.
+- Use **Send local test** to send a dry-run `POST /webhooks/:workspaceId/:triggerId?dryRun=1&test=1`.
+
+Dry-run requests validate auth, normalize the payload, and report matched automations, but do not execute actions.
+
+Add non-secret trigger configuration under `webhookTriggers`; secrets are stored separately in the encrypted credential store.
+
+```json
+{
+  "version": 2,
+  "webhookTriggers": {
+    "notion-pages": {
+      "source": "notion",
+      "auth": { "type": "notion-signature" },
+      "mapping": {
+        "eventType": { "from": "body", "path": "type", "default": "database.page.created" },
+        "entityId": { "from": "body", "paths": ["page.id", "data.id"] },
+        "title": { "from": "body", "paths": ["page.properties.Name.title.0.plain_text", "title"] },
+        "url": { "from": "body", "path": "page.url" }
+      }
+    }
+  },
+  "automations": {
+    "WebhookReceived": [
+      {
+        "name": "Handle new Notion page",
+        "matcher": "^notion:database\\.page\\.created$",
+        "actions": [
+          { "type": "prompt", "prompt": "Review this Notion page: $CRAFT_URL" }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Mapping rules support:
+
+| Source | Description |
+|--------|-------------|
+| `body` | Read from JSON body using dot paths and array indexes |
+| `header` | Read from request headers; header names are matched case-insensitively |
+| `query` | Read from URL query parameters |
+| `constant` | Use a fixed `value` |
+
+Each rule can set `path`, fallback `paths`, and `default`.
+
+Auth modes:
+
+```json
+{ "type": "none" }
+{ "type": "bearer" }
+{ "type": "header", "headerName": "X-Webhook-Token" }
+{ "type": "query", "queryParam": "token" }
+{ "type": "hmac", "headerName": "X-Signature", "algorithm": "sha256" }
+{ "type": "notion-signature" }
+```
+
+If `auth` is omitted, the listener requires a bearer token by default. For triggers with `source: "notion"`, omitted auth defaults to Notion signature validation. Rotate/copy generic secrets from Settings → Webhooks.
+
+Notion sends an initial verification request with `verification_token` in the JSON body. The listener accepts that request for `notion-signature` triggers, stores the token in the encrypted credential store, and validates later events with Notion's `X-Notion-Signature` HMAC-SHA256 header.
+
+Local verification without Notion:
+
+```bash
+curl http://127.0.0.1:9797/health
+```
+
+Then use **Send local test** in the UI, or copy the generated curl command. The expected dry-run matcher value for an unmapped test payload is:
+
+```text
+generic:test.event
+```
+
+Cloudflare Tunnel example:
+
+```bash
+cloudflared tunnel --url http://127.0.0.1:9797
+```
+
+Use the generated HTTPS URL as Public base URL, then configure the external service webhook endpoint as:
+
+```text
+https://your-tunnel.example/webhooks/{workspaceId}/{triggerId}
+```
 
 ## Action Types
 

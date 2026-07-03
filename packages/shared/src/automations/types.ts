@@ -6,6 +6,7 @@
 
 import type { PermissionMode } from '../agent/mode-types.ts';
 import type { ThinkingLevel } from '../agent/thinking-levels.ts';
+import type { WebhookReceivedPayload } from './event-bus.ts';
 
 // ============================================================================
 // Event Types
@@ -19,6 +20,7 @@ export type AppEvent =
   | 'PermissionModeChange'
   | 'FlagChange'
   | 'SessionStatusChange'
+  | 'WebhookReceived'
   | 'SchedulerTick';
 
 /** Agent events - passed to Claude SDK */
@@ -41,7 +43,8 @@ export type AutomationEvent = AppEvent | AgentEvent;
 
 export const APP_EVENTS: AppEvent[] = [
   'LabelAdd', 'LabelRemove', 'LabelConfigChange',
-  'PermissionModeChange', 'FlagChange', 'SessionStatusChange', 'SchedulerTick'
+  'PermissionModeChange', 'FlagChange', 'SessionStatusChange',
+  'WebhookReceived', 'SchedulerTick'
 ];
 
 export const AGENT_EVENTS: AgentEvent[] = [
@@ -215,8 +218,82 @@ export interface AutomationMatcher {
   actions: AutomationAction[];
 }
 
+// ============================================================================
+// Webhook Trigger Definitions
+// ============================================================================
+
+/** Input location for normalizing external webhook payloads. */
+export type WebhookMappingSource = 'body' | 'header' | 'query' | 'constant';
+
+/** A mapping rule that extracts one normalized event field from an incoming request. */
+export interface WebhookMappingRule {
+  /** Location to read from. */
+  from: WebhookMappingSource;
+  /** Primary dot path/key to read. */
+  path?: string;
+  /** Fallback dot paths/keys, tried after `path`. */
+  paths?: string[];
+  /** Constant value used when `from` is `constant`. */
+  value?: unknown;
+  /** Fallback value when no path resolves. */
+  default?: unknown;
+}
+
+/** Authentication mode for inbound webhook triggers. Secret values live in encrypted credentials. */
+export type WebhookTriggerAuth =
+  | { type: 'none' }
+  | { type: 'bearer' }
+  | { type: 'header'; headerName: string }
+  | { type: 'query'; queryParam?: string }
+  | { type: 'hmac'; headerName: string; algorithm?: 'sha1' | 'sha256' | 'sha512'; prefix?: string }
+  | { type: 'notion-signature' };
+
+/** Non-secret webhook trigger configuration stored in automations.json. */
+export interface WebhookTriggerConfig {
+  /** Whether this endpoint accepts requests. Defaults to true. */
+  enabled?: boolean;
+  /** Optional human-readable name. */
+  name?: string;
+  /** Provider/source namespace used for matcher value, e.g. "notion". */
+  source?: string;
+  /** Default normalized event type, e.g. "database.page.created". */
+  eventType?: string;
+  /** Non-secret auth configuration. */
+  auth?: WebhookTriggerAuth;
+  /** Field mapping from arbitrary webhook payloads to normalized event fields. */
+  mapping?: Record<string, WebhookMappingRule>;
+}
+
 export interface AutomationsConfig {
   automations: Partial<Record<AutomationEvent, AutomationMatcher[]>>;
+  /** External webhook trigger definitions keyed by triggerId. */
+  webhookTriggers?: Record<string, WebhookTriggerConfig>;
+}
+
+export type AutomationWebhookReceiveMode = 'dry-run' | 'live';
+
+export interface AutomationWebhookMatchedAutomation {
+  id?: string;
+  name: string;
+}
+
+export interface AutomationWebhookReceiveInput {
+  workspaceId: string;
+  triggerId: string;
+  mode: AutomationWebhookReceiveMode;
+  payload: WebhookReceivedPayload;
+  /** Used by desktop Settings local tests so listener/pipeline checks do not require user config. */
+  allowMissingTrigger?: boolean;
+}
+
+export interface AutomationWebhookReceiveResult {
+  ok: boolean;
+  mode: AutomationWebhookReceiveMode;
+  emitted: boolean;
+  matcherValue: string;
+  matchedAutomations: AutomationWebhookMatchedAutomation[];
+  normalizedEvent: WebhookReceivedPayload;
+  error?: string;
 }
 
 // ============================================================================

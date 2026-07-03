@@ -89,7 +89,7 @@ import { existsSync } from 'fs';
 import { getSessionDataPath, getSessionPath, getSessionPlansPath } from '../sessions/storage.ts';
 
 // Error typing
-import { parseError, type AgentError } from './errors.ts';
+import { isLikelyNetworkErrorText, parseError, type AgentError } from './errors.ts';
 
 // Centralized PreToolUse pipeline
 import { runPreToolUseChecks, type PreToolUseCheckResult } from './core/pre-tool-use.ts';
@@ -1482,6 +1482,8 @@ export class PiAgent extends BaseAgent {
       sessionId,
       workspacePath,
       workspaceId,
+      workingDirectory: this.config.session?.workingDirectory ?? this.workingDirectory,
+      llmConnectionSlug: this.config.connectionSlug,
       onPlanSubmitted: (planPath: string) => {
         setLastPlanFilePath(sessionId, planPath);
         this.onPlanSubmitted?.(planPath);
@@ -2639,11 +2641,7 @@ export class PiAgent extends BaseAgent {
     }
 
     // Network errors
-    if (
-      errorMessage.includes('network') ||
-      errorMessage.includes('econnrefused') ||
-      errorMessage.includes('fetch failed')
-    ) {
+    if (isLikelyNetworkErrorText(errorMessage)) {
       return {
         code: 'network_error',
         title: 'Connection Error',

@@ -24,6 +24,14 @@ export type {
   WebhookHttpMethod,
   WebhookBodyFormat,
   WebhookAuth,
+  WebhookMappingSource,
+  WebhookMappingRule,
+  WebhookTriggerAuth,
+  WebhookTriggerConfig,
+  AutomationWebhookReceiveMode,
+  AutomationWebhookMatchedAutomation,
+  AutomationWebhookReceiveInput,
+  AutomationWebhookReceiveResult,
   AutomationAction,
   AutomationMessagingPlatform,
   AutomationMessagingResponseMode,
@@ -69,7 +77,17 @@ export { buildEnvFromSdkInput } from './sdk-bridge.ts';
 // Utilities
 // ============================================================================
 
-export { parsePromptReferences } from './utils.ts';
+export { getMatchValue, matcherMatches, matcherMatchesWithContext, parsePromptReferences } from './utils.ts';
+export {
+  getPathValue,
+  getWebhookMatcherValue,
+  normalizeHeaders,
+  normalizeQuery,
+  normalizeWebhookPayload,
+  redactHeaders,
+  resolveMappingRule,
+  type NormalizeWebhookPayloadInput,
+} from './webhook-trigger-utils.ts';
 
 // ============================================================================
 // Re-exports from sub-modules
@@ -116,6 +134,7 @@ export {
   type FlagChangePayload,
   type SessionStatusChangePayload,
   type SchedulerTickPayload,
+  type WebhookReceivedPayload,
   type LabelConfigChangePayload,
   type GenericEventPayload,
   type EventHandler,

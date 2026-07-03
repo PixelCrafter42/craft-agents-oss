@@ -96,7 +96,7 @@ import { listLabels, loadLabelConfig } from '@craft-agent/shared/labels/storage'
 import { extractLabelId, resolveSessionLabels } from '@craft-agent/shared/labels'
 import { ensureLabelsExist } from '@craft-agent/shared/labels/crud'
 import { loadStatusConfig } from '@craft-agent/shared/statuses/storage'
-import { AutomationSystem, createPromptHistoryEntry, appendAutomationHistoryEntry, type AutomationSystemMetadataSnapshot, type AutomationMessagingTarget } from '@craft-agent/shared/automations'
+import { AutomationSystem, createPromptHistoryEntry, appendAutomationHistoryEntry, matcherMatches, type AutomationSystemMetadataSnapshot, type AutomationMessagingTarget, type AutomationWebhookReceiveInput, type AutomationWebhookReceiveResult } from '@craft-agent/shared/automations'
 import { buildBackendRuntimeSignature, buildRestartRequiredSignature, filterAttachmentsForModelInput } from './runtime-config'
 import { buildModelFallbackSequence, isModelFallbackEligibleError, modelFallbackKey, type ResolvedModelFallbackCandidate } from './model-fallback'
 
@@ -8164,6 +8164,102 @@ Please continue the conversation naturally from where we left off.
     })
 
     return { sessionId: session.id }
+  }
+
+  /**
+   * Receive a normalized desktop webhook event.
+   *
+   * Dry-run mode performs the same matcher evaluation as live mode but does not
+   * emit the event, so prompt/webhook actions are not executed.
+   */
+  async receiveAutomationWebhook(
+    input: AutomationWebhookReceiveInput,
+  ): Promise<AutomationWebhookReceiveResult> {
+    await this.waitForInit()
+
+    const workspace = getWorkspaceByNameOrId(input.workspaceId)
+    if (!workspace) {
+      return {
+        ok: false,
+        mode: input.mode,
+        emitted: false,
+        matcherValue: input.payload.matcherValue,
+        matchedAutomations: [],
+        normalizedEvent: input.payload,
+        error: `Workspace not found: ${input.workspaceId}`,
+      }
+    }
+
+    let automationSystem = this.automationSystems.get(workspace.rootPath)
+    if (!automationSystem) {
+      this.setupConfigWatcher(workspace.rootPath, workspace.id)
+      automationSystem = this.automationSystems.get(workspace.rootPath)
+    }
+
+    if (!automationSystem) {
+      return {
+        ok: false,
+        mode: input.mode,
+        emitted: false,
+        matcherValue: input.payload.matcherValue,
+        matchedAutomations: [],
+        normalizedEvent: input.payload,
+        error: `Automation system not initialized for workspace: ${workspace.id}`,
+      }
+    }
+
+    const config = automationSystem.getConfig()
+    const trigger = config?.webhookTriggers?.[input.triggerId]
+    const allowMissingTrigger = input.mode === 'dry-run' && input.allowMissingTrigger === true
+    if (!trigger && !allowMissingTrigger) {
+      return {
+        ok: false,
+        mode: input.mode,
+        emitted: false,
+        matcherValue: input.payload.matcherValue,
+        matchedAutomations: [],
+        normalizedEvent: input.payload,
+        error: `Webhook trigger not found: ${input.triggerId}`,
+      }
+    }
+    if (trigger?.enabled === false) {
+      return {
+        ok: false,
+        mode: input.mode,
+        emitted: false,
+        matcherValue: input.payload.matcherValue,
+        matchedAutomations: [],
+        normalizedEvent: input.payload,
+        error: `Webhook trigger disabled: ${input.triggerId}`,
+      }
+    }
+
+    const matchers = automationSystem.getMatchersForEvent('WebhookReceived')
+    const matchedAutomations = matchers
+      .filter((matcher) => matcherMatches(matcher, 'WebhookReceived', input.payload))
+      .map((matcher, index) => ({
+        id: matcher.id,
+        name: matcher.name
+          ?? matcher.id
+          ?? matcher.matcher
+          ?? `Webhook automation ${index + 1}`,
+      }))
+
+    const result: AutomationWebhookReceiveResult = {
+      ok: true,
+      mode: input.mode,
+      emitted: false,
+      matcherValue: input.payload.matcherValue,
+      matchedAutomations,
+      normalizedEvent: input.payload,
+    }
+
+    if (input.mode === 'live') {
+      await automationSystem.emit('WebhookReceived', input.payload)
+      result.emitted = true
+    }
+
+    return result
   }
 
   /**

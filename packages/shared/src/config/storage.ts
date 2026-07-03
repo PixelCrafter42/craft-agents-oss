@@ -92,6 +92,8 @@ export interface StoredConfig {
   setupDeferred?: boolean;
   // Server mode — embedded remote server settings
   serverConfig?: import('./server-config.ts').ServerConfig;
+  // Desktop local webhook listener settings
+  desktopWebhookListener?: import('./webhook-listener-config.ts').DesktopWebhookListenerConfig;
   // One-shot migration markers. Used by migrations that should run at most
   // once per user (e.g. restoring a previously-removed model to connection
   // lists without re-adding it if the user later removes it deliberately).
@@ -3026,6 +3028,10 @@ export function ensureToolIcons(): void {
 // ============================================
 
 import { DEFAULT_SERVER_CONFIG, type ServerConfig } from './server-config.ts';
+import {
+  DEFAULT_DESKTOP_WEBHOOK_LISTENER_CONFIG,
+  type DesktopWebhookListenerConfig,
+} from './webhook-listener-config.ts';
 import { randomUUID } from 'crypto';
 
 /**
@@ -3051,5 +3057,41 @@ export function setServerConfig(serverConfig: ServerConfig): void {
   }
 
   config.serverConfig = serverConfig;
+  saveConfig(config);
+}
+
+// ============================================
+// Desktop Webhook Listener Configuration
+// ============================================
+
+export function getDesktopWebhookListenerConfig(): DesktopWebhookListenerConfig {
+  const config = loadStoredConfig();
+  return {
+    ...DEFAULT_DESKTOP_WEBHOOK_LISTENER_CONFIG,
+    ...(config?.desktopWebhookListener ?? {}),
+  };
+}
+
+export function setDesktopWebhookListenerConfig(listenerConfig: DesktopWebhookListenerConfig): void {
+  const config = loadStoredConfig();
+  if (!config) return;
+
+  if (listenerConfig.port < 1024 || listenerConfig.port > 65535) {
+    throw new Error(`Port must be between 1024 and 65535, got ${listenerConfig.port}`);
+  }
+
+  const host = listenerConfig.host.trim() || DEFAULT_DESKTOP_WEBHOOK_LISTENER_CONFIG.host;
+  const publicBaseUrl = listenerConfig.publicBaseUrl?.trim();
+  const lastWorkspaceId = listenerConfig.lastWorkspaceId?.trim();
+  const lastTriggerId = listenerConfig.lastTriggerId?.trim();
+
+  config.desktopWebhookListener = {
+    enabled: listenerConfig.enabled,
+    host,
+    port: listenerConfig.port,
+    ...(publicBaseUrl ? { publicBaseUrl: publicBaseUrl.replace(/\/+$/, '') } : {}),
+    ...(lastWorkspaceId ? { lastWorkspaceId } : {}),
+    ...(lastTriggerId ? { lastTriggerId } : {}),
+  };
   saveConfig(config);
 }

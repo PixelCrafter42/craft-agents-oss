@@ -238,6 +238,14 @@ export interface ElectronAPI {
   getServerConfig(): Promise<import('@craft-agent/shared/config/server-config').ServerConfig>
   setServerConfig(config: import('@craft-agent/shared/config/server-config').ServerConfig): Promise<void>
   getServerStatus(): Promise<import('@craft-agent/shared/config/server-config').ServerStatus>
+  getDesktopWebhookListenerConfig(): Promise<import('@craft-agent/shared/config').DesktopWebhookListenerConfig>
+  setDesktopWebhookListenerConfig(config: import('@craft-agent/shared/config').DesktopWebhookListenerConfig): Promise<void>
+  getDesktopWebhookListenerStatus(): Promise<import('@craft-agent/shared/config').DesktopWebhookListenerStatus>
+  checkDesktopWebhookListener(): Promise<{ ok: boolean; statusCode?: number; response?: unknown; error?: string }>
+  sendDesktopWebhookLocalTest(workspaceId: string, triggerId: string): Promise<import('@craft-agent/shared/config').DesktopWebhookLocalTestResult>
+  getDesktopWebhookTriggerSecret(workspaceId: string, triggerId: string): Promise<string | null>
+  rotateDesktopWebhookTriggerSecret(workspaceId: string, triggerId: string): Promise<string>
+  getDesktopWebhookDeliveries(workspaceId?: string, triggerId?: string): Promise<import('@craft-agent/shared/config').DesktopWebhookDeliveryRecord[]>
 
   // App lifecycle
   relaunchApp(): Promise<void>

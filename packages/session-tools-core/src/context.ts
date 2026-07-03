@@ -115,6 +115,37 @@ export interface CredentialManagerInterface {
   refresh(source: LoadedSource): Promise<string | null>;
 }
 
+/**
+ * OAuth credentials for an LLM connection.
+ */
+export interface LlmOAuthCredential {
+  accessToken: string;
+  refreshToken?: string;
+  expiresAt?: number;
+  idToken?: string;
+}
+
+/**
+ * Minimal LLM connection metadata exposed to session tools.
+ */
+export interface LlmConnectionInfo {
+  slug: string;
+  providerType?: string;
+  authType?: string;
+  piAuthProvider?: string;
+}
+
+/**
+ * LLM credential manager abstraction.
+ * Desktop-backed contexts can provide this for tools that need the user's
+ * existing model-provider OAuth token without exposing unrelated credentials.
+ */
+export interface LlmCredentialManagerInterface {
+  getOAuth(connectionSlug: string): Promise<LlmOAuthCredential | null>;
+  setOAuth?(connectionSlug: string, credentials: LlmOAuthCredential): Promise<void>;
+  refreshOAuth?(connectionSlug: string, credentials: LlmOAuthCredential): Promise<LlmOAuthCredential | null>;
+}
+
 // ============================================================
 // Validator Interface
 // ============================================================
@@ -171,6 +202,9 @@ export interface SessionToolContext {
   /** Working directory (project root) for the session, if set */
   workingDirectory?: string;
 
+  /** Current LLM connection slug for the session, if known */
+  llmConnectionSlug?: string;
+
   // ============================================================
   // Callbacks (transport-agnostic)
   // ============================================================
@@ -198,6 +232,18 @@ export interface SessionToolContext {
    * Only available in Claude (has keychain access).
    */
   credentialManager?: CredentialManagerInterface;
+
+  /**
+   * Get credential manager for LLM connection OAuth tokens.
+   * Only available in desktop contexts with access to the credential store.
+   */
+  llmCredentialManager?: LlmCredentialManagerInterface;
+
+  /**
+   * List configured LLM connections so tools can discover compatible OAuth
+   * connections when the current session uses a different provider.
+   */
+  listLlmConnections?(): LlmConnectionInfo[];
 
   /**
    * Load a source config from the workspace.

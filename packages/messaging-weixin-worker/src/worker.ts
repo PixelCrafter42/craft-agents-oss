@@ -2,8 +2,9 @@
  * Weixin worker subprocess entry.
  *
  * The long-polling SDK keeps global state under OPENCLAW_STATE_DIR and caches
- * context tokens in process memory. Running it in a child process isolates that
- * state per workspace and keeps the gateway process independent.
+ * context tokens in process memory. This worker persists the latest context
+ * token per account/user so proactive desktop automations can still send after
+ * restart.
  *
  * QR login helpers below are adapted from wong2/weixin-agent-sdk v0.5.0
  * (MIT). The public SDK `login()` only prints terminal QR output, so the worker
@@ -22,6 +23,8 @@ import {
   type WorkerCommand,
   type WorkerEvent,
 } from './protocol'
+import { loadContextToken, saveContextToken } from './context-token-cache'
+import { shouldUsePersistedContextTokenFallback } from './send-error'
 
 declare const __WEIXIN_WORKER_BUILD_ID__: string
 declare const __WEIXIN_WORKER_GIT_SHA__: string
@@ -102,6 +105,7 @@ interface LoginResult {
 }
 
 let session: SessionState | null = null
+let activeContextTokenScope: { stateDir: string; accountId: string } | null = null
 let stdinBuffer = ''
 let pendingVerifyCode: ((code: string) => void) | null = null
 let fetchCompatibilityPatchInstalled = false
@@ -310,6 +314,11 @@ function installWeixinFetchCompatibilityPatch(): void {
     nextInit.body = withBaseInfo(init?.body) as RequestInit['body']
     try {
       const response = await originalFetch(input, nextInit)
+      if (/\/ilink\/bot\/getupdates(?:\?|$)/.test(rawUrl)) {
+        await persistContextTokensFromGetUpdates(response.clone()).catch((err) => {
+          log('failed to persist context token:', err instanceof Error ? err.message : String(err))
+        })
+      }
       if (/\/ilink\/bot\/sendmessage(?:\?|$)/.test(rawUrl)) {
         const raw = await response.clone().text().catch(() => '')
         if (raw.trim()) {
@@ -337,6 +346,28 @@ function installWeixinFetchCompatibilityPatch(): void {
   }) as typeof fetch
 }
 
+async function persistContextTokensFromGetUpdates(response: { text(): Promise<string> }): Promise<void> {
+  const scope = activeContextTokenScope
+  if (!scope) return
+  const raw = await response.text()
+  if (!raw.trim()) return
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return
+  }
+  const msgs = (parsed as { msgs?: unknown }).msgs
+  if (!Array.isArray(msgs)) return
+  for (const msg of msgs) {
+    const userId = (msg as { from_user_id?: unknown }).from_user_id
+    const token = (msg as { context_token?: unknown }).context_token
+    if (typeof userId !== 'string' || typeof token !== 'string') continue
+    saveContextToken(scope.stateDir, scope.accountId, userId, token)
+    log(`[weixin] context token cached for ${userId}`)
+  }
+}
+
 async function requestJson<T>(params: {
   baseUrl: string
   endpoint: string
@@ -354,13 +385,25 @@ async function requestJson<T>(params: {
     const url = new URL(params.endpoint, params.baseUrl.endsWith('/') ? params.baseUrl : `${params.baseUrl}/`)
     const res = await fetch(url.toString(), {
       method: params.method,
-      headers: params.method === 'GET' ? buildCommonHeaders() : buildHeaders(params.token),
+      // QR login GET endpoints in weixin-agent-sdk are intentionally sent
+      // without the bot POST headers. Some iLink edges hang instead of
+      // returning an error when unexpected headers/body are present.
+      headers: params.method === 'GET' ? undefined : buildHeaders(params.token),
       body: params.method === 'POST' ? JSON.stringify(params.body ?? {}) : undefined,
       signal: controller.signal,
     })
     const raw = await res.text()
     if (!res.ok) throw new Error(`${res.status}: ${raw}`)
     return JSON.parse(raw) as T
+  } catch (err) {
+    const classified = classifyFetchError(err)
+    const endpoint = params.endpoint.split('?')[0]
+    throw new Error(
+      `Weixin API request failed for ${endpoint}: ${classified.description}` +
+        `${classified.code ? ` (${classified.code})` : ''}. ` +
+        'Check your network, VPN, or proxy settings and try again.',
+      { cause: err },
+    )
   } finally {
     clearTimeout(timer)
     params.signal?.removeEventListener('abort', onAbort)
@@ -411,11 +454,10 @@ async function notifyConnection(
   }
 }
 
-async function fetchQr(stateDir: string, signal: AbortSignal): Promise<QrResponse> {
-  return postJson<QrResponse>(
+async function fetchQr(_stateDir: string, signal: AbortSignal): Promise<QrResponse> {
+  return getJson<QrResponse>(
     FIXED_BASE_URL,
     `ilink/bot/get_bot_qrcode?bot_type=${encodeURIComponent(DEFAULT_ILINK_BOT_TYPE)}`,
-    { local_token_list: listLocalBotTokens(stateDir) },
     GET_QRCODE_TIMEOUT_MS,
     signal,
   )
@@ -606,6 +648,7 @@ async function handleStart(stateDir: string): Promise<void> {
   }
 
   try {
+    activeContextTokenScope = { stateDir, accountId: account.accountId }
     const sdk = await loadSdk()
     const bot = sdk.start(
       {
@@ -657,14 +700,17 @@ async function handleStart(stateDir: string): Promise<void> {
       () => {
         emit({ type: 'disconnected', reason: 'monitor stopped' })
         session = null
+        activeContextTokenScope = null
       },
       (err) => {
         if (controller.signal.aborted) return
         emit({ type: 'disconnected', reason: err instanceof Error ? err.message : String(err) })
         session = null
+        activeContextTokenScope = null
       },
     )
   } catch (err) {
+    activeContextTokenScope = null
     emit({
       type: 'unavailable',
       reason: 'sdk_start_failed',
@@ -686,7 +732,104 @@ async function handleSendText(id: string, channelId: string, text: string): Prom
     await session.bot.sendMessage(text)
     emit({ type: 'send_result', id, ok: true, messageId: id })
   } catch (err) {
+    if (!shouldUsePersistedContextTokenFallback(err)) {
+      emit({ type: 'send_result', id, ok: false, error: err instanceof Error ? err.message : String(err) })
+      return
+    }
+  }
+  try {
+    log(`[weixin] native send failed; using persisted token for ${channelId}`)
+    const messageId = await sendTextWithPersistedContextToken(session, channelId, text)
+    emit({ type: 'send_result', id, ok: true, messageId })
+  } catch (err) {
     emit({ type: 'send_result', id, ok: false, error: err instanceof Error ? err.message : String(err) })
+  }
+}
+
+const MESSAGE_TYPE_BOT = 2
+const MESSAGE_ITEM_TYPE_TEXT = 1
+const MESSAGE_STATE_FINISH = 2
+
+function markdownToPlainText(text: string): string {
+  return text
+    .replace(/```[^\n]*\n?([\s\S]*?)```/g, (_, code: string) => code.trim())
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/^\|[\s:|-]+\|$/gm, '')
+    .replace(/^\|(.+)\|$/gm, (_, inner: string) =>
+      inner.split('|').map((cell) => cell.trim()).join('  '))
+    .replace(/\*\*(.+?)\*\*/g, '$1')
+    .replace(/\*(.+?)\*/g, '$1')
+    .replace(/__(.+?)__/g, '$1')
+    .replace(/_(.+?)_/g, '$1')
+    .replace(/~~(.+?)~~/g, '$1')
+    .replace(/`(.+?)`/g, '$1')
+}
+
+async function sendTextWithPersistedContextToken(
+  activeSession: SessionState,
+  channelId: string,
+  text: string,
+): Promise<string> {
+  const contextToken = loadContextToken(activeSession.stateDir, activeSession.accountId, channelId)
+  if (!contextToken) {
+    throw new Error('没有找到 context_token，需要在 start() 运行期间至少收到过一条消息')
+  }
+  const messageId = `openclaw-weixin:${Date.now()}-${randomUUID().replace(/-/g, '').slice(0, 8)}`
+  const raw = await postWeixinSendMessage(
+    activeSession.baseUrl,
+    activeSession.token,
+    30_000,
+    {
+      msg: {
+        from_user_id: '',
+        to_user_id: channelId,
+        client_id: messageId,
+        message_type: MESSAGE_TYPE_BOT,
+        message_state: MESSAGE_STATE_FINISH,
+        item_list: text
+          ? [{ type: MESSAGE_ITEM_TYPE_TEXT, text_item: { text: markdownToPlainText(text) } }]
+          : undefined,
+        context_token: contextToken,
+      },
+    },
+  )
+  if (raw.trim()) {
+    try {
+      const parsed = JSON.parse(raw) as { ret?: number; errcode?: number; errmsg?: string }
+      const code = parsed.ret ?? parsed.errcode
+      if (code !== undefined && code !== 0) {
+        throw new Error(`sendMessage ret=${parsed.ret ?? '(none)'} errcode=${parsed.errcode ?? '(none)'} errmsg=${parsed.errmsg ?? '(none)'}`)
+      }
+    } catch (err) {
+      if (err instanceof Error && err.message.startsWith('sendMessage ret=')) throw err
+    }
+  }
+  log(`[weixin] persisted context token send accepted messageId=${messageId}`)
+  return messageId
+}
+
+async function postWeixinSendMessage(
+  baseUrl: string,
+  token: string | undefined,
+  timeoutMs: number,
+  body: unknown,
+): Promise<string> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const url = new URL('ilink/bot/sendmessage', baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`)
+    const res = await fetch(url.toString(), {
+      method: 'POST',
+      headers: buildHeaders(token),
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    })
+    const raw = await res.text()
+    if (!res.ok) throw new Error(`${res.status}: ${raw}`)
+    return raw
+  } finally {
+    clearTimeout(timer)
   }
 }
 
@@ -794,6 +937,7 @@ async function shutdown(): Promise<void> {
     session.abortController.abort()
     session = null
   }
+  activeContextTokenScope = null
   process.exit(0)
 }
 

@@ -1,5 +1,5 @@
 import type { SDKAssistantMessageError } from '@anthropic-ai/claude-agent-sdk';
-import type { AgentError } from './errors.ts';
+import { isLikelyNetworkErrorText, type AgentError } from './errors.ts';
 import type { LastApiError } from '../interceptor-common.ts';
 import { getProviderMetadata, getProviderDisplayName } from '../config/provider-metadata.ts';
 
@@ -41,11 +41,16 @@ const NETWORK_HINTS = [
   'network',
   'econnrefused',
   'enotfound',
+  'econnreset',
   'timed out',
   'timeout',
   'dns',
   'connection reset',
   'connection refused',
+  'certificate',
+  'tls',
+  'ssl',
+  'x509',
 ] as const;
 
 // Signals specific to the 1M context beta. When these fire, the user is told
@@ -183,9 +188,11 @@ function classifyFailure(errorCode: SDKAssistantMessageError, context: ClaudeSdk
   const hasProviderText =
     includesAny(actualMessage, PROVIDER_HINTS) ||
     includesAny(capturedMessage, PROVIDER_HINTS);
+  const networkHaystack = `${actualMessage} ${capturedMessage}`;
   const hasNetworkText =
     includesAny(actualMessage, NETWORK_HINTS) ||
-    includesAny(capturedMessage, NETWORK_HINTS);
+    includesAny(capturedMessage, NETWORK_HINTS) ||
+    isLikelyNetworkErrorText(networkHaystack);
 
   // SDK explicit server_error should be treated as provider-side unless we have strong
   // evidence of local network failure and no provider-side signal.

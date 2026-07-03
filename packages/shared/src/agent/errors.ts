@@ -304,6 +304,32 @@ const HTML_PROXY_HINTS = [
   'akamai',
 ] as const;
 const HTML_STATUS_PATTERN = /\b(400|401|403|407|408|409|429|500|502|503|504)\b/;
+const NETWORK_ERROR_HINTS = [
+  'network',
+  'econnrefused',
+  'enotfound',
+  'econnreset',
+  'etimedout',
+  'socket hang up',
+  'fetch failed',
+  'connection',
+  'certificate',
+  'certificate verification',
+  'certificate verify failed',
+  'cert_',
+  'cert has expired',
+  'cert_has_expired',
+  'unable_to_verify_leaf_signature',
+  'unable to verify the first certificate',
+  'self signed certificate',
+  'self_signed_cert',
+  'self_signed_cert_in_chain',
+  'depth_zero_self_signed_cert',
+  'err_tls_cert_altname_invalid',
+  'tls',
+  'ssl',
+  'x509',
+] as const;
 
 function looksLikeHtmlPayload(textLower: string): boolean {
   if (textLower.includes('<!doctype html') || textLower.includes('<html')) {
@@ -345,6 +371,10 @@ function isLikelyProxyInterception(textLower: string): boolean {
   }
 
   return hasHtmlErrorPageSignals(textLower);
+}
+
+export function isLikelyNetworkErrorText(textLower: string): boolean {
+  return NETWORK_ERROR_HINTS.some((hint) => textLower.includes(hint));
 }
 
 function buildProxyErrorMessage(errorMessage: string, fullErrorText: string): string {
@@ -424,7 +454,7 @@ export function parseError(
     code = 'rate_limited';
   } else if (lowerMessage.includes('500') || lowerMessage.includes('502') || lowerMessage.includes('503') || lowerMessage.includes('504') || lowerMessage.includes('internal server error') || lowerMessage.includes('service unavailable')) {
     code = 'service_error';
-  } else if (lowerMessage.includes('network') || lowerMessage.includes('econnrefused') || lowerMessage.includes('enotfound') || lowerMessage.includes('fetch failed') || lowerMessage.includes('connection')) {
+  } else if (isLikelyNetworkErrorText(lowerMessage)) {
     code = 'network_error';
   } else if (lowerMessage.includes('mcp') && (lowerMessage.includes('auth') || lowerMessage.includes('401'))) {
     code = 'mcp_auth_required';

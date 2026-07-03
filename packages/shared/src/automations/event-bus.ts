@@ -58,6 +58,30 @@ export interface SchedulerTickPayload extends BaseEventPayload {
   utcTime: string;
 }
 
+/** External webhook received payload. Headers are redacted before entering automation actions. */
+export interface WebhookReceivedPayload extends BaseEventPayload {
+  triggerId: string;
+  source: string;
+  eventType: string;
+  matcherValue: string;
+  deliveryId?: string;
+  entityId?: string;
+  entityType?: string;
+  title?: string;
+  url?: string;
+  actor?: string;
+  occurredAt?: string;
+  verified: boolean;
+  dryRun?: boolean;
+  test?: boolean;
+  headers: Record<string, string>;
+  query: Record<string, string | string[]>;
+  body: unknown;
+  rawBodySha256?: string;
+  mapped: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
 /** Label config change payload */
 export interface LabelConfigChangePayload extends BaseEventPayload {
   // No additional fields - just signals that config changed
@@ -83,6 +107,7 @@ export interface EventPayloadMap {
   PermissionModeChange: PermissionModeChangePayload;
   FlagChange: FlagChangePayload;
   SessionStatusChange: SessionStatusChangePayload;
+  WebhookReceived: WebhookReceivedPayload;
   SchedulerTick: SchedulerTickPayload;
 
   // Agent events (generic payload)
@@ -128,6 +153,7 @@ const SCHEDULER_RATE_LIMIT = 60;
 const RATE_WINDOW_MS = 60_000; // 1 minute
 
 function getRateLimit(event: AutomationEvent): number {
+  if (event === 'WebhookReceived') return SCHEDULER_RATE_LIMIT;
   return event === 'SchedulerTick' ? SCHEDULER_RATE_LIMIT : DEFAULT_RATE_LIMIT;
 }
 

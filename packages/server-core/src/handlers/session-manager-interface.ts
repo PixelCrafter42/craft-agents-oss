@@ -10,7 +10,7 @@ import type { Workspace, WorkspaceInfo, ActiveSessionInfo } from '@craft-agent/c
 import type { StoredAttachment, AnnotationV1 } from '@craft-agent/core/types'
 import type { PermissionMode } from '@craft-agent/shared/agent/mode-types'
 import type { ThinkingLevel } from '@craft-agent/shared/agent/thinking-levels'
-import type { AutomationMessagingTarget } from '@craft-agent/shared/automations'
+import type { AutomationMessagingTarget, AutomationWebhookReceiveInput, AutomationWebhookReceiveResult } from '@craft-agent/shared/automations'
 import type { AuthResult } from '@craft-agent/shared/agent'
 import type {
   Session,
@@ -215,6 +215,8 @@ export interface ISessionManager {
   getActiveSessionCount(workspaceId?: string): number
   /** Automation summary for a workspace (count of configured automations + scheduler state). */
   getWorkspaceAutomationSummary(workspaceId: string): { automationCount: number; schedulerRunning: boolean }
+  /** Receive a normalized desktop webhook event and optionally emit automations. */
+  receiveAutomationWebhook(input: AutomationWebhookReceiveInput): Promise<AutomationWebhookReceiveResult>
   /** Active sessions across all workspaces (sessions with running backend processes). */
   getActiveSessionsInfo(): ActiveSessionInfo[]
 

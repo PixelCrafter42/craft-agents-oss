@@ -376,6 +376,16 @@ export const RPC_CHANNELS = {
     REPLAY: 'automations:replay',
     CHANGED: 'automations:changed',
   },
+  webhooks: {
+    GET_LISTENER_CONFIG: 'webhooks:getListenerConfig',
+    SET_LISTENER_CONFIG: 'webhooks:setListenerConfig',
+    GET_LISTENER_STATUS: 'webhooks:getListenerStatus',
+    CHECK_LISTENER: 'webhooks:checkListener',
+    SEND_LOCAL_TEST: 'webhooks:sendLocalTest',
+    GET_TRIGGER_SECRET: 'webhooks:getTriggerSecret',
+    ROTATE_TRIGGER_SECRET: 'webhooks:rotateTriggerSecret',
+    GET_DELIVERIES: 'webhooks:getDeliveries',
+  },
   resources: {
     EXPORT: 'resources:export',
     IMPORT: 'resources:import',

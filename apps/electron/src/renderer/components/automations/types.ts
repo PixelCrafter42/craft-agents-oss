@@ -27,6 +27,7 @@ export type AppEvent =
   | 'FlagChange'
   | 'TodoStateChange'
   | 'SessionStatusChange'
+  | 'WebhookReceived'
   | 'SchedulerTick'
 
 export type AgentEvent =
@@ -48,7 +49,8 @@ export type AutomationTrigger = AppEvent | AgentEvent
 
 export const APP_EVENTS: AppEvent[] = [
   'LabelAdd', 'LabelRemove', 'LabelConfigChange',
-  'PermissionModeChange', 'FlagChange', 'TodoStateChange', 'SessionStatusChange', 'SchedulerTick'
+  'PermissionModeChange', 'FlagChange', 'TodoStateChange', 'SessionStatusChange',
+  'WebhookReceived', 'SchedulerTick'
 ]
 
 export const AGENT_EVENTS: AgentEvent[] = [
@@ -331,6 +333,7 @@ export const EVENT_DISPLAY_NAMES: Record<AutomationTrigger, string> = {
   FlagChange:           'Flag Changed',
   TodoStateChange:      'Task Updated',
   SessionStatusChange:  'Status Changed',
+  WebhookReceived:      'Webhook Received',
   SchedulerTick:        'Scheduled',
 
   // Agent events
@@ -389,6 +392,7 @@ export type EventCategory =
 interface AutomationsConfigFile {
   version: number
   automations?: Record<string, AutomationsConfigMatcher[]>
+  webhookTriggers?: Record<string, unknown>
 }
 
 type RawAction =
@@ -529,6 +533,8 @@ export function getEventCategory(event: AutomationTrigger): EventCategory {
     case 'TodoStateChange':
     case 'SessionStatusChange':
       return 'todo'
+    case 'WebhookReceived':
+      return 'other'
     case 'PreToolUse':
     case 'UserPromptSubmit':
     case 'Setup':

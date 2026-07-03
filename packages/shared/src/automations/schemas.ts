@@ -196,6 +196,46 @@ export const AutomationMatcherSchema = z.object({
   actions: z.array(ActionDefinitionSchema).min(1, 'At least one action required'),
 });
 
+export const WebhookMappingRuleSchema = z.object({
+  from: z.enum(['body', 'header', 'query', 'constant']),
+  path: z.string().min(1).optional(),
+  paths: z.array(z.string().min(1)).optional(),
+  value: z.unknown().optional(),
+  default: z.unknown().optional(),
+}).superRefine((data, ctx) => {
+  if (data.from === 'constant') return;
+  if (!data.path && (!data.paths || data.paths.length === 0)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'mapping rule must set path or paths unless from is constant',
+      path: ['path'],
+    });
+  }
+});
+
+export const WebhookTriggerAuthSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('none') }),
+  z.object({ type: z.literal('bearer') }),
+  z.object({ type: z.literal('header'), headerName: z.string().min(1) }),
+  z.object({ type: z.literal('query'), queryParam: z.string().min(1).optional() }),
+  z.object({
+    type: z.literal('hmac'),
+    headerName: z.string().min(1),
+    algorithm: z.enum(['sha1', 'sha256', 'sha512']).optional(),
+    prefix: z.string().optional(),
+  }),
+  z.object({ type: z.literal('notion-signature') }),
+]);
+
+export const WebhookTriggerConfigSchema = z.object({
+  enabled: z.boolean().optional(),
+  name: z.string().min(1).optional(),
+  source: z.string().min(1).optional(),
+  eventType: z.string().min(1).optional(),
+  auth: WebhookTriggerAuthSchema.optional(),
+  mapping: z.record(z.string().min(1), WebhookMappingRuleSchema).optional(),
+});
+
 /**
  * Deprecated event name aliases.
  * Old names are accepted during schema validation and silently rewritten to canonical names.
@@ -215,6 +255,10 @@ export const VALID_EVENTS: readonly string[] = [
 export const AutomationsConfigSchema = z.object({
   version: z.number().optional(),
   automations: z.record(z.string(), z.array(AutomationMatcherSchema)).optional(),
+  webhookTriggers: z.record(
+    z.string().regex(/^[A-Za-z0-9_-]{1,80}$/, 'trigger id may only contain letters, numbers, underscores, and hyphens'),
+    WebhookTriggerConfigSchema
+  ).optional(),
 }).transform((data) => {
   const automations = data.automations ?? {};
 
@@ -241,7 +285,7 @@ export const AutomationsConfigSchema = z.object({
     console.warn(`[automations] Unknown event types ignored: ${invalidEvents.join(', ')}`);
   }
 
-  return { version: data.version, automations: validAutomations };
+  return { version: data.version, automations: validAutomations, webhookTriggers: data.webhookTriggers };
 });
 
 // ============================================================================

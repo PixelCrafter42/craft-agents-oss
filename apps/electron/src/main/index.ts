@@ -110,6 +110,7 @@ import { initializeBackendHostRuntime } from '@craft-agent/shared/agent/backend'
 import { setPowerShellValidatorRoot } from '@craft-agent/shared/agent'
 import { handleDeepLink } from './deep-link'
 import { BrowserPaneManager } from './browser-pane-manager'
+import { DesktopWebhookListener } from './webhook-listener'
 import { OAuthFlowStore } from '@craft-agent/shared/auth'
 import { registerThumbnailScheme, registerThumbnailHandler } from './thumbnail-protocol'
 import log, { isDebugMode, mainLog, getLogFilePath, getMessagingGatewayLogFilePath, messagingGatewayLog } from './logger'
@@ -212,6 +213,7 @@ const DEEPLINK_SCHEME = process.env.CRAFT_DEEPLINK_SCHEME || 'craftagents'
 let windowManager: WindowManager | null = null
 let sessionManager: SessionManager | null = null
 let browserPaneManager: BrowserPaneManager | null = null
+let desktopWebhookListener: DesktopWebhookListener | null = null
 let oauthFlowStore: OAuthFlowStore | null = null
 let moduleSink: EventSink | null = null
 let moduleClientResolver: ((webContentsId: number) => string | undefined) | null = null
@@ -742,6 +744,17 @@ app.whenReady().then(async () => {
       moduleSink = instance.wsServer.push.bind(instance.wsServer)
       moduleClientResolver = resolveClientId
 
+      if (!isHeadless) {
+        const { getDesktopWebhookListenerConfig } = await import('@craft-agent/shared/config')
+        desktopWebhookListener = new DesktopWebhookListener(instance.sessionManager, getCredentialManager(), mainLog)
+        const listenerConfig = getDesktopWebhookListenerConfig()
+        try {
+          await desktopWebhookListener.start(listenerConfig)
+        } catch (err) {
+          mainLog.error('[desktop-webhook] failed to start:', err)
+        }
+      }
+
       // -----------------------------------------------------------------------
       // Messaging Gateway — attach the WS publisher, init local workspaces,
       // install the fan-out event sink. The handle was created inside
@@ -1014,6 +1027,62 @@ app.whenReady().then(async () => {
         }
       })
 
+      const getDesktopWebhookListener = () => {
+        if (!desktopWebhookListener) {
+          throw new Error('Desktop webhook listener is not available in this process')
+        }
+        return desktopWebhookListener
+      }
+
+      instance.wsServer.handle(RPC_CHANNELS.webhooks.GET_LISTENER_CONFIG, async () => {
+        const { getDesktopWebhookListenerConfig } = await import('@craft-agent/shared/config')
+        return getDesktopWebhookListenerConfig()
+      })
+
+      instance.wsServer.handle(RPC_CHANNELS.webhooks.SET_LISTENER_CONFIG, async (_ctx: unknown, config: unknown) => {
+        const {
+          getDesktopWebhookListenerConfig,
+          setDesktopWebhookListenerConfig,
+        } = await import('@craft-agent/shared/config')
+        const cfg = config as import('@craft-agent/shared/config').DesktopWebhookListenerConfig
+        const before = getDesktopWebhookListenerConfig()
+        setDesktopWebhookListenerConfig(cfg)
+        const saved = getDesktopWebhookListenerConfig()
+        if (
+          before.enabled !== saved.enabled ||
+          before.host !== saved.host ||
+          before.port !== saved.port
+        ) {
+          await getDesktopWebhookListener().restart(saved)
+        }
+      })
+
+      instance.wsServer.handle(RPC_CHANNELS.webhooks.GET_LISTENER_STATUS, async () => {
+        return getDesktopWebhookListener().getStatus()
+      })
+
+      instance.wsServer.handle(RPC_CHANNELS.webhooks.CHECK_LISTENER, async () => {
+        return getDesktopWebhookListener().checkLocalHealth()
+      })
+
+      instance.wsServer.handle(RPC_CHANNELS.webhooks.SEND_LOCAL_TEST, async (_ctx: unknown, workspaceId: string, triggerId: string) => {
+        return getDesktopWebhookListener().sendLocalTest(workspaceId, triggerId)
+      })
+
+      instance.wsServer.handle(RPC_CHANNELS.webhooks.GET_TRIGGER_SECRET, async (_ctx: unknown, workspaceId: string, triggerId: string) => {
+        return getDesktopWebhookListener().getTriggerSecret(workspaceId, triggerId)
+      })
+
+      instance.wsServer.handle(RPC_CHANNELS.webhooks.ROTATE_TRIGGER_SECRET, async (_ctx: unknown, workspaceId: string, triggerId: string) => {
+        const workspace = getWorkspaceByNameOrId(workspaceId)
+        if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
+        return getDesktopWebhookListener().rotateTriggerSecret(workspace.id, triggerId)
+      })
+
+      instance.wsServer.handle(RPC_CHANNELS.webhooks.GET_DELIVERIES, async (_ctx: unknown, workspaceId?: string, triggerId?: string) => {
+        return getDesktopWebhookListener().getRecentDeliveries(workspaceId, triggerId)
+      })
+
       // TLS enforcement — warn when server mode binds to a network address without TLS
       // Mirrors the hard guard in packages/server/src/index.ts but warns instead of blocking,
       // since the user explicitly enabled server mode via UI (may be on a trusted LAN).
@@ -1224,6 +1293,15 @@ app.on('before-quit', async (event) => {
     }
     // Clean up SessionManager resources (file watchers, timers, etc.)
     sessionManager.cleanup()
+
+    if (desktopWebhookListener) {
+      try {
+        await desktopWebhookListener.stop()
+      } catch (err) {
+        mainLog.error('[desktop-webhook] stop failed:', err)
+      }
+      desktopWebhookListener = null
+    }
 
     // Clean up browser pane instances
     if (browserPaneManager) {

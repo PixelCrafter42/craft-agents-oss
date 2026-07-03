@@ -97,6 +97,8 @@ export function getMatchValue(event: AutomationEvent, data: Record<string, unkno
       return String(data.isFlagged ?? false);
     case 'SessionStatusChange':
       return String(data.newStatus ?? data.newState ?? '');
+    case 'WebhookReceived':
+      return String(data.matcherValue ?? `${data.source ?? 'generic'}:${data.eventType ?? 'request.received'}`);
     case 'PreToolUse':
     case 'PostToolUse':
       return String(data.toolName ?? (data.data as Record<string, unknown>)?.tool_name ?? '');

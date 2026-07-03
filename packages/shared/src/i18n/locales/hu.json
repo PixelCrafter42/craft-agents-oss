@@ -1076,6 +1076,7 @@
   "settings.tools.builtInBrowser": "Beépített böngésző",
   "settings.tools.builtInBrowserDesc": "Tiltsd le, ha külső böngészőeszközöket használsz, például Playwright, Puppeteer vagy böngésző MCP szervereket.",
   "settings.tools.title": "Eszközök",
+  "settings.webhooks.description": "Helyi figyelő külső webhook triggerekhez",
   "settings.workspace.advanced": "Speciális",
   "settings.workspace.atLeast2Modes": "Legalább 2 mód szükséges",
   "settings.workspace.defaultMode": "Alapértelmezett mód",
