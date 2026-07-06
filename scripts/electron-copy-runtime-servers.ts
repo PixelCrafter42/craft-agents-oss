@@ -17,7 +17,7 @@ const PI_CODING_AGENT_PACKAGE_ASSETS = [
 ] as const;
 
 export function copyPiCodingAgentPackageAssets(rootDir: string, destDir: string): void {
-  const packageDir = join(rootDir, 'node_modules', '@mariozechner', 'pi-coding-agent');
+  const packageDir = join(rootDir, 'node_modules', '@earendil-works', 'pi-coding-agent');
   const requiredDoc = join(packageDir, 'docs', 'skills.md');
 
   if (!existsSync(requiredDoc)) {

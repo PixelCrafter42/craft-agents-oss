@@ -30,10 +30,10 @@ describe('copyPiCodingAgentPackageAssets', () => {
   it('copies the Pi SDK package docs and examples beside the server bundle', () => {
     const root = makeTempDir();
     const destDir = join(root, 'dist', 'resources', 'pi-agent-server');
-    const packageDir = join(root, 'node_modules', '@mariozechner', 'pi-coding-agent');
+    const packageDir = join(root, 'node_modules', '@earendil-works', 'pi-coding-agent');
 
     mkdirSync(destDir, { recursive: true });
-    writeFile(join(packageDir, 'package.json'), '{"name":"@mariozechner/pi-coding-agent"}');
+    writeFile(join(packageDir, 'package.json'), '{"name":"@earendil-works/pi-coding-agent"}');
     writeFile(join(packageDir, 'README.md'), '# pi');
     writeFile(join(packageDir, 'CHANGELOG.md'), '# changes');
     writeFile(join(packageDir, 'docs', 'skills.md'), '# skills');

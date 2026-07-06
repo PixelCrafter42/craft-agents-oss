@@ -186,6 +186,8 @@ function Copy-PackagingSupportFiles {
     $rgDest = Join-Path $ElectronDir "node_modules\@vscode\ripgrep"
     Copy-DirectoryFresh -Source $rgSource -Destination $rgDest
 
+    # Copy network interceptor sources for the Pi subprocess; Claude no longer
+    # uses --preload.
     $sharedSrcDest = Join-Path $ElectronDir "packages\shared\src"
     New-Item -ItemType Directory -Force -Path $sharedSrcDest | Out-Null
     foreach ($file in @("unified-network-interceptor.ts", "interceptor-common.ts", "feature-flags.ts", "interceptor-request-utils.ts")) {

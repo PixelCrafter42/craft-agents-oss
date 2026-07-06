@@ -39,7 +39,7 @@ describe('resolvePiPackageDir', () => {
   it('falls back to the dev node_modules package from the server path', () => {
     const root = makeTempDir();
     const serverPath = join(root, 'packages', 'pi-agent-server', 'dist', 'index.js');
-    const packageDir = join(root, 'node_modules', '@mariozechner', 'pi-coding-agent');
+    const packageDir = join(root, 'node_modules', '@earendil-works', 'pi-coding-agent');
     writeFile(join(packageDir, 'docs', 'skills.md'), '# skills');
 
     expect(resolvePiPackageDir(serverPath)).toBe(packageDir);

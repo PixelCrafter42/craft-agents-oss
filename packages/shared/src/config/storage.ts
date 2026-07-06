@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, statSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, statSync, readdirSync } from 'fs';
 import { join, dirname, basename } from 'path';
 import { getCredentialManager } from '../credentials/index.ts';
 import { getOrCreateLatestSession, type SessionConfig } from '../sessions/index.ts';
@@ -213,12 +213,48 @@ export function ensureConfigDefaults(): void {
 
 let configDirInitialized = false;
 
+const MAX_CONFIG_BACKUPS = 3;
+const CONFIG_BACKUP_DATE_RE = /^config\.json\.bak-\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * Snapshot an existing config.json into a dated file (config.json.bak-YYYY-MM-DD)
+ * and keep only the newest MAX_CONFIG_BACKUPS. Runs once at startup, before any
+ * path can mutate or (in failure paths) overwrite the workspace registry.
+ * Best-effort: failures are logged and swallowed so a backup never blocks startup.
+ */
+export function backupConfigFile(): void {
+  try {
+    if (!existsSync(CONFIG_FILE)) return;
+
+    const now = new Date();
+    const stamp = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    const dated = join(CONFIG_DIR, `config.json.bak-${stamp}`);
+    // One backup per day, never overwritten: the first snapshot of the day is taken
+    // before any mutation, so it holds the good pre-reset state. A second startup that
+    // day (e.g. after a reset already nuked the registry) must NOT clobber it.
+    if (existsSync(dated)) return;
+    writeFileSync(dated, readFileSync(CONFIG_FILE, 'utf-8'), 'utf-8');
+
+    // ISO date in the name → lexical sort is chronological; drop all but the newest few.
+    const backups = readdirSync(CONFIG_DIR).filter(f => CONFIG_BACKUP_DATE_RE.test(f)).sort();
+    for (const stale of backups.slice(0, Math.max(0, backups.length - MAX_CONFIG_BACKUPS))) {
+      try { rmSync(join(CONFIG_DIR, stale)); } catch { /* ignore individual cleanup errors */ }
+    }
+  } catch (error) {
+    debug('[config] backupConfigFile failed:', error instanceof Error ? error.message : error);
+  }
+}
+
 export function ensureConfigDir(): void {
   if (configDirInitialized) return;
 
   if (!existsSync(CONFIG_DIR)) {
     mkdirSync(CONFIG_DIR, { recursive: true });
   }
+
+  // Snapshot an existing config.json (dated, keep last 3) before anything can
+  // mutate or — in a failure path — overwrite the workspace registry.
+  backupConfigFile();
   // Initialize bundled docs (creates ~/.craft-agent/docs/ with sources.md, agents.md, permissions.md)
   initializeDocs();
 
@@ -1206,7 +1242,6 @@ export function getAllSessionDrafts(): Record<string, SessionDraft> {
 // ============================================
 
 import type { ThemeOverrides, ThemeFile, PresetTheme } from './theme.ts';
-import { readdirSync } from 'fs';
 
 const APP_THEME_FILE = join(CONFIG_DIR, 'theme.json');
 const APP_THEMES_DIR = join(CONFIG_DIR, 'themes');
@@ -2712,6 +2747,12 @@ export function updateLlmConnection(slug: string, updates: Partial<Omit<LlmConne
     customEndpoint: updates.customEndpoint !== undefined ? updates.customEndpoint : existing.customEndpoint,
     // Mid-stream send behavior (steer vs queue) — read via resolveMidStreamBehavior()
     midStreamBehavior: updates.midStreamBehavior !== undefined ? updates.midStreamBehavior : existing.midStreamBehavior,
+    // Resolved Anthropic OAuth identity (issue #838) — preserved across unrelated saves
+    oauthAccountUuid: updates.oauthAccountUuid !== undefined ? updates.oauthAccountUuid : existing.oauthAccountUuid,
+    oauthAccountEmail: updates.oauthAccountEmail !== undefined ? updates.oauthAccountEmail : existing.oauthAccountEmail,
+    oauthOrganizationUuid: updates.oauthOrganizationUuid !== undefined ? updates.oauthOrganizationUuid : existing.oauthOrganizationUuid,
+    oauthOrganizationName: updates.oauthOrganizationName !== undefined ? updates.oauthOrganizationName : existing.oauthOrganizationName,
+    oauthProfileVerifiedAt: updates.oauthProfileVerifiedAt !== undefined ? updates.oauthProfileVerifiedAt : existing.oauthProfileVerifiedAt,
     // Timestamps
     lastUsedAt: updates.lastUsedAt !== undefined ? updates.lastUsedAt : existing.lastUsedAt,
   };

@@ -19,7 +19,7 @@ import { app, BrowserWindow } from 'electron'
 import { platform } from 'os'
 import * as path from 'path'
 import * as fs from 'fs'
-import { mainLog } from './logger'
+import { mainLog, autoUpdateLog } from './logger'
 import { getAppVersion } from '@craft-agent/shared/version'
 import {
   getDismissedUpdateVersion,
@@ -149,7 +149,7 @@ autoUpdater.on('checking-for-update', () => {
 })
 
 autoUpdater.on('update-available', (info) => {
-  mainLog.info(`[auto-update] Update available: ${updateInfo.currentVersion} → ${info.version}`)
+  autoUpdateLog.info(`Update available: ${updateInfo.currentVersion} → ${info.version}`)
 
   // First, check electron-updater's internal state (most reliable)
   const internalState = checkElectronUpdaterState()
@@ -210,7 +210,7 @@ autoUpdater.on('download-progress', (progress) => {
 })
 
 autoUpdater.on('update-downloaded', async (info) => {
-  mainLog.info(`[auto-update] Update downloaded: v${info.version}`)
+  autoUpdateLog.info(`Update downloaded: v${info.version}`)
 
   updateInfo = {
     ...updateInfo,
@@ -227,7 +227,7 @@ autoUpdater.on('update-downloaded', async (info) => {
 })
 
 autoUpdater.on('error', (error) => {
-  mainLog.error('[auto-update] Error:', error.message)
+  autoUpdateLog.error('electron-updater error', error)
 
   updateInfo = {
     ...updateInfo,
@@ -376,7 +376,7 @@ export async function checkForUpdates(options: CheckOptions = {}): Promise<Updat
       }
     }
   } catch (error) {
-    mainLog.error('[auto-update] Check failed:', error)
+    autoUpdateLog.error('Update check failed', error)
     updateInfo = {
       ...updateInfo,
       downloadState: 'error',
@@ -407,7 +407,7 @@ export async function installUpdate(): Promise<void> {
     throw new Error('No update ready to install')
   }
 
-  mainLog.info('[auto-update] Installing update and restarting...')
+  autoUpdateLog.info('Installing update and restarting...')
 
   updateInfo = { ...updateInfo, downloadState: 'installing' }
   broadcastUpdateInfo()
@@ -421,7 +421,7 @@ export async function installUpdate(): Promise<void> {
   // Diagnostic correlation with before-quit's [update-flow] log. If these
   // window counts diverge, electron-updater is destroying windows between
   // here and before-quit firing — confirms the multi-window restore bug.
-  mainLog.info('[update-flow] installUpdate pre-quit', {
+  autoUpdateLog.info('installUpdate pre-quit', {
     electronWindowCount: BrowserWindow.getAllWindows().length,
     downloadState: updateInfo.downloadState,
     latestVersion: updateInfo.latestVersion,
@@ -433,7 +433,7 @@ export async function installUpdate(): Promise<void> {
   try {
     beforeUpdateQuitHook?.()
   } catch (err) {
-    mainLog.error('[auto-update] beforeUpdateQuit hook failed:', err)
+    autoUpdateLog.error('beforeUpdateQuit hook failed', err)
   }
 
   try {
@@ -442,7 +442,7 @@ export async function installUpdate(): Promise<void> {
     autoUpdater.quitAndInstall(false, true)
   } catch (error) {
     __isUpdating = false
-    mainLog.error('[auto-update] quitAndInstall failed:', error)
+    autoUpdateLog.error('quitAndInstall failed', error)
     updateInfo = { ...updateInfo, downloadState: 'error' }
     broadcastUpdateInfo()
     throw error
@@ -466,11 +466,11 @@ export interface UpdateOnLaunchResult {
  */
 export async function checkForUpdatesOnLaunch(): Promise<UpdateOnLaunchResult> {
   if (!AUTO_UPDATE_ENABLED) {
-    mainLog.info('[auto-update] Disabled in this build; skipping launch check')
+    autoUpdateLog.info('Disabled in this build; skipping launch check')
     return { action: 'skipped', reason: 'disabled', version: null }
   }
 
-  mainLog.info('[auto-update] Checking for updates on launch...')
+  autoUpdateLog.info('Checking for updates on launch...')
 
   const info = await checkForUpdates({ autoDownload: true })
 
