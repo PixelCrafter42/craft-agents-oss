@@ -155,6 +155,10 @@ export function registerAutomationsHandlers(server: RpcServer, deps: HandlerDeps
           automationName: payload.automationName,
           telegramTopic: payload.telegramTopic,
           messagingTarget: payload.messagingTarget,
+          // Test = "did it launch + start producing output", not "did the whole
+          // turn finish". Return once the session is created so a long run doesn't
+          // trip the 30s RPC timeout (craft-agents-oss#943).
+          waitForCompletion: false,
         })
         results.push({
           type: 'prompt',
