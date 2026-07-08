@@ -122,6 +122,41 @@ describe('validation', () => {
       });
     });
 
+    it('should accept reuseSession and targetSessionId on matchers', () => {
+      const config = {
+        automations: {
+          SchedulerTick: [{
+            id: 'daily1',
+            cron: '0 9 * * *',
+            reuseSession: true,
+            targetSessionId: '260202-swift-river',
+            actions: [{ type: 'prompt', prompt: 'Send a morning summary' }],
+          }],
+        },
+      };
+      const result = validateAutomationsConfig(config);
+      expect(result.valid).toBe(true);
+      expect(result.config?.automations.SchedulerTick?.[0]).toMatchObject({
+        reuseSession: true,
+        targetSessionId: '260202-swift-river',
+      });
+    });
+
+    it('should reject unsafe targetSessionId values', () => {
+      const config = {
+        automations: {
+          SchedulerTick: [{
+            cron: '0 9 * * *',
+            targetSessionId: '../bad',
+            actions: [{ type: 'prompt', prompt: 'Send a morning summary' }],
+          }],
+        },
+      };
+      const result = validateAutomationsConfig(config);
+      expect(result.valid).toBe(false);
+      expect(result.errors.some(e => e.includes('targetSessionId'))).toBe(true);
+    });
+
     it('should reject messagingTarget definitions with no bindingId or platform', () => {
       const config = {
         automations: {

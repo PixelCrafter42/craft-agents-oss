@@ -170,6 +170,38 @@ describe('PromptHandler', () => {
       handler.dispose();
     });
 
+    it('should propagate session reuse settings from matcher to PendingPrompt', async () => {
+      const onPromptsReady = jest.fn();
+      const configProvider = createMockConfigProvider({
+        LabelAdd: [{
+          id: 'reuse1',
+          matcher: 'triage',
+          reuseSession: true,
+          targetSessionId: 'existing-session',
+          actions: [{ type: 'prompt', prompt: 'Continue triage' }],
+        }],
+      });
+
+      const handler = new PromptHandler(createOptions({ onPromptsReady }), configProvider);
+      handler.subscribe(bus);
+
+      await bus.emit('LabelAdd', {
+        workspaceId: 'test-workspace',
+        timestamp: Date.now(),
+        label: 'triage',
+      });
+
+      const prompts: PendingPrompt[] = onPromptsReady.mock.calls[0]![0];
+      expect(prompts).toHaveLength(1);
+      expect(prompts[0]).toMatchObject({
+        matcherId: 'reuse1',
+        reuseSession: true,
+        targetSessionId: 'existing-session',
+      });
+
+      handler.dispose();
+    });
+
     it('should propagate messagingTarget from matcher to PendingPrompt', async () => {
       const onPromptsReady = jest.fn();
       const configProvider = createMockConfigProvider({

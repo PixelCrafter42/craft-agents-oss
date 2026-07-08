@@ -96,7 +96,7 @@ import { listLabels, loadLabelConfig } from '@craft-agent/shared/labels/storage'
 import { extractLabelId, resolveSessionLabels, findTaskItemLabelId } from '@craft-agent/shared/labels'
 import { ensureLabelsExist, ensureTaskItemLabel } from '@craft-agent/shared/labels/crud'
 import { loadStatusConfig } from '@craft-agent/shared/statuses/storage'
-import { AutomationSystem, createPromptHistoryEntry, appendAutomationHistoryEntry, matcherMatches, type AutomationSystemMetadataSnapshot, type AutomationMessagingTarget, type AutomationWebhookReceiveInput, type AutomationWebhookReceiveResult } from '@craft-agent/shared/automations'
+import { AutomationSystem, createPromptHistoryEntry, appendAutomationHistoryEntry, matcherMatches, getReusableAutomationSessionId, setReusableAutomationSessionId, clearReusableAutomationSessionId, type AutomationSystemMetadataSnapshot, type AutomationMessagingTarget, type AutomationWebhookReceiveInput, type AutomationWebhookReceiveResult } from '@craft-agent/shared/automations'
 import { buildBackendRuntimeSignature, buildRestartRequiredSignature, filterAttachmentsForModelInput } from './runtime-config'
 import { buildModelFallbackSequence, isModelFallbackEligibleError, modelFallbackKey, type ResolvedModelFallbackCandidate } from './model-fallback'
 
@@ -1247,6 +1247,8 @@ export class SessionManager implements ISessionManager {
    * subprocess can race the resulting `chat` against the still-pending update.
    */
   private agentRefreshLocks: Map<string, Promise<void>> = new Map()
+  /** Per-matcher lock so concurrent reuse triggers do not spawn duplicate sessions. */
+  private automationReuseLocks: Map<string, Promise<void>> = new Map()
   /** Monotonic clock to ensure strictly increasing message timestamps */
   private lastTimestamp = 0
 
@@ -1298,6 +1300,31 @@ export class SessionManager implements ISessionManager {
     }) => Promise<void>,
   ): void {
     this.automationBinder = fn
+  }
+
+  private automationSessionExistsInWorkspace(workspaceRootPath: string, sessionId: string): boolean {
+    try {
+      validateSessionId(sessionId)
+    } catch {
+      return false
+    }
+
+    const managed = this.sessions.get(sessionId)
+    return managed?.workspace.rootPath === workspaceRootPath
+  }
+
+  private async withAutomationReuseLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.automationReuseLocks.get(key) ?? Promise.resolve()
+    const run = prev.catch(() => undefined).then(fn)
+    const done = run.then(() => undefined, () => undefined)
+    this.automationReuseLocks.set(key, done)
+    try {
+      return await run
+    } finally {
+      if (this.automationReuseLocks.get(key) === done) {
+        this.automationReuseLocks.delete(key)
+      }
+    }
   }
 
   private browserPaneManager: IBrowserPaneManager | null = null
@@ -1711,6 +1738,9 @@ export class SessionManager implements ISessionManager {
                 labels: pending.labels,
                 permissionMode: pending.permissionMode,
                 mentions: pending.mentions,
+                matcherId: pending.matcherId,
+                reuseSession: pending.reuseSession,
+                targetSessionId: pending.targetSessionId,
                 llmConnection: pending.llmConnection,
                 model: pending.model,
                 thinkingLevel: pending.thinkingLevel,
@@ -1739,7 +1769,7 @@ export class SessionManager implements ISessionManager {
             if (result.status === 'rejected') {
               sessionLog.error(`[Automations] Failed to execute prompt action ${idx + 1}:`, result.reason)
             } else {
-              sessionLog.info(`[Automations] Created session ${result.value.sessionId} from prompt action`)
+              sessionLog.info(`[Automations] Executed prompt action in session ${result.value.sessionId}`)
             }
           }
         },
@@ -8924,7 +8954,9 @@ Please continue the conversation naturally from where we left off.
   }
 
   /**
-   * Execute a prompt automation by creating a new session and sending the prompt.
+   * Execute a prompt automation by resolving a target session and sending the prompt.
+   * Default behavior creates a fresh session; matchers can opt into session
+   * reuse or target an explicit existing session.
    *
    * The options-object form replaced the previous positional-args signature
    * once the param list outgrew readability — `thinkingLevel` was the trigger.
@@ -8941,6 +8973,9 @@ Please continue the conversation naturally from where we left off.
       labels,
       permissionMode,
       mentions,
+      matcherId,
+      reuseSession,
+      targetSessionId,
       llmConnection,
       model,
       thinkingLevel,
@@ -8948,6 +8983,7 @@ Please continue the conversation naturally from where we left off.
       telegramTopic,
       messagingTarget,
       waitForCompletion,
+      persistReuseState = true,
     } = input
 
     // Warn if llmConnection was specified but doesn't resolve
@@ -8970,43 +9006,107 @@ Please continue the conversation naturally from where we left off.
     const fallback = `Automation: ${prompt.slice(0, 50)}${prompt.length > 50 ? '...' : ''}`
     const sessionName = automationName || fallback
 
-    // Create a new session for this automation
-    const session = await this.createSession(workspaceId, {
-      name: sessionName,
-      labels: resolvedLabels,
-      permissionMode: permissionMode || 'safe',
-      enabledSourceSlugs: resolved?.sourceSlugs,
-      llmConnection,
-      model,
-      thinkingLevel,
-    })
+    const createAutomationSession = async (): Promise<{ sessionId: string; created: true }> => {
+      const session = await this.createSession(workspaceId, {
+        name: sessionName,
+        labels: resolvedLabels,
+        permissionMode: permissionMode || 'safe',
+        enabledSourceSlugs: resolved?.sourceSlugs,
+        llmConnection,
+        model,
+        thinkingLevel,
+      })
 
-    // Populate triggeredBy metadata so title generation is explicitly skipped
-    // and the session is identifiable as automation-initiated after reload
-    const managed = this.sessions.get(session.id)
-    if (managed) {
-      managed.triggeredBy = { automationName, timestamp: Date.now() }
-      this.persistSession(managed)
+      // Populate triggeredBy metadata so title generation is explicitly skipped
+      // and the session is identifiable as automation-initiated after reload.
+      const managed = this.sessions.get(session.id)
+      if (managed) {
+        managed.triggeredBy = { automationName, timestamp: Date.now() }
+        this.persistSession(managed)
+      }
+
+      return { sessionId: session.id, created: true }
     }
 
-    // (session_created is emitted by createSession above; triggeredBy is set synchronously
-    // before the renderer's hydrate round-trip resolves, so it is observed.)
+    let resolvedSession: { sessionId: string; created: boolean } | undefined
+    const trimmedTargetSessionId = targetSessionId?.trim()
+
+    if (trimmedTargetSessionId) {
+      if (this.automationSessionExistsInWorkspace(workspaceRootPath, trimmedTargetSessionId)) {
+        resolvedSession = { sessionId: trimmedTargetSessionId, created: false }
+      } else {
+        sessionLog.warn('[Automations] targetSessionId not found, falling back to automation session creation', {
+          matcherId,
+          targetSessionId: trimmedTargetSessionId,
+        })
+      }
+    }
+
+    if (!resolvedSession && reuseSession === true) {
+      if (matcherId && persistReuseState) {
+        const lockKey = `${workspaceRootPath}:${matcherId}`
+        resolvedSession = await this.withAutomationReuseLock(lockKey, async () => {
+          const storedSessionId = await getReusableAutomationSessionId(workspaceRootPath, matcherId)
+          if (storedSessionId && this.automationSessionExistsInWorkspace(workspaceRootPath, storedSessionId)) {
+            return { sessionId: storedSessionId, created: false }
+          }
+
+          if (storedSessionId) {
+            try {
+              await clearReusableAutomationSessionId(workspaceRootPath, matcherId)
+            } catch (err) {
+              sessionLog.warn('[Automations] failed to clear stale reuse session state', {
+                matcherId,
+                sessionId: storedSessionId,
+                error: err instanceof Error ? err.message : String(err),
+              })
+            }
+          }
+
+          const created = await createAutomationSession()
+          try {
+            await setReusableAutomationSessionId(workspaceRootPath, matcherId, created.sessionId)
+          } catch (err) {
+            sessionLog.warn('[Automations] failed to persist reuse session state', {
+              matcherId,
+              sessionId: created.sessionId,
+              error: err instanceof Error ? err.message : String(err),
+            })
+          }
+          return created
+        })
+      } else if (!matcherId) {
+        sessionLog.warn('[Automations] reuseSession ignored because matcher id is missing')
+      }
+    }
+
+    if (!resolvedSession) {
+      resolvedSession = await createAutomationSession()
+    }
+
+    const sessionId = resolvedSession.sessionId
+
+    // (session_created is emitted by createSession for new sessions above;
+    // triggeredBy is set synchronously before the renderer's hydrate round-trip
+    // resolves, so it is observed.)
 
     // Register automation messaging routing before `sendMessage` so the first
-    // assistant output can be delivered to the configured chat target.
+    // assistant output can be delivered to the configured chat target. For
+    // reused sessions this also restores output-only in-memory bindings after
+    // an app restart.
     // Failure is logged inside the binder; the session continues unbound.
     const topicName = telegramTopic?.trim()
     if (this.automationBinder && ((topicName && topicName.length > 0) || messagingTarget)) {
       try {
         await this.automationBinder({
           workspaceId,
-          sessionId: session.id,
+          sessionId,
           ...(topicName && topicName.length > 0 ? { topicName } : {}),
           ...(messagingTarget ? { messagingTarget } : {}),
         })
       } catch (err) {
         sessionLog.warn('[Automations] automation binder threw', {
-          sessionId: session.id,
+          sessionId,
           telegramTopic: topicName,
           messagingTarget,
           error: err instanceof Error ? err.message : String(err),
@@ -9021,22 +9121,22 @@ Please continue the conversation naturally from where we left off.
     // client timeout (craft-agents-oss#943). The session streams live either
     // way; a background failure surfaces in the session UI and is logged here.
     if (waitForCompletion === false) {
-      void this.sendMessage(session.id, prompt, undefined, undefined, {
+      void this.sendMessage(sessionId, prompt, undefined, undefined, {
         skillSlugs: resolved?.skillSlugs,
       }).catch((err) => {
         sessionLog.error('[Automations] background sendMessage failed for test run', {
-          sessionId: session.id,
+          sessionId,
           error: err instanceof Error ? err.message : String(err),
         })
       })
-      return { sessionId: session.id }
+      return { sessionId }
     }
 
-    await this.sendMessage(session.id, prompt, undefined, undefined, {
+    await this.sendMessage(sessionId, prompt, undefined, undefined, {
       skillSlugs: resolved?.skillSlugs,
     })
 
-    return { sessionId: session.id }
+    return { sessionId }
   }
 
   /**

@@ -215,7 +215,7 @@ describe('parseAutomationsConfig', () => {
     expect(new Set(ids).size).toBe(ids.length)
   })
 
-  it('preserves optional fields (matcher, cron, timezone, permissionMode, labels)', () => {
+  it('preserves optional fields (matcher, cron, timezone, permissionMode, labels, session reuse)', () => {
     const config = {
       version: 2,
       automations: {
@@ -223,6 +223,8 @@ describe('parseAutomationsConfig', () => {
           matcher: 'urgent',
           permissionMode: 'ask',
           labels: ['important'],
+          reuseSession: true,
+          targetSessionId: '260202-swift-river',
           actions: [{ type: 'prompt', prompt: 'Handle it' }],
         }],
       },
@@ -231,5 +233,7 @@ describe('parseAutomationsConfig', () => {
     expect(items[0].matcher).toBe('urgent')
     expect(items[0].permissionMode).toBe('ask')
     expect(items[0].labels).toEqual(['important'])
+    expect(items[0].reuseSession).toBe(true)
+    expect(items[0].targetSessionId).toBe('260202-swift-river')
   })
 })

@@ -7,6 +7,9 @@ export const AUTOMATIONS_HISTORY_FILE = 'automations-history.jsonl';
 /** Persistent retry queue filename */
 export const AUTOMATIONS_RETRY_QUEUE_FILE = 'automations-retry-queue.jsonl';
 
+/** Prompt automation session reuse state filename */
+export const AUTOMATIONS_SESSION_STATE_FILE = 'automations-session-state.json';
+
 /** Default HTTP method for webhook actions */
 export const DEFAULT_WEBHOOK_METHOD = 'POST';
 

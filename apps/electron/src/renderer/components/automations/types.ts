@@ -239,6 +239,8 @@ export interface AutomationListItem {
   permissionMode?: PermissionMode
   /** Labels for prompt sessions */
   labels?: string[]
+  reuseSession?: boolean
+  targetSessionId?: string
   /** Conditions that must pass before actions run */
   conditions?: AutomationConditionUI[]
   /** The actions this automation performs */
@@ -407,6 +409,8 @@ interface AutomationsConfigMatcher {
   timezone?: string
   permissionMode?: PermissionMode
   labels?: string[]
+  reuseSession?: boolean
+  targetSessionId?: string
   conditions?: AutomationConditionUI[]
   enabled?: boolean
   actions?: RawAction[]
@@ -505,6 +509,8 @@ export function parseAutomationsConfig(json: unknown): AutomationListItem[] {
         timezone: matcher.timezone,
         permissionMode: matcher.permissionMode,
         labels: matcher.labels,
+        reuseSession: matcher.reuseSession,
+        targetSessionId: matcher.targetSessionId,
         conditions: matcher.conditions,
         actions,
         telegramTopic,

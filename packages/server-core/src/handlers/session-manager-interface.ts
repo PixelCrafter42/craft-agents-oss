@@ -306,6 +306,12 @@ export interface ExecutePromptAutomationInput {
   labels?: string[]
   permissionMode?: PermissionMode
   mentions?: string[]
+  /** Automation matcher ID, used as the stable key for reuseSession state. */
+  matcherId?: string
+  /** Reuse one stored session for this matcher when matcherId is available. */
+  reuseSession?: boolean
+  /** Send to a specific existing session when it exists in this workspace. */
+  targetSessionId?: string
   llmConnection?: string
   model?: string
   /** Override the workspace default thinking level for the spawned session. */
@@ -327,4 +333,9 @@ export interface ExecutePromptAutomationInput {
    * still streams live and run errors are logged. Defaults to awaiting completion.
    */
   waitForCompletion?: boolean
+  /**
+   * Internal/test control. Defaults to true. Test runs set false so they don't
+   * read or write the production matcherId -> sessionId reuse mapping.
+   */
+  persistReuseState?: boolean
 }

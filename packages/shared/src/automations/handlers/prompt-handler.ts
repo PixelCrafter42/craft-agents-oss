@@ -56,6 +56,8 @@ export class PromptHandler implements AutomationHandler {
     const matcherPrompts: Array<{
       matcherId: string | undefined;
       automationName: string;
+      reuseSession: boolean | undefined;
+      targetSessionId: string | undefined;
       telegramTopic: string | undefined;
       messagingTarget: AutomationMessagingTarget | undefined;
       prompts: Array<{ prompt: PromptAction; labels?: string[]; permissionMode?: PermissionMode }>;
@@ -75,6 +77,8 @@ export class PromptHandler implements AutomationHandler {
         matcherPrompts.push({
           matcherId: matcher.id,
           automationName: deriveAutomationName(event, matcher),
+          reuseSession: matcher.reuseSession,
+          targetSessionId: matcher.targetSessionId,
           telegramTopic: telegramTopic && telegramTopic.length > 0 ? telegramTopic : undefined,
           messagingTarget: matcher.messagingTarget,
           prompts,
@@ -93,7 +97,7 @@ export class PromptHandler implements AutomationHandler {
     // Process prompts per matcher
     const pendingPrompts: PendingPrompt[] = [];
 
-    for (const { matcherId, automationName, telegramTopic, messagingTarget, prompts } of matcherPrompts) {
+    for (const { matcherId, automationName, reuseSession, targetSessionId, telegramTopic, messagingTarget, prompts } of matcherPrompts) {
       // Topic name accepts env-var expansion so users can route by event payload
       // (e.g. telegramTopic: "Label: $LABEL"). Empty after expansion → drop it.
       const expandedTopic = telegramTopic ? expandEnvVars(telegramTopic, env).trim() : undefined;
@@ -117,6 +121,8 @@ export class PromptHandler implements AutomationHandler {
           mentions: references.mentions,
           labels: expandedLabels,
           permissionMode,
+          reuseSession,
+          targetSessionId,
           llmConnection: prompt.llmConnection,
           model: prompt.model,
           thinkingLevel: prompt.thinkingLevel,

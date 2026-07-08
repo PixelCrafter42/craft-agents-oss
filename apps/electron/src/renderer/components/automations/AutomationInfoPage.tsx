@@ -227,6 +227,18 @@ export function AutomationInfoPage({
                 </div>
               </Info_Table.Row>
             )}
+            {automation.reuseSession && (
+              <Info_Table.Row label={t('automations.labelSessionReuse')}>
+                <Info_Badge color="default">reuseSession</Info_Badge>
+              </Info_Table.Row>
+            )}
+            {automation.targetSessionId && (
+              <Info_Table.Row label={t('automations.labelTargetSession')}>
+                <code className="text-xs font-mono bg-foreground/5 px-1.5 py-0.5 rounded">
+                  {automation.targetSessionId}
+                </code>
+              </Info_Table.Row>
+            )}
             {automation.telegramTopic && (
               <Info_Table.Row label={t('automations.labelTelegramTopic')}>
                 <div className="flex flex-col gap-1">
@@ -265,6 +277,8 @@ export function AutomationInfoPage({
                 timezone: automation.timezone,
                 permissionMode: automation.permissionMode,
                 labels: automation.labels,
+                reuseSession: automation.reuseSession,
+                targetSessionId: automation.targetSessionId,
                 telegramTopic: automation.telegramTopic,
                 messagingTarget: automation.messagingTarget,
                 enabled: automation.enabled,

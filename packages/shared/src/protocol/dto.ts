@@ -777,6 +777,10 @@ export interface TestAutomationPayload {
   actions: TestAutomationAction[]
   permissionMode?: PermissionMode
   labels?: string[]
+  /** Forwarded from the matcher; test runs do not persist matcher reuse state. */
+  reuseSession?: boolean
+  /** Forwarded from the matcher; sends the test prompt to an explicit session if present. */
+  targetSessionId?: string
   /** Forwarded from the matcher; routes test-run sessions into a Telegram topic when paired. */
   telegramTopic?: string
   /** Forwarded from the matcher; output-only messaging target for test-run sessions. */

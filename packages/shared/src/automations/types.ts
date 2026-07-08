@@ -191,6 +191,14 @@ export interface AutomationMatcher {
   permissionMode?: PermissionMode;
   /** Labels to apply to sessions created by prompt actions */
   labels?: string[];
+  /**
+   * Reuse a stable session for prompt actions from this matcher.
+   * The first trigger creates a session; later triggers send into the same
+   * session while it still exists.
+   */
+  reuseSession?: boolean;
+  /** Existing session to send prompt actions to instead of creating a new one. */
+  targetSessionId?: string;
   /** Whether this automation matcher is enabled. Defaults to true. Set to false to disable without removing. */
   enabled?: boolean;
   /** Optional conditions that must all pass (AND) after matcher matches, before actions fire */
@@ -360,6 +368,10 @@ export interface PendingPrompt {
   labels?: string[];
   /** Permission mode for the created session (from matcher config) */
   permissionMode?: PermissionMode;
+  /** Reuse a stable session for this matcher's prompt actions */
+  reuseSession?: boolean;
+  /** Explicit existing session target from matcher config */
+  targetSessionId?: string;
   /** LLM connection slug for the created session (falls back to default if not found) */
   llmConnection?: string;
   /** Model ID for the created session (falls back to provider default if invalid) */

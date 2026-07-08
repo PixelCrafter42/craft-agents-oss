@@ -185,6 +185,8 @@ export const AutomationMatcherSchema = z.object({
   timezone: z.string().optional(),
   permissionMode: z.enum(['safe', 'ask', 'allow-all']).optional(),
   labels: z.array(z.string()).optional(),
+  reuseSession: z.boolean().optional(),
+  targetSessionId: z.string().min(1).regex(/^[\w-]+$/, 'targetSessionId must be a valid session ID').optional(),
   enabled: z.boolean().optional(),
   conditions: z.array(AutomationConditionSchema).optional(),
   // Telegram forum-topic name (1–128 chars). Silently ignored at runtime when

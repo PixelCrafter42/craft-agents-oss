@@ -149,6 +149,9 @@ export function registerAutomationsHandlers(server: RpcServer, deps: HandlerDeps
           labels: payload.labels,
           permissionMode: payload.permissionMode,
           mentions: references.mentions,
+          matcherId: payload.automationId,
+          reuseSession: payload.reuseSession,
+          targetSessionId: payload.targetSessionId,
           llmConnection: action.llmConnection,
           model: action.model,
           thinkingLevel: action.thinkingLevel,
@@ -159,6 +162,7 @@ export function registerAutomationsHandlers(server: RpcServer, deps: HandlerDeps
           // turn finish". Return once the session is created so a long run doesn't
           // trip the 30s RPC timeout (craft-agents-oss#943).
           waitForCompletion: false,
+          persistReuseState: false,
         })
         results.push({
           type: 'prompt',

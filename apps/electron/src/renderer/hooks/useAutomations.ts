@@ -99,6 +99,8 @@ export function useAutomations(
       actions: automation.actions,
       permissionMode: automation.permissionMode,
       labels: automation.labels,
+      reuseSession: automation.reuseSession,
+      targetSessionId: automation.targetSessionId,
       telegramTopic: automation.telegramTopic,
       messagingTarget: automation.messagingTarget,
     }).then((result) => {
