@@ -436,6 +436,16 @@ export const REMOTE_ELIGIBLE_CHANNELS = new Set<string>([
   RPC_CHANNELS.projects.DELETE_ASSET,
   RPC_CHANNELS.projects.CHANGED,
 
+  // employees — workspace employee identities
+  RPC_CHANNELS.employees.GET,
+  RPC_CHANNELS.employees.GET_ONE,
+  RPC_CHANNELS.employees.CREATE,
+  RPC_CHANNELS.employees.UPDATE,
+  RPC_CHANNELS.employees.DELETE,
+  RPC_CHANNELS.employees.UPDATE_DEFINITION,
+  RPC_CHANNELS.employees.UPDATE_MEMORY,
+  RPC_CHANNELS.employees.CHANGED,
+
   // git — workspace filesystem
   RPC_CHANNELS.git.GET_BRANCH,
 

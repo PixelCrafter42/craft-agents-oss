@@ -48,6 +48,8 @@ import { getSystemPrompt } from '../prompts/system.ts';
 import { getCoAuthorPreference } from '../config/preferences.ts';
 import { loadProjectById, getProjectAssetsPath, listProjectAssets, getProjectMemoryPath, loadProjectMemory } from '../projects/storage.ts';
 import type { ProjectPromptContext } from '../projects/types.ts';
+import { loadEmployeeById } from '../employees/storage.ts';
+import type { EmployeePromptContext } from '../employees/types.ts';
 
 // Credential manager for token storage
 import { getCredentialManager } from '../credentials/manager.ts';
@@ -245,6 +247,34 @@ export class PiAgent extends BaseAgent {
       };
     } catch (error) {
       this.debug(`[resolveProjectContext] Failed to load project ${projectId}: ${error instanceof Error ? error.message : error}`);
+      return null;
+    }
+  }
+
+  /**
+   * Look up the bound employee (if any) and return a snapshot for system-prompt injection.
+   * Mirrors ClaudeAgent.resolveEmployeeContext.
+   */
+  private resolveEmployeeContext(): EmployeePromptContext | null {
+    const employeeId = this.config.session?.employeeId;
+    if (!employeeId) return null;
+
+    try {
+      const root = this.config.workspace.rootPath;
+      const employee = loadEmployeeById(root, employeeId);
+      if (!employee) return null;
+      return {
+        name: employee.config.name,
+        description: employee.config.description,
+        definitionPath: employee.definitionPath,
+        definition: employee.definition,
+        memoryPath: employee.memoryPath,
+        memoryContent: employee.memoryContent,
+        skillSlugs: employee.config.skillSlugs,
+        enabledSourceSlugs: employee.config.enabledSourceSlugs,
+      };
+    } catch (error) {
+      this.debug(`[resolveEmployeeContext] Failed to load employee ${employeeId}: ${error instanceof Error ? error.message : error}`);
       return null;
     }
   }
@@ -2060,6 +2090,7 @@ export class PiAgent extends BaseAgent {
 
       // Build system prompt
       const projectContext = this.resolveProjectContext();
+      const employeeContext = this.resolveEmployeeContext();
       const systemPrompt = getSystemPrompt(
         undefined, // pinnedPreferencesPrompt
         this.config.debugMode,
@@ -2069,6 +2100,7 @@ export class PiAgent extends BaseAgent {
         'Craft Agents Backend', // backendName
         getCoAuthorPreference(), // respect user's includeCoAuthoredBy preference (#576)
         projectContext ?? undefined,
+        employeeContext ?? undefined,
       );
 
       // Build context from sources

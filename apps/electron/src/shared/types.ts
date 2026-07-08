@@ -680,6 +680,16 @@ export interface ElectronAPI {
   deleteProjectAsset(workspaceId: string, projectSlug: string, filename: string): Promise<void>
   onProjectsChanged(callback: (workspaceId: string, projects: unknown) => void): () => void
 
+  // Employees (workspace-scoped)
+  getEmployees(workspaceId: string): Promise<unknown>
+  getEmployee(workspaceId: string, employeeIdOrSlug: string): Promise<unknown | null>
+  createEmployee(workspaceId: string, input: import('@craft-agent/shared/employees/types').CreateEmployeeInput): Promise<import('@craft-agent/shared/employees/types').EmployeeConfig>
+  updateEmployee(workspaceId: string, employeeSlug: string, patch: Partial<Omit<import('@craft-agent/shared/employees/types').EmployeeConfig, 'id' | 'slug' | 'createdAt'>>): Promise<import('@craft-agent/shared/employees/types').EmployeeConfig>
+  deleteEmployee(workspaceId: string, employeeSlug: string): Promise<void>
+  updateEmployeeDefinition(workspaceId: string, employeeSlug: string, content: string): Promise<void>
+  updateEmployeeMemory(workspaceId: string, employeeSlug: string, content: string): Promise<void>
+  onEmployeesChanged(callback: (workspaceId: string, employees: unknown) => void): () => void
+
   // Automations
   getAutomations(workspaceId: string): Promise<unknown>
 
@@ -926,6 +936,15 @@ export interface ProjectsNavigationState {
 }
 
 /**
+ * Employees navigation state
+ */
+export interface EmployeesNavigationState {
+  navigator: 'employees'
+  details: { type: 'employee'; employeeSlug: string } | null
+  rightSidebar?: RightSidebarPanel
+}
+
+/**
  * Unified navigation state
  */
 export type NavigationState =
@@ -935,6 +954,7 @@ export type NavigationState =
   | SkillsNavigationState
   | AutomationsNavigationState
   | ProjectsNavigationState
+  | EmployeesNavigationState
 
 export const isSessionsNavigation = (
   state: NavigationState
@@ -959,6 +979,10 @@ export const isAutomationsNavigation = (
 export const isProjectsNavigation = (
   state: NavigationState
 ): state is ProjectsNavigationState => state.navigator === 'projects'
+
+export const isEmployeesNavigation = (
+  state: NavigationState
+): state is EmployeesNavigationState => state.navigator === 'employees'
 
 export const DEFAULT_NAVIGATION_STATE: NavigationState = {
   navigator: 'sessions',
@@ -990,6 +1014,12 @@ export const getNavigationStateKey = (state: NavigationState): string => {
       return `projects/project/${state.details.projectSlug}`
     }
     return 'projects'
+  }
+  if (state.navigator === 'employees') {
+    if (state.details?.type === 'employee') {
+      return `employees/employee/${state.details.employeeSlug}`
+    }
+    return 'employees'
   }
   if (state.navigator === 'settings') {
     if (state.subpage === null) return 'settings'
@@ -1047,6 +1077,16 @@ export const parseNavigationStateKey = (key: string): NavigationState | null => 
       return { navigator: 'projects', details: { type: 'project', projectSlug } }
     }
     return { navigator: 'projects', details: null }
+  }
+
+  // Handle employees
+  if (key === 'employees') return { navigator: 'employees', details: null }
+  if (key.startsWith('employees/employee/')) {
+    const employeeSlug = key.slice(19)
+    if (employeeSlug) {
+      return { navigator: 'employees', details: { type: 'employee', employeeSlug } }
+    }
+    return { navigator: 'employees', details: null }
   }
 
   // Handle settings

@@ -79,6 +79,10 @@ interface SessionListProps {
   projects?: Array<{ id: string; slug: string; name: string; color?: string }>
   /** Callback to bind/unbind a session to a project (null = unbind) */
   onSetProjectId?: (sessionId: string, projectId: string | null) => void
+  /** Workspace employees (for the Employees submenu in SessionMenu) */
+  employees?: Array<{ id: string; slug: string; name: string; color?: string }>
+  /** Callback to bind/unbind a session to an employee (null = unbind) */
+  onSetEmployeeId?: (sessionId: string, employeeId: string | null) => void
   /** How to group sessions: 'date' (default) or 'status' */
   groupingMode?: ChatGroupingMode
   /** Workspace ID for content search (optional - if not provided, content search is disabled) */
@@ -139,6 +143,8 @@ export function SessionList({
   onLabelsChange,
   projects,
   onSetProjectId,
+  employees,
+  onSetEmployeeId,
   groupingMode = 'date',
   workspaceId,
   statusFilter,
@@ -700,6 +706,8 @@ export function SessionList({
     onLabelsChange,
     projects,
     onSetProjectId,
+    employees,
+    onSetEmployeeId,
     onSelectSessionById: handleSelectSessionById,
     onOpenInNewWindow: handleOpenInNewWindow,
     onSendToWorkspace: (ids: string[]) => setSendToWorkspace(ids),
@@ -720,7 +728,7 @@ export function SessionList({
     onFlag, handleFlagWithToast, onUnflag, handleUnflagWithToast,
     onArchive, handleArchiveWithToast, onUnarchive, handleUnarchiveWithToast,
     onMarkUnread, handleDeleteWithToast, onLabelsChange,
-    projects, onSetProjectId,
+    projects, onSetProjectId, employees, onSetEmployeeId,
     handleSelectSessionById, handleOpenInNewWindow, setSendToWorkspace, handleFocusZone, handleKeyDown,
     sessionStatuses, flatLabels, labels, resolvedSearchQuery,
     focusedSessionId, selectionStore.state.selected, isMultiSelectActive,

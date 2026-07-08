@@ -20,6 +20,10 @@ export interface SessionListContextValue {
   onSetProjectId?: (sessionId: string, projectId: string | null) => void
   /** Available workspace projects for the context-menu submenu */
   projects?: Array<{ id: string; slug: string; name: string; color?: string }>
+  /** Set or clear the employee binding for a session (null = unbind) */
+  onSetEmployeeId?: (sessionId: string, employeeId: string | null) => void
+  /** Available workspace employees for the context-menu submenu */
+  employees?: Array<{ id: string; slug: string; name: string; color?: string }>
   onSelectSessionById: (sessionId: string) => void
   onOpenInNewWindow: (item: SessionMeta) => void
   onSendToWorkspace?: (sessionIds: string[]) => void

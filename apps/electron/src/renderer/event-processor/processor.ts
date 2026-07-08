@@ -22,6 +22,7 @@ import {
   handleSourcesChanged,
   handleLabelsChanged,
   handleProjectIdChanged,
+  handleEmployeeIdChanged,
   handleSessionStatusChanged,
   handleSessionMetadataChanged,
   handleSessionFlagged,
@@ -165,6 +166,9 @@ export function processEvent(
 
     case 'project_id_changed':
       return handleProjectIdChanged(state, event)
+
+    case 'employee_id_changed':
+      return handleEmployeeIdChanged(state, event)
 
     case 'session_status_changed':
       return handleSessionStatusChanged(state, event)

@@ -188,6 +188,7 @@ export async function createSession(
     labels?: string[];
     isFlagged?: boolean;
     projectId?: string;
+    employeeId?: string;
     parentSessionId?: string;
     taskSlug?: string;
     taskRunId?: string;
@@ -225,6 +226,7 @@ export async function createSession(
     labels: options?.labels,
     isFlagged: options?.isFlagged,
     projectId: options?.projectId,
+    employeeId: options?.employeeId,
     parentSessionId: options?.parentSessionId,
     taskSlug: options?.taskSlug,
     taskRunId: options?.taskRunId,
@@ -554,6 +556,7 @@ export async function updateSessionMetadata(
     | 'isArchived'
     | 'archivedAt'
     | 'projectId'
+    | 'employeeId'
   >>
 ): Promise<void> {
   const session = loadSession(workspaceRootPath, sessionId);
@@ -576,6 +579,7 @@ export async function updateSessionMetadata(
   if (updates.isArchived !== undefined) session.isArchived = updates.isArchived;
   if ('archivedAt' in updates) session.archivedAt = updates.archivedAt;
   if ('projectId' in updates) session.projectId = updates.projectId;
+  if ('employeeId' in updates) session.employeeId = updates.employeeId;
 
   await saveSession(session);
 }
@@ -631,6 +635,20 @@ export async function setSessionProjectId(
 }
 
 /**
+ * Set or clear the employee binding for a session.
+ * Pass `null` to unbind.
+ */
+export async function setSessionEmployeeId(
+  workspaceRootPath: string,
+  sessionId: string,
+  employeeId: string | null
+): Promise<void> {
+  await updateSessionMetadata(workspaceRootPath, sessionId, {
+    employeeId: employeeId === null ? undefined : employeeId,
+  });
+}
+
+/**
  * Unbind every session that referenced a given projectId.
  * Called when a project is deleted — sessions are preserved, just unlinked.
  * Returns the number of sessions touched.
@@ -645,6 +663,28 @@ export async function unbindProjectFromSessions(
     const full = loadSession(workspaceRootPath, meta.id);
     if (full?.projectId === projectId) {
       full.projectId = undefined;
+      await saveSession(full);
+      touched++;
+    }
+  }
+  return touched;
+}
+
+/**
+ * Unbind every session that referenced a given employeeId.
+ * Called when an employee is deleted — sessions are preserved, just unlinked.
+ * Returns the number of sessions touched.
+ */
+export async function unbindEmployeeFromSessions(
+  workspaceRootPath: string,
+  employeeId: string
+): Promise<number> {
+  const sessions = listSessions(workspaceRootPath);
+  let touched = 0;
+  for (const meta of sessions) {
+    const full = loadSession(workspaceRootPath, meta.id);
+    if (full?.employeeId === employeeId) {
+      full.employeeId = undefined;
       await saveSession(full);
       touched++;
     }

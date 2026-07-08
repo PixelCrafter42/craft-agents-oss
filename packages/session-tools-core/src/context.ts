@@ -519,6 +519,10 @@ export interface SessionInfo {
   createdAt: number;
   updatedAt?: number;
   workingDirectory?: string;
+  projectId?: string;
+  employeeId?: string;
+  employeeSlug?: string;
+  employeeName?: string;
   llmConnection?: string;
   model?: string;
   isActive: boolean;
@@ -531,14 +535,21 @@ export interface SessionListItem {
   labels: string[];
   status: string;
   createdAt: number;
+  projectId?: string;
+  employeeId?: string;
+  employeeSlug?: string;
+  employeeName?: string;
 }
 
 /** Options for list_sessions filtering and pagination. */
 export interface ListSessionsOptions {
   status?: string;
   label?: string;
+  employeeId?: string;
+  employeeSlug?: string;
+  employeeName?: string;
   search?: string;
-  sortBy?: 'recent' | 'name' | 'status';
+  sortBy?: 'recent' | 'name' | 'status' | 'employee';
   limit?: number;
   offset?: number;
 }

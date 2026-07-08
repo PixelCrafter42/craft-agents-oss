@@ -45,8 +45,9 @@ export const routes = {
      * @param status - Optional status/todo-state ID to apply to the new session
      * @param label - Optional label ID to apply to the new session
      * @param project - Optional project id to bind the new session to
+     * @param employee - Optional employee id to bind the new session to
      */
-    newSession: (params?: { input?: string; name?: string; send?: boolean; status?: string; label?: string; project?: string }) =>
+    newSession: (params?: { input?: string; name?: string; send?: boolean; status?: string; label?: string; project?: string; employee?: string }) =>
       `action/new-session${toQueryString(params ? { ...params, send: params.send ? 'true' : undefined } : undefined)}` as const,
 
     /** Rename a session */
@@ -189,6 +190,12 @@ export const routes = {
       projectSlug
         ? `projects/project/${projectSlug}` as const
         : 'projects' as const,
+
+    /** Employees view (employees navigator) */
+    employees: (employeeSlug?: string) =>
+      employeeSlug
+        ? `employees/employee/${employeeSlug}` as const
+        : 'employees' as const,
 
     /** Kanban board view (sessions navigator, board view mode, all sessions) */
     board: () => 'board' as const,

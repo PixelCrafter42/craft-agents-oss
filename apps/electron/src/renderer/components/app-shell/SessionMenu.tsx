@@ -31,6 +31,7 @@ import {
   Tag,
   Send,
   FolderKanban,
+  UserRound,
   Check,
 } from 'lucide-react'
 import { useMenuComponents } from '@/components/ui/menu-context'
@@ -45,6 +46,12 @@ import { MessagingSessionMenuItem } from '@/components/messaging/MessagingSessio
 import { useSessionMenuActions } from '@/hooks/useSessionMenuActions'
 
 export interface SessionMenuProjectOption {
+  id: string
+  slug: string
+  name: string
+}
+
+export interface SessionMenuEmployeeOption {
   id: string
   slug: string
   name: string
@@ -65,6 +72,10 @@ export interface SessionMenuProps {
   projects?: SessionMenuProjectOption[]
   /** Callback for binding/unbinding the session to a project. `null` = unbind. */
   onSetProjectId?: (projectId: string | null) => void
+  /** Workspace employees (omit to hide the submenu) */
+  employees?: SessionMenuEmployeeOption[]
+  /** Callback for binding/unbinding the session to an employee. `null` = unbind. */
+  onSetEmployeeId?: (employeeId: string | null) => void
   /** Callbacks */
   onRename: () => void
   onFlag: () => void
@@ -100,6 +111,8 @@ export function SessionMenu({
   hasRemoteWorkspaces,
   projects = [],
   onSetProjectId,
+  employees = [],
+  onSetEmployeeId,
 }: SessionMenuProps) {
   const { t } = useTranslation()
 
@@ -223,6 +236,34 @@ export function SessionMenu({
                 <MenuItem key={p.id} onClick={() => onSetProjectId(p.id)}>
                   {isBound && <Check className="h-3.5 w-3.5" />}
                   <span className={isBound ? 'flex-1' : 'flex-1 ml-[18px]'}>{p.name}</span>
+                </MenuItem>
+              )
+            })}
+          </SubContent>
+        </Sub>
+      )}
+
+      {/* Employees submenu - workspace employees + "No employee" to clear binding */}
+      {employees.length > 0 && onSetEmployeeId && (
+        <Sub>
+          <SubTrigger className="pr-2">
+            <UserRound className="h-3.5 w-3.5" />
+            <span className="flex-1">Employees</span>
+          </SubTrigger>
+          <SubContent>
+            <MenuItem onClick={() => onSetEmployeeId(null)}>
+              {!item.employeeId && <Check className="h-3.5 w-3.5" />}
+              <span className={item.employeeId ? 'flex-1 ml-[18px]' : 'flex-1'}>
+                No employee
+              </span>
+            </MenuItem>
+            <Separator />
+            {employees.map((employee) => {
+              const isBound = item.employeeId === employee.id
+              return (
+                <MenuItem key={employee.id} onClick={() => onSetEmployeeId(employee.id)}>
+                  {isBound && <Check className="h-3.5 w-3.5" />}
+                  <span className={isBound ? 'flex-1' : 'flex-1 ml-[18px]'}>{employee.name}</span>
                 </MenuItem>
               )
             })}

@@ -416,6 +416,16 @@ export const RPC_CHANNELS = {
     DELETE_ASSET: 'projects:deleteAsset',
     CHANGED: 'projects:changed',
   },
+  employees: {
+    GET: 'employees:get',
+    GET_ONE: 'employees:getOne',
+    CREATE: 'employees:create',
+    UPDATE: 'employees:update',
+    DELETE: 'employees:delete',
+    UPDATE_DEFINITION: 'employees:updateDefinition',
+    UPDATE_MEMORY: 'employees:updateMemory',
+    CHANGED: 'employees:changed',
+  },
   messaging: {
     // WhatsApp subprocess → Gateway (subprocess invokes on server)
     WA_REGISTER: 'messaging:wa:register',

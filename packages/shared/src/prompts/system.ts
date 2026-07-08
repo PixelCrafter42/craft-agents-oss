@@ -12,6 +12,7 @@ import { formatBytes } from '../utils/binary-detection.ts';
 import { globSync } from 'glob';
 import os from 'os';
 import type { ProjectPromptContext } from '../projects/types.ts';
+import type { EmployeePromptContext } from '../employees/types.ts';
 
 /** Maximum size of AGENTS.md/CLAUDE.md file to include (10KB) */
 const MAX_CONTEXT_FILE_SIZE = 10 * 1024;
@@ -365,6 +366,7 @@ export function getSystemPrompt(
   backendName?: string,
   includeCoAuthoredBy?: boolean,
   projectContext?: ProjectPromptContext,
+  employeeContext?: EmployeePromptContext,
 ): string {
   // Use mini agent prompt for quick edits (pass workspace root for config paths)
   if (preset === 'mini') {
@@ -381,6 +383,7 @@ export function getSystemPrompt(
 
   // Optional workspace-project context (injected after preferences, before debug+context-files)
   const projectBlock = projectContext ? formatProjectContextForPrompt(projectContext) : '';
+  const employeeBlock = employeeContext ? formatEmployeeContextForPrompt(employeeContext) : '';
 
   // Fall back to the user's current preference when callers don't pin/pass a value,
   // so forgetting the argument can't silently re-enable the co-author trailer (see #576).
@@ -390,7 +393,7 @@ export function getSystemPrompt(
   // to enable prompt caching. The system prompt stays static and cacheable.
   // Safe Mode context is also in user messages for the same reason.
   const basePrompt = getCraftAssistantPrompt(workspaceRootPath, backendName, resolvedIncludeCoAuthoredBy);
-  const fullPrompt = `${basePrompt}${preferences}${projectBlock}${debugContext}${projectContextFiles}`;
+  const fullPrompt = `${basePrompt}${preferences}${projectBlock}${employeeBlock}${debugContext}${projectContextFiles}`;
 
   debug('[getSystemPrompt] full prompt length:', fullPrompt.length);
 
@@ -406,6 +409,7 @@ export function getSystemPrompt(
  */
 /** Block tags whose closing form must not appear inside injected body content. */
 const PROJECT_BLOCK_TAGS = ['project_context', 'project_memory', 'project_assets'] as const;
+const EMPLOYEE_BLOCK_TAGS = ['employee_context', 'employee_definition', 'employee_memory'] as const;
 
 /**
  * Neutralize a literal closing tag inside injected body content so user- or
@@ -447,6 +451,65 @@ function sanitizeProjectBodyText(content: string): string {
 function sanitizeProjectFilename(name: string): string {
   // eslint-disable-next-line no-control-regex
   return defangProjectBlockTags(name.replace(/[\x00-\x1f\x7f]/g, ''));
+}
+
+function defangEmployeeBlockTags(content: string): string {
+  let result = content;
+  for (const tag of EMPLOYEE_BLOCK_TAGS) {
+    const closeTagPattern = new RegExp(`<\\s*/\\s*${tag}\\s*>`, 'gi');
+    result = result.replace(closeTagPattern, `&lt;/${tag}&gt;`);
+  }
+  return result;
+}
+
+function sanitizeEmployeeBodyText(content: string): string {
+  return defangEmployeeBlockTags(stripDangerousControlChars(content));
+}
+
+export function formatEmployeeContextForPrompt(ctx: EmployeePromptContext): string {
+  const escapeAttr = (s: string) =>
+    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+  const lines: string[] = [];
+  lines.push('');
+  lines.push(`<employee_context employee="${escapeAttr(ctx.name)}">`);
+  if (ctx.description?.trim()) {
+    lines.push(sanitizeEmployeeBodyText(ctx.description.trim()));
+    lines.push('');
+  }
+
+  lines.push(`<employee_definition_path>${sanitizeEmployeeBodyText(ctx.definitionPath)}</employee_definition_path>`);
+  if (ctx.definition?.trim()) {
+    lines.push('<employee_definition>');
+    lines.push(sanitizeEmployeeBodyText(ctx.definition.trim()));
+    lines.push('</employee_definition>');
+  }
+
+  lines.push(`<employee_memory_path>${sanitizeEmployeeBodyText(ctx.memoryPath)}</employee_memory_path>`);
+  if (ctx.memoryContent?.trim()) {
+    lines.push('<employee_memory>');
+    lines.push(sanitizeEmployeeBodyText(ctx.memoryContent.trim()));
+    lines.push('</employee_memory>');
+  }
+
+  if (ctx.skillSlugs?.length) {
+    lines.push(`<employee_default_skills>${ctx.skillSlugs.map(sanitizeEmployeeBodyText).join(', ')}</employee_default_skills>`);
+  }
+  if (ctx.enabledSourceSlugs?.length) {
+    lines.push(`<employee_default_sources>${ctx.enabledSourceSlugs.map(sanitizeEmployeeBodyText).join(', ')}</employee_default_sources>`);
+  }
+
+  lines.push('');
+  lines.push(`The user has bound this session to the employee above.`);
+  lines.push(`EMPLOYEE.md defines this employee's identity, responsibilities, boundaries, and output norms.`);
+  lines.push(`MEMORY.md is this employee's long-term work experience only. Update it at task completion`);
+  lines.push(`only when you learn reusable employee-level guidance. Do not write project facts, task logs,`);
+  lines.push(`or one-off session details to employee MEMORY.md; those belong in project memory, project diary,`);
+  lines.push(`or the current session.`);
+  lines.push(`Do not modify EMPLOYEE.md unless the user explicitly asks to change the employee definition.`);
+  lines.push(`</employee_context>`);
+  lines.push('');
+  return lines.join('\n');
 }
 
 export function formatProjectContextForPrompt(ctx: ProjectPromptContext): string {

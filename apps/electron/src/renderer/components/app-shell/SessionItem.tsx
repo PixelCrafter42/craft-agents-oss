@@ -12,6 +12,7 @@ import { BatchSessionMenu } from "./BatchSessionMenu"
 import { CompactSessionMenu } from "./CompactSessionMenu"
 import { SessionStatusIcon } from "./SessionStatusIcon"
 import { SessionBadges } from "./SessionBadges"
+import { SessionEmployeeBadge } from "./SessionEmployeeBadge"
 import { SessionProjectColorWrapper } from "./SessionProjectColorWrapper"
 import { useProjectColorTreatment } from "@/hooks/useProjectColorTreatment"
 import { getSessionTitle, getSessionPreviewText, highlightMatch, hasUnreadMeta, shortTimeLocale } from "@/utils/session"
@@ -95,6 +96,12 @@ export function SessionItem({
     : undefined
   const projectColor = boundProject?.color
   const projectName = boundProject?.name
+  const boundEmployee = item.employeeId
+    ? ctx.employees?.find(employee => employee.id === item.employeeId)
+    : undefined
+  const employeeBadge = item.employeeId ? (
+    <SessionEmployeeBadge employee={boundEmployee} employeeId={item.employeeId} />
+  ) : null
 
   const handleClick = (e: React.MouseEvent) => {
     ctx.onFocusZone()
@@ -163,6 +170,8 @@ export function SessionItem({
           onDelete={() => ctx.onDelete(item.id)}
           projects={ctx.projects}
           onSetProjectId={ctx.onSetProjectId ? (pid) => ctx.onSetProjectId!(item.id, pid) : undefined}
+          employees={ctx.employees}
+          onSetEmployeeId={ctx.onSetEmployeeId ? (eid) => ctx.onSetEmployeeId!(item.id, eid) : undefined}
         />
       }
       contextMenuContent={ctx.isMultiSelectActive && isInMultiSelect ? <BatchSessionMenu /> : undefined}
@@ -273,7 +282,12 @@ export function SessionItem({
           {formatDistanceToNowStrict(new Date(item.lastMessageAt), { locale: shortTimeLocale as Locale, roundingMethod: 'floor' })}
         </span>
       ) : undefined}
-      badges={hasLabels ? <SessionBadges item={item} /> : undefined}
+      badges={(hasLabels || employeeBadge) ? (
+        <>
+          {employeeBadge}
+          {hasLabels && <SessionBadges item={item} />}
+        </>
+      ) : undefined}
     />
     </SessionProjectColorWrapper>
   )

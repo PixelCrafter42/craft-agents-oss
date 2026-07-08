@@ -57,12 +57,16 @@ export interface AppShellContextType {
   enabledSources?: LoadedSource[]
   /** All skills for this workspace - provided by AppShell component (for @mentions) */
   skills?: LoadedSkill[]
+  /** Workspace employees for display and session binding menus */
+  employees?: Array<{ id: string; slug: string; name: string; color?: string }>
   /** Working directory of the active session — needed for project-level skill resolution */
   activeSessionWorkingDirectory?: string
   /** All label configs (tree) for label menu and badge display */
   labels?: import('@craft-agent/shared/labels').LabelConfig[]
   /** Callback when session labels change */
   onSessionLabelsChange?: (sessionId: string, labels: string[]) => void
+  /** Callback when a session is bound/unbound to an employee */
+  onSessionEmployeeChange?: (sessionId: string, employeeId: string | null) => void | Promise<void>
   /**
    * Open All Sessions scoped to a task: replaces the view's label filter (and project
    * filter when given) with the task's scope — the same user-clearable header-chip

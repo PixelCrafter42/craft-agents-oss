@@ -32,6 +32,7 @@ import {
   isSkillsNavigation,
   isAutomationsNavigation,
   isProjectsNavigation,
+  isEmployeesNavigation,
 } from '@/contexts/NavigationContext'
 import { useSessionSelection, useIsMultiSelectActive, useSelectedIds, useSelectionCount } from '@/hooks/useSession'
 import { sourceSelection, skillSelection, automationSelection } from '@/hooks/useEntitySelection'
@@ -42,6 +43,7 @@ import SkillInfoPage from '@/pages/SkillInfoPage'
 import { getSettingsPageComponent } from '@/pages/settings/settings-pages'
 import { AutomationInfoPage } from '../automations/AutomationInfoPage'
 import ProjectInfoPage from '@/pages/ProjectInfoPage'
+import EmployeeInfoPage from '@/pages/EmployeeInfoPage'
 import { KanbanBoardContainer } from './kanban/KanbanBoardContainer'
 import type { ExecutionEntry } from '../automations/types'
 import { automationsAtom } from '@/atoms/automations'
@@ -372,6 +374,25 @@ export function MainContentPanel({
       <Panel variant="grow" className={className}>
         <div className="flex items-center justify-center h-full text-muted-foreground">
           <p className="text-sm">{t("projectsList.noProjectSelected")}</p>
+        </div>
+      </Panel>
+    )
+  }
+
+  // Employees navigator - show employee detail page or empty state
+  if (isEmployeesNavigation(navState)) {
+    const employeeDetails = navState.details
+    if (employeeDetails && employeeDetails.type === 'employee') {
+      return wrapWithStoplight(
+        <Panel variant="grow" className={className}>
+          <EmployeeInfoPage employeeSlug={employeeDetails.employeeSlug} />
+        </Panel>
+      )
+    }
+    return wrapWithStoplight(
+      <Panel variant="grow" className={className}>
+        <div className="flex items-center justify-center h-full text-muted-foreground">
+          <p className="text-sm">{t('employeesList.noEmployeeSelected', '选择一个员工查看设置')}</p>
         </div>
       </Panel>
     )

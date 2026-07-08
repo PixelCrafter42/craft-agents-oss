@@ -13,6 +13,7 @@ import { ChatDisplay, type ChatDisplayHandle } from '@/components/app-shell/Chat
 import { PanelHeader } from '@/components/app-shell/PanelHeader'
 import { SessionMenu } from '@/components/app-shell/SessionMenu'
 import { CompactSessionMenu } from '@/components/app-shell/CompactSessionMenu'
+import { SessionEmployeeBadge } from '@/components/app-shell/SessionEmployeeBadge'
 import { SessionInfoPopover } from '@/components/app-shell/SessionInfoPopover'
 import { RenameDialog } from '@/components/ui/rename-dialog'
 import { toast } from 'sonner'
@@ -60,8 +61,10 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
     onAttachmentsChange,
     enabledSources,
     skills,
+    employees,
     labels,
     onSessionLabelsChange,
+    onSessionEmployeeChange,
     enabledModes,
     sessionStatuses,
     onSessionSourcesChange,
@@ -407,6 +410,13 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
   // Get display title for header - use getSessionTitle for consistent fallback logic with SessionList
   // Priority: name > first user message > preview > "New chat"
   const displayTitle = session ? getSessionTitle(session) : (sessionMeta ? getSessionTitle(sessionMeta) : t('chat.session'))
+  const boundEmployee = React.useMemo(() => {
+    if (!sessionMeta?.employeeId) return undefined
+    return employees?.find(employee => employee.id === sessionMeta.employeeId)
+  }, [employees, sessionMeta?.employeeId])
+  const employeeBadge = sessionMeta?.employeeId ? (
+    <SessionEmployeeBadge employee={boundEmployee} employeeId={sessionMeta.employeeId} size="header" />
+  ) : undefined
   const isFlagged = session?.isFlagged || sessionMeta?.isFlagged || false
   const isArchived = session?.isArchived || sessionMeta?.isArchived || false
   const sharedUrl = session?.sharedUrl || sessionMeta?.sharedUrl || null
@@ -650,7 +660,9 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
       item={sessionMeta}
       sessionStatuses={sessionStatuses ?? []}
       labels={labels ?? []}
+      employees={employees ?? []}
       onLabelsChange={handleLabelsChange}
+      onSetEmployeeId={onSessionEmployeeChange ? (employeeId) => onSessionEmployeeChange(sessionMeta.id, employeeId) : undefined}
       onRename={handleRename}
       onFlag={handleFlag}
       onUnflag={handleUnflag}
@@ -666,6 +678,8 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
     isCompactMode,
     sessionStatuses,
     labels,
+    employees,
+    onSessionEmployeeChange,
     handleLabelsChange,
     handleRename,
     handleFlag,
@@ -681,6 +695,7 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
   const compactTitleMenu = React.useMemo(() => (sessionMeta && isCompactMode) ? (
     <CompactSessionMenu
       title={displayTitle}
+      badge={employeeBadge}
       isRegeneratingTitle={isAsyncOperationOngoing}
       item={sessionMeta}
       sessionStatuses={sessionStatuses ?? []}
@@ -700,6 +715,7 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
     sessionMeta,
     isCompactMode,
     displayTitle,
+    employeeBadge,
     isAsyncOperationOngoing,
     sessionStatuses,
     labels,
@@ -736,7 +752,7 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
       return (
         <>
           <div className="h-full flex flex-col">
-            <PanelHeader  title={displayTitle} titleMenu={titleMenu} compactTitleMenu={compactTitleMenu} leadingAction={leadingAction} actions={headerActions} rightSidebarButton={rightSidebarButton} isRegeneratingTitle={isAsyncOperationOngoing} />
+            <PanelHeader  title={displayTitle} badge={employeeBadge} titleMenu={titleMenu} compactTitleMenu={compactTitleMenu} leadingAction={leadingAction} actions={headerActions} rightSidebarButton={rightSidebarButton} isRegeneratingTitle={isAsyncOperationOngoing} />
             <div className="flex-1 flex flex-col min-h-0">
               <ChatDisplay
                 ref={chatDisplayRef}
@@ -809,7 +825,7 @@ const ChatPage = React.memo(function ChatPage({ sessionId }: ChatPageProps) {
   return (
     <>
       <div className="h-full flex flex-col">
-        <PanelHeader  title={displayTitle} titleMenu={titleMenu} compactTitleMenu={compactTitleMenu} leadingAction={leadingAction} actions={headerActions} rightSidebarButton={rightSidebarButton} isRegeneratingTitle={isAsyncOperationOngoing} />
+        <PanelHeader  title={displayTitle} badge={employeeBadge} titleMenu={titleMenu} compactTitleMenu={compactTitleMenu} leadingAction={leadingAction} actions={headerActions} rightSidebarButton={rightSidebarButton} isRegeneratingTitle={isAsyncOperationOngoing} />
         <div className="flex-1 flex flex-col min-h-0">
           <ChatDisplay
             ref={chatDisplayRef}

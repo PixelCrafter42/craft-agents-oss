@@ -5,8 +5,11 @@ import { successResponse, errorResponse } from '../response.ts';
 export interface ListSessionsArgs {
   status?: string;
   label?: string;
+  employeeId?: string;
+  employeeSlug?: string;
+  employeeName?: string;
   search?: string;
-  sortBy?: 'recent' | 'name' | 'status';
+  sortBy?: 'recent' | 'name' | 'status' | 'employee';
   limit?: number;
   offset?: number;
 }
@@ -23,6 +26,9 @@ export async function handleListSessions(
     const result = ctx.listSessions({
       status: args.status,
       label: args.label,
+      employeeId: args.employeeId,
+      employeeSlug: args.employeeSlug,
+      employeeName: args.employeeName,
       search: args.search,
       sortBy: args.sortBy,
       limit: args.limit,

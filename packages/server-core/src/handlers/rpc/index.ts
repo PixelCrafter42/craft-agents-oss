@@ -17,6 +17,7 @@ export type { ServerHandlerContext } from '../../bootstrap/headless-start'
 export { getHealthCheck } from './server'
 import { registerSettingsHandlers } from './settings'
 import { registerProjectsHandlers } from './projects'
+import { registerEmployeesHandlers } from './employees'
 import { registerSkillsHandlers } from './skills'
 import { registerSourcesHandlers } from './sources'
 import { registerStatusesHandlers } from './statuses'
@@ -43,6 +44,7 @@ export function registerCoreRpcHandlers(
   if (serverCtx) registerServerHandlers(server, deps, serverCtx)
   registerSettingsHandlers(server, deps)
   registerProjectsHandlers(server, deps)
+  registerEmployeesHandlers(server, deps)
   registerSkillsHandlers(server, deps)
   registerSourcesHandlers(server, deps)
   registerStatusesHandlers(server, deps)

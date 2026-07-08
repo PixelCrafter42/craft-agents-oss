@@ -23,6 +23,7 @@ import {
 import type { McpClientPool } from '../mcp/mcp-pool.ts';
 import { loadPlanFromPath, type SessionConfig as Session } from '../sessions/storage.ts';
 import { loadProjectById, getProjectAssetsPath, listProjectAssets, getProjectMemoryPath, loadProjectMemory } from '../projects/storage.ts';
+import { loadEmployeeById } from '../employees/storage.ts';
 import { DEFAULT_MODEL, isClaudeModel, isAdaptiveThinkingAlwaysOnModel, getDefaultSummarizationModel, getModelContextWindow } from '../config/models.ts';
 import { getCredentialManager } from '../credentials/index.ts';
 import { loadPreferences, formatPreferencesForPrompt, getCoAuthorPreference } from '../config/preferences.ts';
@@ -499,6 +500,7 @@ export class ClaudeAgent extends BaseAgent {
   private pinnedPreferencesPrompt: string | null = null;
   private pinnedIncludeCoAuthoredBy: boolean | null = null;
   private pinnedProjectContext: import('../projects/types.ts').ProjectPromptContext | null = null;
+  private pinnedEmployeeContext: import('../employees/types.ts').EmployeePromptContext | null = null;
   // Track if preference drift notification has been shown this session
   private preferencesDriftNotified: boolean = false;
   // Captured stderr from SDK subprocess (for error diagnostics when process exits with code 1)
@@ -703,6 +705,33 @@ export class ClaudeAgent extends BaseAgent {
       };
     } catch (error) {
       debug(`[resolveProjectContext] Failed to load project ${projectId}:`, error);
+      return null;
+    }
+  }
+
+  /**
+   * Look up the bound employee (if any) and return a snapshot for system-prompt injection.
+   * Resolution silently no-ops when the session is unbound or the employee no longer exists.
+   */
+  private resolveEmployeeContext(): import('../employees/types.ts').EmployeePromptContext | null {
+    const employeeId = this.config.session?.employeeId;
+    if (!employeeId) return null;
+
+    try {
+      const employee = loadEmployeeById(this.workspaceRootPath, employeeId);
+      if (!employee) return null;
+      return {
+        name: employee.config.name,
+        description: employee.config.description,
+        definitionPath: employee.definitionPath,
+        definition: employee.definition,
+        memoryPath: employee.memoryPath,
+        memoryContent: employee.memoryContent,
+        skillSlugs: employee.config.skillSlugs,
+        enabledSourceSlugs: employee.config.enabledSourceSlugs,
+      };
+    } catch (error) {
+      debug(`[resolveEmployeeContext] Failed to load employee ${employeeId}:`, error);
       return null;
     }
   }
@@ -1013,6 +1042,7 @@ export class ClaudeAgent extends BaseAgent {
         this.pinnedPreferencesPrompt = currentPreferencesPrompt;
         this.pinnedIncludeCoAuthoredBy = currentCoAuthorPref;
         this.pinnedProjectContext = this.resolveProjectContext();
+        this.pinnedEmployeeContext = this.resolveEmployeeContext();
         debug('[chat] Pinned system prompt components for session consistency');
       } else {
         // Detect drift: warn user if context has changed since session started
@@ -1226,6 +1256,7 @@ export class ClaudeAgent extends BaseAgent {
                 undefined, // backendName
                 this.pinnedIncludeCoAuthoredBy ?? undefined,
                 this.pinnedProjectContext ?? undefined,
+                this.pinnedEmployeeContext ?? undefined,
               ),
             },
         // Use sdkCwd for SDK session storage - this is set once at session creation and never changes.
@@ -1932,6 +1963,7 @@ This is a branched conversation. All prior messages in this conversation are par
           this.pinnedPreferencesPrompt = null;
           this.pinnedIncludeCoAuthoredBy = null;
           this.pinnedProjectContext = null;
+          this.pinnedEmployeeContext = null;
           this.preferencesDriftNotified = false;
 
           let retryMessage = userMessage;
@@ -2135,6 +2167,7 @@ This is a branched conversation. All prior messages in this conversation are par
           this.pinnedPreferencesPrompt = null;
           this.pinnedIncludeCoAuthoredBy = null;
           this.pinnedProjectContext = null;
+          this.pinnedEmployeeContext = null;
           this.preferencesDriftNotified = false;
 
           let retryMessage = userMessage;
@@ -2339,6 +2372,7 @@ This is a branched conversation. All prior messages in this conversation are par
           this.pinnedPreferencesPrompt = null;
           this.pinnedIncludeCoAuthoredBy = null;
           this.pinnedProjectContext = null;
+          this.pinnedEmployeeContext = null;
           this.preferencesDriftNotified = false;
 
           let retryMessage = userMessage;
@@ -2742,6 +2776,7 @@ This is a branched conversation. All prior messages in this conversation are par
     this.pinnedPreferencesPrompt = null;
     this.pinnedIncludeCoAuthoredBy = null;
     this.pinnedProjectContext = null;
+    this.pinnedEmployeeContext = null;
     this.preferencesDriftNotified = false;
   }
 
@@ -2917,6 +2952,7 @@ This is a branched conversation. All prior messages in this conversation are par
     this.pinnedPreferencesPrompt = null;
     this.pinnedIncludeCoAuthoredBy = null;
     this.pinnedProjectContext = null;
+    this.pinnedEmployeeContext = null;
     this.preferencesDriftNotified = false;
 
     // Clear Claude-specific callbacks (not handled by BaseAgent)
@@ -3092,6 +3128,7 @@ This is a branched conversation. All prior messages in this conversation are par
     this.pinnedPreferencesPrompt = null;
     this.pinnedIncludeCoAuthoredBy = null;
     this.pinnedProjectContext = null;
+    this.pinnedEmployeeContext = null;
     this.preferencesDriftNotified = false;
     // Atomic on-disk persistence: clears all four fork fields at once. This
     // supersedes onSdkSessionIdCleared, which only persists sdkSessionId and

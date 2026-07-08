@@ -77,6 +77,8 @@ export interface SessionMeta {
   archivedAt?: number
   /** Workspace-scoped project id this session is bound to (undefined = unbound) */
   projectId?: string
+  /** Workspace-scoped employee id this session is bound to (undefined = unbound) */
+  employeeId?: string
   /** Parent session id — when set, this session is a subtask of the parent (undefined = top-level task) */
   parentSessionId?: string
   /** Kanban board column id ('todo' | 'in-progress' | 'done'); independent of sessionStatus */

@@ -86,6 +86,7 @@ import { type Session, type SessionEvent, type FileAttachment, type SendMessageO
 import { messageToStored, storedToMessage, type Message, type StoredAttachment, type ToolDisplayMeta, type TokenUsage } from '@craft-agent/core/types'
 import { formatPathsToRelative, formatToolInputPaths, perf, encodeIconToDataUrlAsync, getEmojiIcon, resetSummarizationClient, resolveToolIcon, readFileAttachment, selectSpreadMessages, normalizePath } from '@craft-agent/shared/utils'
 import { loadAllSkills, loadSkillBySlug, invalidateSkillsCache, type LoadedSkill } from '@craft-agent/shared/skills'
+import { loadEmployeeById, loadWorkspaceEmployees } from '@craft-agent/shared/employees'
 import { invalidateContextFileCache } from '@craft-agent/shared/prompts/system'
 import { getToolIconsDir, getMiniModel } from '@craft-agent/shared/config'
 import { getDefaultSummarizationModel } from '@craft-agent/shared/config/models'
@@ -857,6 +858,8 @@ interface ManagedSession {
   labels?: string[]
   // Workspace-scoped project binding (undefined = unbound)
   projectId?: string
+  // Workspace-scoped employee binding (undefined = unbound)
+  employeeId?: string
   // Parent session id — when set, this session is a subtask of the parent (undefined = top-level task)
   parentSessionId?: string
   // Kanban board column id ('todo' | 'in-progress' | 'done'); independent of sessionStatus
@@ -1134,6 +1137,10 @@ function resolveSupportsBranching(managed: ManagedSession): boolean {
 const DEFAULT_TOKEN_USAGE = {
   inputTokens: 0, outputTokens: 0, totalTokens: 0,
   contextTokens: 0, costUsd: 0,
+}
+
+function mergeStringLists(...lists: Array<string[] | undefined>): string[] {
+  return Array.from(new Set(lists.flatMap(list => list ?? []).map(value => value.trim()).filter(Boolean)))
 }
 
 /**
@@ -2723,6 +2730,24 @@ export class SessionManager implements ISessionManager {
       }
     }
 
+    // Resolve employee binding. Subtasks inherit the parent's employee when the
+    // caller didn't bind one explicitly, mirroring project inheritance.
+    const inheritedEmployeeId = options?.parentSessionId
+      ? this.sessions.get(options.parentSessionId)?.employeeId
+      : undefined
+    const requestedEmployeeId = options?.employeeId ?? inheritedEmployeeId
+    let resolvedEmployeeId: string | undefined
+    if (requestedEmployeeId) {
+      const employee = loadEmployeeById(workspaceRootPath, requestedEmployeeId)
+      if (!employee) {
+        if (options?.employeeId) {
+          throw new Error(`Employee ${options.employeeId} not found in workspace ${workspaceId}`)
+        }
+      } else {
+        resolvedEmployeeId = employee.config.id
+      }
+    }
+
     // Validate branch request up-front so branch metadata is only set for valid branches.
     // This prevents creating sessions that claim to be branched but don't have copied history.
     let validatedBranch: {
@@ -2922,6 +2947,7 @@ export class SessionManager implements ISessionManager {
       labels: options?.labels,
       isFlagged: options?.isFlagged,
       projectId: resolvedProjectId,
+      employeeId: resolvedEmployeeId,
       parentSessionId: options?.parentSessionId,
       taskSlug: options?.taskSlug,
       taskRunId: options?.taskRunId,
@@ -3468,6 +3494,7 @@ export class SessionManager implements ISessionManager {
         permissionMode: managed.permissionMode,
         previousPermissionMode: managed.previousPermissionMode,
         projectId: managed.projectId,
+        employeeId: managed.employeeId,
       }
 
       const onSdkSessionIdUpdate = (sdkSessionId: string) => {
@@ -4396,6 +4423,9 @@ export class SessionManager implements ISessionManager {
           const targetId = sessionId ?? managed.id
           const session = this.sessions.get(targetId)
           if (!session) return null
+          const employee = session.employeeId
+            ? loadEmployeeById(managed.workspace.rootPath, session.employeeId)
+            : null
           return {
             id: session.id,
             name: session.name ?? session.id,
@@ -4403,8 +4433,12 @@ export class SessionManager implements ISessionManager {
             status: session.sessionStatus ?? 'todo',
             permissionMode: session.permissionMode ?? 'ask',
             createdAt: session.createdAt ?? 0,
+            updatedAt: session.lastMessageAt,
             workingDirectory: session.workingDirectory,
             projectId: session.projectId,
+            employeeId: session.employeeId,
+            employeeSlug: employee?.config.slug,
+            employeeName: employee?.config.name,
             llmConnection: session.llmConnection,
             model: session.model,
             isActive: session.agent != null,
@@ -4417,6 +4451,14 @@ export class SessionManager implements ISessionManager {
           const offset = options?.offset ?? 0
 
           let sessions = this.getSessions(managed.workspace.id)
+          const employees = loadWorkspaceEmployees(managed.workspace.rootPath).map(employee => employee.config)
+          const employeesById = new Map(employees.map(employee => [employee.id, employee]))
+          const employeeIdBySlug = new Map(employees.map(employee => [employee.slug.toLowerCase(), employee.id]))
+          const employeeMatchesName = (employeeId: string | undefined, needle: string): boolean => {
+            if (!employeeId) return false
+            const employee = employeesById.get(employeeId)
+            return employee?.name.toLowerCase().includes(needle) === true
+          }
 
           // Filter
           if (options?.status) {
@@ -4424,6 +4466,22 @@ export class SessionManager implements ISessionManager {
           }
           if (options?.label) {
             sessions = sessions.filter(s => s.labels?.includes(options.label!))
+          }
+          const employeeIdFilter = options?.employeeId?.trim()
+          const employeeSlugFilter = options?.employeeSlug?.trim().toLowerCase()
+          const employeeNameFilter = options?.employeeName?.trim().toLowerCase()
+
+          if (employeeIdFilter) {
+            sessions = sessions.filter(s => s.employeeId === employeeIdFilter)
+          }
+          if (employeeSlugFilter) {
+            const employeeId = employeeIdBySlug.get(employeeSlugFilter)
+            sessions = employeeId
+              ? sessions.filter(s => s.employeeId === employeeId)
+              : []
+          }
+          if (employeeNameFilter) {
+            sessions = sessions.filter(s => employeeMatchesName(s.employeeId, employeeNameFilter))
           }
           if (options?.search) {
             const needle = options.search.toLowerCase()
@@ -4438,6 +4496,12 @@ export class SessionManager implements ISessionManager {
             sessions.sort((a, b) => (a.name ?? '').localeCompare(b.name ?? ''))
           } else if (sortBy === 'status') {
             sessions.sort((a, b) => (a.sessionStatus ?? '').localeCompare(b.sessionStatus ?? ''))
+          } else if (sortBy === 'employee') {
+            sessions.sort((a, b) => {
+              const employeeA = a.employeeId ? employeesById.get(a.employeeId)?.name ?? '' : ''
+              const employeeB = b.employeeId ? employeesById.get(b.employeeId)?.name ?? '' : ''
+              return employeeA.localeCompare(employeeB) || (a.name ?? '').localeCompare(b.name ?? '')
+            })
           }
 
           const total = sessions.length
@@ -4455,6 +4519,9 @@ export class SessionManager implements ISessionManager {
               status: s.sessionStatus ?? 'todo',
               createdAt: s.createdAt ?? 0,
               projectId: s.projectId,
+              employeeId: s.employeeId,
+              employeeSlug: s.employeeId ? employeesById.get(s.employeeId)?.slug : undefined,
+              employeeName: s.employeeId ? employeesById.get(s.employeeId)?.name : undefined,
             })),
           }
         },
@@ -5919,6 +5986,40 @@ export class SessionManager implements ISessionManager {
     return storedAttachments.length > 0 ? storedAttachments : undefined
   }
 
+  private resolveEmployeeDefaultsForTurn(
+    managed: ManagedSession,
+    options?: SendMessageOptions,
+  ): { options?: SendMessageOptions; enabledSourceSlugs: string[] } {
+    const employeeId = managed.employeeId
+    if (!employeeId) {
+      return { options, enabledSourceSlugs: [] }
+    }
+
+    try {
+      const employee = loadEmployeeById(managed.workspace.rootPath, employeeId)
+      if (!employee) {
+        return { options, enabledSourceSlugs: [] }
+      }
+
+      const mergedSkillSlugs = mergeStringLists(employee.config.skillSlugs, options?.skillSlugs)
+      const mergedOptions = mergedSkillSlugs.length > 0
+        ? { ...(options ?? {}), skillSlugs: mergedSkillSlugs }
+        : options
+
+      return {
+        options: mergedOptions,
+        enabledSourceSlugs: employee.config.enabledSourceSlugs ?? [],
+      }
+    } catch (error) {
+      sessionLog.warn('Failed to resolve employee defaults for turn', {
+        sessionId: managed.id,
+        employeeId,
+        error: error instanceof Error ? error.message : String(error),
+      })
+      return { options, enabledSourceSlugs: [] }
+    }
+  }
+
   async sendMessage(
     sessionId: string,
     message: string,
@@ -5948,6 +6049,8 @@ export class SessionManager implements ISessionManager {
     if (!managed) {
       throw new Error(`Session ${sessionId} not found`)
     }
+    const employeeDefaults = this.resolveEmployeeDefaultsForTurn(managed, options)
+    options = employeeDefaults.options
     this.setLastMessageClientId(sessionId, rpcContext?.callerClientId)
 
     // Source-activation auto-retry dedup (craft-agents-oss#804). When the server
@@ -6243,7 +6346,10 @@ export class SessionManager implements ISessionManager {
     const sendSpan = perf.span('session.sendMessage', { sessionId })
 
     const workspaceRootPath = managed.workspace.rootPath
-    const enabledSlugs = managed.enabledSourceSlugs ?? []
+    const enabledSlugs = Array.from(new Set([
+      ...(managed.enabledSourceSlugs ?? []),
+      ...employeeDefaults.enabledSourceSlugs,
+    ]))
     const hasSources = enabledSlugs.length > 0
 
     // Load enabled sources up-front so we can refresh tokens BEFORE getOrCreateAgent
@@ -7727,6 +7833,34 @@ Please continue the conversation naturally from where we left off.
         type: 'project_id_changed',
         sessionId: managed.id,
         projectId: managed.projectId ?? null,
+      }, managed.workspace.id)
+
+      this.persistSession(managed)
+      await this.flushSession(managed.id)
+      const watcher = this.configWatchers.get(managed.workspace.rootPath)
+      watcher?.notifyFileChange(`sessions/${sessionId}/session.jsonl`)
+    }
+  }
+
+  /**
+   * Bind or unbind a session to/from a workspace employee.
+   * Pass `null` to unbind.
+   */
+  async setSessionEmployeeId(sessionId: string, employeeId: string | null): Promise<void> {
+    const managed = this.sessions.get(sessionId)
+    if (managed) {
+      const previousEmployeeId = managed.employeeId
+      managed.employeeId = employeeId ?? undefined
+      this.setMetadataWriteGuard(managed)
+
+      if (previousEmployeeId !== managed.employeeId) {
+        await this.disposeManagedAgentRuntime(managed, 'employee binding change')
+      }
+
+      this.sendEvent({
+        type: 'employee_id_changed',
+        sessionId: managed.id,
+        employeeId: managed.employeeId ?? null,
       }, managed.workspace.id)
 
       this.persistSession(managed)

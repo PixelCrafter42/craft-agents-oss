@@ -404,6 +404,16 @@ export const CHANNEL_MAP = {
   deleteProjectAsset: invoke(RPC_CHANNELS.projects.DELETE_ASSET),
   onProjectsChanged: listener(RPC_CHANNELS.projects.CHANGED),
 
+  // Employees
+  getEmployees: invoke(RPC_CHANNELS.employees.GET),
+  getEmployee: invoke(RPC_CHANNELS.employees.GET_ONE),
+  createEmployee: invoke(RPC_CHANNELS.employees.CREATE),
+  updateEmployee: invoke(RPC_CHANNELS.employees.UPDATE),
+  deleteEmployee: invoke(RPC_CHANNELS.employees.DELETE),
+  updateEmployeeDefinition: invoke(RPC_CHANNELS.employees.UPDATE_DEFINITION),
+  updateEmployeeMemory: invoke(RPC_CHANNELS.employees.UPDATE_MEMORY),
+  onEmployeesChanged: listener(RPC_CHANNELS.employees.CHANGED),
+
   // Automations
   getAutomations: invoke(RPC_CHANNELS.automations.GET),
   testAutomation: invoke(RPC_CHANNELS.automations.TEST),

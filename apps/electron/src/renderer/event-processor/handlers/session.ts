@@ -14,6 +14,7 @@ import type {
   SourcesChangedEvent,
   LabelsChangedEvent,
   ProjectIdChangedEvent,
+  EmployeeIdChangedEvent,
   SessionStatusChangedEvent,
   SessionMetadataChangedEvent,
   SessionFlaggedEvent,
@@ -677,6 +678,27 @@ export function handleProjectIdChanged(
 }
 
 /**
+ * Handle employee_id_changed - update session's employeeId binding
+ */
+export function handleEmployeeIdChanged(
+  state: SessionState,
+  event: EmployeeIdChangedEvent
+): ProcessResult {
+  const { session, streaming } = state
+
+  return {
+    state: {
+      session: {
+        ...session,
+        employeeId: event.employeeId ?? undefined,
+      },
+      streaming,
+    },
+    effects: [],
+  }
+}
+
+/**
  * Handle session_status_changed - update session's sessionStatus (external metadata change or agent tool)
  */
 export function handleSessionStatusChanged(
@@ -988,4 +1010,3 @@ export function handleUsageUpdate(
     effects: [],
   }
 }
-

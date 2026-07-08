@@ -157,6 +157,15 @@ export interface ProjectIdChangedEvent {
 }
 
 /**
+ * Employee id changed event (session bound/unbound to a workspace employee)
+ */
+export interface EmployeeIdChangedEvent {
+  type: 'employee_id_changed'
+  sessionId: string
+  employeeId: string | null
+}
+
+/**
  * Todo state changed event (external metadata change or agent tool)
  */
 export interface SessionStatusChangedEvent {
@@ -172,7 +181,7 @@ export interface SessionStatusChangedEvent {
 export interface SessionMetadataChangedEvent {
   type: 'session_metadata_changed'
   sessionId: string
-  changes: Partial<Pick<Session, 'taskNodeCount' | 'kanbanColumn' | 'taskDraft' | 'taskSlug' | 'projectId'>>
+  changes: Partial<Pick<Session, 'taskNodeCount' | 'kanbanColumn' | 'taskDraft' | 'taskSlug' | 'projectId' | 'employeeId'>>
 }
 
 /**
@@ -527,6 +536,7 @@ export type AgentEvent =
   | SourcesChangedEvent
   | LabelsChangedEvent
   | ProjectIdChangedEvent
+  | EmployeeIdChangedEvent
   | SessionStatusChangedEvent
   | SessionMetadataChangedEvent
   | SessionFlaggedEvent

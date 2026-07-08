@@ -207,8 +207,11 @@ export const GetSessionInfoSchema = z.object({
 export const ListSessionsSchema = z.object({
   status: z.string().optional().describe('Filter by status'),
   label: z.string().optional().describe('Filter by label'),
+  employeeId: z.string().optional().describe('Filter by bound employee ID'),
+  employeeSlug: z.string().optional().describe('Filter by bound employee slug'),
+  employeeName: z.string().optional().describe('Filter by bound employee display name (case-insensitive substring match)'),
   search: z.string().optional().describe('Substring match on session name'),
-  sortBy: z.enum(['recent', 'name', 'status']).optional().describe('Sort order (default: recent)'),
+  sortBy: z.enum(['recent', 'name', 'status', 'employee']).optional().describe('Sort order (default: recent)'),
   limit: z.number().optional().describe('Max sessions to return (default 20, max 100)'),
   offset: z.number().optional().describe('Skip first N results (for pagination)'),
 });
@@ -494,12 +497,12 @@ IMPORTANT: never move a task into a closed status (such as "done" or "cancelled"
 
   get_session_info: `Get metadata about the current session or a specific session by ID.
 
-Returns labels, status, name, permission mode, projectId (if the session is bound to a project), workingDirectory, and other details.
+Returns labels, status, name, permission mode, projectId, employeeId/employeeSlug/employeeName, workingDirectory, and other details.
 Call with no arguments to introspect your own session state.`,
 
   list_sessions: `List sessions in the workspace. Returns total count + paginated results.
 
-Use filters (status, label, search) to narrow results instead of fetching everything. Default limit is 20 sessions.
+Use filters (status, label, employeeId, employeeSlug, employeeName, search) to narrow results instead of fetching everything. Default limit is 20 sessions.
 Use get_session_info for full details on a specific session (list-then-detail pattern).`,
 
   list_background_tasks: `List background agents/tasks tracked for a session (running, finished, or orphaned).

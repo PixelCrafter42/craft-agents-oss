@@ -30,6 +30,7 @@ import {
   Clock,
   Radio,
   Bot,
+  UserRound,
   Info,
   MailOpen,
   FolderKanban,
@@ -117,6 +118,7 @@ import {
   isSkillsNavigation,
   isAutomationsNavigation,
   isProjectsNavigation,
+  isEmployeesNavigation,
   type NavigationState,
 } from "@/contexts/NavigationContext"
 import type { SettingsSubpage } from "../../../shared/types"
@@ -124,14 +126,17 @@ import { SourcesListPanel } from "./SourcesListPanel"
 import { SkillsListPanel } from "./SkillsListPanel"
 import { AutomationsListPanel } from "../automations/AutomationsListPanel"
 import { ProjectsListPanel } from "./ProjectsListPanel"
+import { EmployeesListPanel } from "./EmployeesListPanel"
 import { APP_EVENTS, AGENT_EVENTS, type AutomationFilterKind, AUTOMATION_TYPE_TO_FILTER_KIND } from "../automations/types"
 import { useAutomations } from "@/hooks/useAutomations"
 import { useProjects } from "@/hooks/useProjects"
+import { useEmployees } from "@/hooks/useEmployees"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog"
 import { PanelHeader } from "./PanelHeader"
 import { FabNewChat } from "./FabNewChat"
 import { SendToWorkspaceDialog } from "./SendToWorkspaceDialog"
 import { CreateProjectDialog } from "../projects/CreateProjectDialog"
+import { CreateEmployeeDialog } from "../employees/CreateEmployeeDialog"
 import { MessagingDialogHost } from "@/components/messaging/MessagingDialogHost"
 import { EditPopover, getEditConfig, type EditContextKey } from "@/components/ui/EditPopover"
 import SettingsNavigator from "@/pages/settings/SettingsNavigator"
@@ -644,7 +649,7 @@ function AppShellContent({
   // has its own independent set of status and label filters.
   // Each filter entry stores a mode ('include' or 'exclude') for tri-state filtering.
   type FilterEntry = Record<string, FilterMode> // id → mode
-  type ViewFiltersMap = Record<string, { statuses: FilterEntry, labels: FilterEntry, projects?: FilterEntry, groupingMode?: ChatGroupingMode }>
+  type ViewFiltersMap = Record<string, { statuses: FilterEntry, labels: FilterEntry, projects?: FilterEntry, employees?: FilterEntry, groupingMode?: ChatGroupingMode }>
 
   // Compute a stable key for the current chat filter view
   const sessionFilterKey = useMemo(() => {
@@ -712,6 +717,13 @@ function AppShellContent({
     return new Map<string, FilterMode>(Object.entries(entry) as [string, FilterMode][])
   }, [viewFiltersMap, sessionFilterKey])
 
+  // Derive current view's employee filter as a Map<employeeId, FilterMode>
+  const employeeFilter = useMemo(() => {
+    if (!sessionFilterKey) return new Map<string, FilterMode>()
+    const entry = viewFiltersMap[sessionFilterKey]?.employees ?? {}
+    return new Map<string, FilterMode>(Object.entries(entry) as [string, FilterMode][])
+  }, [viewFiltersMap, sessionFilterKey])
+
   // Setter for status filter — updates only the current view's entry in the map
   const setListFilter = useCallback((updater: Map<SessionStatusId, FilterMode> | ((prev: Map<SessionStatusId, FilterMode>) => Map<SessionStatusId, FilterMode>)) => {
     setViewFiltersMap(prev => {
@@ -725,6 +737,7 @@ function AppShellContent({
           statuses: Object.fromEntries(next),
           labels: existing?.labels ?? {},
           projects: existing?.projects ?? {},
+          employees: existing?.employees ?? {},
           groupingMode: existing?.groupingMode,
         }
       }
@@ -744,6 +757,7 @@ function AppShellContent({
           statuses: existing?.statuses ?? {},
           labels: Object.fromEntries(next),
           projects: existing?.projects ?? {},
+          employees: existing?.employees ?? {},
           groupingMode: existing?.groupingMode,
         }
       }
@@ -763,6 +777,27 @@ function AppShellContent({
           statuses: existing?.statuses ?? {},
           labels: existing?.labels ?? {},
           projects: Object.fromEntries(next),
+          employees: existing?.employees ?? {},
+          groupingMode: existing?.groupingMode,
+        }
+      }
+    })
+  }, [sessionFilterKey])
+
+  // Setter for employee filter — updates only the current view's entry in the map
+  const setEmployeeFilter = useCallback((updater: Map<string, FilterMode> | ((prev: Map<string, FilterMode>) => Map<string, FilterMode>)) => {
+    setViewFiltersMap(prev => {
+      if (!sessionFilterKey) return prev
+      const current = new Map<string, FilterMode>(Object.entries(prev[sessionFilterKey]?.employees ?? {}) as [string, FilterMode][])
+      const next = typeof updater === 'function' ? updater(current) : updater
+      const existing = prev[sessionFilterKey]
+      return {
+        ...prev,
+        [sessionFilterKey]: {
+          statuses: existing?.statuses ?? {},
+          labels: existing?.labels ?? {},
+          projects: existing?.projects ?? {},
+          employees: Object.fromEntries(next),
           groupingMode: existing?.groupingMode,
         }
       }
@@ -781,12 +816,42 @@ function AppShellContent({
           statuses: existing?.statuses ?? {},
           labels: existing?.labels ?? {},
           projects: { [projectId]: 'include' },
+          employees: existing?.employees ?? {},
           groupingMode: existing?.groupingMode,
         }
       }
     })
     navigate(routes.view.allSessions())
   }, [])
+
+  // Jump to All Sessions filtered by a single employee.
+  const handleJumpToEmployeeSessions = useCallback((employeeId: string) => {
+    setViewFiltersMap(prev => {
+      const existing = prev['allSessions']
+      return {
+        ...prev,
+        allSessions: {
+          statuses: existing?.statuses ?? {},
+          labels: existing?.labels ?? {},
+          projects: existing?.projects ?? {},
+          employees: { [employeeId]: 'include' },
+          groupingMode: existing?.groupingMode,
+        }
+      }
+    })
+    navigate(routes.view.allSessions())
+  }, [])
+
+  useEffect(() => {
+    const handleEmployeeFilterEvent = (event: Event) => {
+      const detail = (event as CustomEvent<{ employeeId?: string }>).detail
+      if (detail?.employeeId) {
+        handleJumpToEmployeeSessions(detail.employeeId)
+      }
+    }
+    window.addEventListener('craft:employee-filter', handleEmployeeFilterEvent)
+    return () => window.removeEventListener('craft:employee-filter', handleEmployeeFilterEvent)
+  }, [handleJumpToEmployeeSessions])
 
   // Jump to All Sessions scoped to a task: replace the allSessions view's label filter
   // (and project filter, when the task is bound to one) with the task's scope, then open
@@ -803,6 +868,7 @@ function AppShellContent({
             statuses: existing?.statuses ?? {},
             labels: { [scope.labelId]: 'include' },
             projects: scope.projectId ? { [scope.projectId]: 'include' } : {},
+            employees: existing?.employees ?? {},
             groupingMode: existing?.groupingMode,
           }
         }
@@ -969,6 +1035,11 @@ function AppShellContent({
     () => projects.map(p => ({ id: p.config.id, slug: p.config.slug, name: p.config.name, color: p.config.color })),
     [projects],
   )
+  const { employees } = useEmployees(activeWorkspaceId)
+  const employeeMenuOptions = useMemo(
+    () => employees.map(e => ({ id: e.config.id, slug: e.config.slug, name: e.config.name, color: e.config.color })),
+    [employees],
+  )
   const handleSessionProjectChange = useCallback(async (sessionId: string, projectId: string | null) => {
     try {
       await window.electronAPI.sessionCommand(sessionId, { type: 'setProjectId', projectId })
@@ -977,6 +1048,14 @@ function AppShellContent({
       toast.error(t('toast.failedToUpdateProject'))
     }
   }, [t])
+  const handleSessionEmployeeChange = useCallback(async (sessionId: string, employeeId: string | null) => {
+    try {
+      await window.electronAPI.sessionCommand(sessionId, { type: 'setEmployeeId', employeeId })
+    } catch (err) {
+      console.error('[AppShell] Failed to update session employee:', err)
+      toast.error('Failed to update employee')
+    }
+  }, [])
 
   // Whether local MCP servers are enabled (affects stdio source status)
   const [localMcpEnabled, setLocalMcpEnabled] = React.useState(true)
@@ -1682,9 +1761,30 @@ function AppShellContent({
         })
       }
     }
+    // Filter by employee — supports include/exclude on session.employeeId
+    if (employeeFilter.size > 0) {
+      const employeeIncludes = new Set<string>()
+      const employeeExcludes = new Set<string>()
+      for (const [id, mode] of employeeFilter) {
+        if (mode === 'include') employeeIncludes.add(id)
+        else employeeExcludes.add(id)
+      }
+      if (employeeIncludes.size > 0) {
+        result = result.filter(s => {
+          const eid = (s as { employeeId?: string }).employeeId
+          return eid !== undefined && employeeIncludes.has(eid)
+        })
+      }
+      if (employeeExcludes.size > 0) {
+        result = result.filter(s => {
+          const eid = (s as { employeeId?: string }).employeeId
+          return eid === undefined || !employeeExcludes.has(eid)
+        })
+      }
+    }
 
     return result
-  }, [workspaceSessionMetas, activeSessionMetas, sessionFilter, listFilter, labelFilter, projectFilter, labelConfigs])
+  }, [workspaceSessionMetas, activeSessionMetas, sessionFilter, listFilter, labelFilter, projectFilter, employeeFilter, labelConfigs])
 
   // Derive "pinned" (non-removable) filters from the current sessionFilter path.
   // These represent filters that are implicit in the current deeplink/route and
@@ -1727,9 +1827,11 @@ function AppShellContent({
     onDeleteSession: handleDeleteSession,
     enabledSources: sources,
     skills,
+    employees: employeeMenuOptions,
     activeSessionWorkingDirectory,
     labels: displayLabelConfigs,
     onSessionLabelsChange: handleSessionLabelsChange,
+    onSessionEmployeeChange: handleSessionEmployeeChange,
     enabledModes,
     sessionStatuses: effectiveSessionStatuses,
     onSessionSourcesChange: handleSessionSourcesChange,
@@ -1748,7 +1850,7 @@ function AppShellContent({
     automationTestResults,
     getAutomationHistory,
     onReplayAutomation: handleReplayAutomation,
-  }), [contextValue, handleDeleteSession, sources, skills, activeSessionWorkingDirectory, displayLabelConfigs, handleSessionLabelsChange, enabledModes, effectiveSessionStatuses, handleSessionSourcesChange, handleJumpToTaskSessions, isAutoCompact, searchActive, searchQuery, handleChatMatchInfoChange, handleTestAutomation, handleToggleAutomation, handleDuplicateAutomation, handleDeleteAutomation, automationTestResults, getAutomationHistory, handleReplayAutomation])
+  }), [contextValue, handleDeleteSession, sources, skills, employeeMenuOptions, activeSessionWorkingDirectory, displayLabelConfigs, handleSessionLabelsChange, handleSessionEmployeeChange, enabledModes, effectiveSessionStatuses, handleSessionSourcesChange, handleJumpToTaskSessions, isAutoCompact, searchActive, searchQuery, handleChatMatchInfoChange, handleTestAutomation, handleToggleAutomation, handleDuplicateAutomation, handleDeleteAutomation, automationTestResults, getAutomationHistory, handleReplayAutomation])
 
   // Persist expanded folders to localStorage (workspace-scoped)
   React.useEffect(() => {
@@ -2039,16 +2141,34 @@ function AppShellContent({
     }
   }, [activeWorkspace?.id, navigate, t])
 
+  const [createEmployeeDialogOpen, setCreateEmployeeDialogOpen] = useState(false)
+  const openAddEmployee = useCallback(() => {
+    if (!activeWorkspace?.id) return
+    setCreateEmployeeDialogOpen(true)
+  }, [activeWorkspace?.id])
+  const handleCreateEmployeeSubmit = useCallback(async (name: string) => {
+    if (!activeWorkspace?.id) return
+    setCreateEmployeeDialogOpen(false)
+    try {
+      const employee = await window.electronAPI.createEmployee(activeWorkspace.id, { name })
+      navigate(routes.view.employees(employee.slug))
+    } catch (err) {
+      console.error('[AppShell] Failed to create employee:', err)
+      toast.error('Failed to create employee')
+    }
+  }, [activeWorkspace?.id, navigate])
+
   /**
    * Resolve the "inherit sole active filter" rule: if exactly one filter value
    * is selected across statuses + labels + projects, return it as new-session
    * params. Otherwise return null (fall back to workspace defaults).
    */
-  const resolveInheritedNewSessionParams = useCallback((): { status?: string; label?: string; project?: string } | null => {
+  const resolveInheritedNewSessionParams = useCallback((): { status?: string; label?: string; project?: string; employee?: string } | null => {
     const statusCount = listFilter.size
     const labelCount = labelFilter.size
     const projectCount = projectFilter.size
-    const total = statusCount + labelCount + projectCount
+    const employeeCount = employeeFilter.size
+    const total = statusCount + labelCount + projectCount + employeeCount
     if (total !== 1) return null
     if (statusCount === 1) {
       const [stateId] = [...listFilter.keys()]
@@ -2062,8 +2182,12 @@ function AppShellContent({
       const [projectId] = [...projectFilter.keys()]
       return { project: projectId }
     }
+    if (employeeCount === 1) {
+      const [employeeId] = [...employeeFilter.keys()]
+      return { employee: employeeId }
+    }
     return null
-  }, [listFilter, labelFilter, projectFilter])
+  }, [listFilter, labelFilter, projectFilter, employeeFilter])
 
   // Create a new chat and select it
   const handleNewChat = useCallback((newPanel: boolean = false) => {
@@ -2294,6 +2418,11 @@ function AppShellContent({
     // Projects navigator
     if (isProjectsNavigation(navState)) {
       return t("sidebar.allProjects")
+    }
+
+    // Employees navigator
+    if (isEmployeesNavigation(navState)) {
+      return t('sidebar.allEmployees', 'Employees')
     }
 
     // Automations navigator
@@ -2661,6 +2790,28 @@ function AppShellContent({
                       })),
                     },
                     {
+                      id: "nav:employees",
+                      title: "Employees",
+                      label: String(employees.length),
+                      icon: UserRound,
+                      variant: isEmployeesNavigation(navState) ? "default" as const : "ghost" as const,
+                      onClick: employees.length === 0 ? openAddEmployee : () => navigate(routes.view.employees()),
+                      expandable: employees.length > 0,
+                      expanded: isExpanded('nav:employees'),
+                      onToggle: () => toggleExpanded('nav:employees'),
+                      contextMenu: {
+                        type: 'employees' as const,
+                        onAddEmployee: openAddEmployee,
+                      },
+                      items: employees.map(employee => ({
+                        id: `nav:employees:${employee.config.id}`,
+                        title: employee.config.name,
+                        icon: UserRound,
+                        variant: (isEmployeesNavigation(navState) && navState.details?.employeeSlug === employee.config.slug) ? "default" as const : "ghost" as const,
+                        onClick: () => navigate(routes.view.employees(employee.config.slug)),
+                      })),
+                    },
+                    {
                       id: "nav:automations",
                       title: t("sidebar.automations"),
                       label: String(automations.length),
@@ -2794,8 +2945,8 @@ function AppShellContent({
                       <DropdownMenuTrigger asChild>
                         <HeaderIconButton
                           icon={<ListFilter className="h-4 w-4" />}
-                          className={(listFilter.size > 0 || labelFilter.size > 0 || projectFilter.size > 0) ? "bg-accent/5 text-accent rounded-[8px] shadow-tinted" : "rounded-[8px]"}
-                          style={(listFilter.size > 0 || labelFilter.size > 0 || projectFilter.size > 0) ? { '--shadow-color': 'var(--accent-rgb)' } as React.CSSProperties : undefined}
+                          className={(listFilter.size > 0 || labelFilter.size > 0 || projectFilter.size > 0 || employeeFilter.size > 0) ? "bg-accent/5 text-accent rounded-[8px] shadow-tinted" : "rounded-[8px]"}
+                          style={(listFilter.size > 0 || labelFilter.size > 0 || projectFilter.size > 0 || employeeFilter.size > 0) ? { '--shadow-color': 'var(--accent-rgb)' } as React.CSSProperties : undefined}
                         />
                       </DropdownMenuTrigger>
                       <StyledDropdownMenuContent
@@ -2822,13 +2973,14 @@ function AppShellContent({
                         {/* Header with title and clear button (only clears user-added filters, never pinned) */}
                         <div className="flex items-center justify-between px-2 py-1.5">
                           <span className="text-xs font-medium text-muted-foreground">{t("sidebar.filterChats")}</span>
-                          {(listFilter.size > 0 || labelFilter.size > 0 || projectFilter.size > 0) && (
+                          {(listFilter.size > 0 || labelFilter.size > 0 || projectFilter.size > 0 || employeeFilter.size > 0) && (
                             <button
                               onClick={(e) => {
                                 e.preventDefault()
                                 setListFilter(new Map())
                                 setLabelFilter(new Map())
                                 setProjectFilter(new Map())
+                                setEmployeeFilter(new Map())
                               }}
                               className="text-xs text-muted-foreground hover:text-foreground"
                             >
@@ -2915,7 +3067,7 @@ function AppShellContent({
                             {/* === HIERARCHICAL MODE (default) === */}
 
                             {/* Active filter chips: pinned (non-removable) + user-added (removable) */}
-                            {(pinnedFilters.pinnedFlagged || pinnedFilters.pinnedStatusId || pinnedFilters.pinnedLabelId || listFilter.size > 0 || labelFilter.size > 0 || projectFilter.size > 0) && (
+                            {(pinnedFilters.pinnedFlagged || pinnedFilters.pinnedStatusId || pinnedFilters.pinnedLabelId || listFilter.size > 0 || labelFilter.size > 0 || projectFilter.size > 0 || employeeFilter.size > 0) && (
                               <>
                                 {/* Pinned: flagged */}
                                 {pinnedFilters.pinnedFlagged && (
@@ -3047,6 +3199,37 @@ function AppShellContent({
                                           onRemove={() => setProjectFilter(prev => {
                                             const next = new Map(prev)
                                             next.delete(projectId)
+                                            return next
+                                          })}
+                                        />
+                                      </StyledDropdownMenuSubContent>
+                                    </DropdownMenuSub>
+                                  )
+                                })}
+                                {/* User-added: selected employees with mode pill (include/exclude) */}
+                                {Array.from(employeeFilter).map(([employeeId, mode]) => {
+                                  const employee = employeeMenuOptions.find(e => e.id === employeeId)
+                                  if (!employee) return null
+                                  return (
+                                    <DropdownMenuSub key={`sel-employee-${employeeId}`}>
+                                      <StyledDropdownMenuSubTrigger onClick={(e) => { e.preventDefault(); setEmployeeFilter(prev => { const next = new Map(prev); next.delete(employeeId); return next }) }}>
+                                        <FilterMenuRow
+                                          icon={<UserRound className="h-3.5 w-3.5" />}
+                                          label={employee.name}
+                                          accessory={<FilterModeBadge mode={mode} />}
+                                        />
+                                      </StyledDropdownMenuSubTrigger>
+                                      <StyledDropdownMenuSubContent minWidth="min-w-[140px]">
+                                        <FilterModeSubMenuItems
+                                          mode={mode}
+                                          onChangeMode={(newMode) => setEmployeeFilter(prev => {
+                                            const next = new Map(prev)
+                                            next.set(employeeId, newMode)
+                                            return next
+                                          })}
+                                          onRemove={() => setEmployeeFilter(prev => {
+                                            const next = new Map(prev)
+                                            next.delete(employeeId)
                                             return next
                                           })}
                                         />
@@ -3209,6 +3392,70 @@ function AppShellContent({
                                           <FilterMenuRow
                                             icon={<FolderKanban className="h-3.5 w-3.5" />}
                                             label={project.name}
+                                          />
+                                        </StyledDropdownMenuItem>
+                                      </AltExcludeTooltip>
+                                    )
+                                  })}
+                                </StyledDropdownMenuSubContent>
+                              </DropdownMenuSub>
+                            )}
+
+                            {/* Employees submenu - flat list of workspace employees */}
+                            {employeeMenuOptions.length > 0 && (
+                              <DropdownMenuSub>
+                                <StyledDropdownMenuSubTrigger>
+                                  <UserRound className="h-3.5 w-3.5" />
+                                  <span className="flex-1">Employees</span>
+                                </StyledDropdownMenuSubTrigger>
+                                <StyledDropdownMenuSubContent minWidth="min-w-[180px]">
+                                  {employeeMenuOptions.map(employee => {
+                                    const currentMode = employeeFilter.get(employee.id)
+                                    const isActive = !!currentMode
+                                    if (isActive) {
+                                      return (
+                                        <DropdownMenuSub key={employee.id}>
+                                          <StyledDropdownMenuSubTrigger onClick={(e) => { e.preventDefault(); setEmployeeFilter(prev => { const next = new Map(prev); next.delete(employee.id); return next }) }}>
+                                            <FilterMenuRow
+                                              icon={<UserRound className="h-3.5 w-3.5" />}
+                                              label={employee.name}
+                                              accessory={<FilterModeBadge mode={currentMode} />}
+                                            />
+                                          </StyledDropdownMenuSubTrigger>
+                                          <StyledDropdownMenuSubContent minWidth="min-w-[140px]">
+                                            <FilterModeSubMenuItems
+                                              mode={currentMode}
+                                              onChangeMode={(newMode) => setEmployeeFilter(prev => {
+                                                const next = new Map(prev)
+                                                next.set(employee.id, newMode)
+                                                return next
+                                              })}
+                                              onRemove={() => setEmployeeFilter(prev => {
+                                                const next = new Map(prev)
+                                                next.delete(employee.id)
+                                                return next
+                                              })}
+                                            />
+                                          </StyledDropdownMenuSubContent>
+                                        </DropdownMenuSub>
+                                      )
+                                    }
+                                    return (
+                                      <AltExcludeTooltip key={employee.id} show={filterAltHeld}>
+                                        <StyledDropdownMenuItem
+                                          onClick={(e) => {
+                                            e.preventDefault()
+                                            setEmployeeFilter(prev => {
+                                              const next = new Map(prev)
+                                              if (next.has(employee.id)) next.delete(employee.id)
+                                              else next.set(employee.id, e.altKey ? 'exclude' : 'include')
+                                              return next
+                                            })
+                                          }}
+                                        >
+                                          <FilterMenuRow
+                                            icon={<UserRound className="h-3.5 w-3.5" />}
+                                            label={employee.name}
                                           />
                                         </StyledDropdownMenuItem>
                                       </AltExcludeTooltip>
@@ -3506,6 +3753,14 @@ function AppShellContent({
                       onClick={openAddProject}
                     />
                   )}
+                  {/* Add Employee button (only for employees mode) */}
+                  {isEmployeesNavigation(navState) && activeWorkspace && (
+                    <HeaderIconButton
+                      icon={<Plus className="h-4 w-4" />}
+                      tooltip={t('employeesList.addEmployee', '添加员工')}
+                      onClick={openAddEmployee}
+                    />
+                  )}
                 </>
               }
             />
@@ -3542,6 +3797,17 @@ function AppShellContent({
                 onAddProject={openAddProject}
                 onJumpToSessions={handleJumpToProjectSessions}
                 selectedProjectSlug={isProjectsNavigation(navState) ? navState.details?.projectSlug ?? null : null}
+              />
+            )}
+            {isEmployeesNavigation(navState) && activeWorkspaceId && (
+              /* Employees List */
+              <EmployeesListPanel
+                employees={employees}
+                workspaceId={activeWorkspaceId}
+                onEmployeeClick={(slug) => navigate(routes.view.employees(slug))}
+                onAddEmployee={openAddEmployee}
+                onJumpToSessions={handleJumpToEmployeeSessions}
+                selectedEmployeeSlug={isEmployeesNavigation(navState) ? navState.details?.employeeSlug ?? null : null}
               />
             )}
             {isAutomationsNavigation(navState) && (
@@ -3613,6 +3879,8 @@ function AppShellContent({
                   onLabelsChange={handleSessionLabelsChange}
                   projects={projectMenuOptions}
                   onSetProjectId={handleSessionProjectChange}
+                  employees={employeeMenuOptions}
+                  onSetEmployeeId={handleSessionEmployeeChange}
                   groupingMode={chatGroupingMode}
                   workspaceId={activeWorkspaceId ?? undefined}
                   statusFilter={listFilter}
@@ -3931,6 +4199,13 @@ function AppShellContent({
         open={createProjectDialogOpen}
         onCancel={() => setCreateProjectDialogOpen(false)}
         onSubmit={handleCreateProjectSubmit}
+      />
+
+      {/* Create Employee dialog — creates employees/{slug}/EMPLOYEE.md + MEMORY.md */}
+      <CreateEmployeeDialog
+        open={createEmployeeDialogOpen}
+        onCancel={() => setCreateEmployeeDialogOpen(false)}
+        onSubmit={handleCreateEmployeeSubmit}
       />
 
       {/* Messaging dialogs (pairing-code + WA connect) — driven by messagingDialogAtom.

@@ -39,6 +39,8 @@ export interface SidebarContextMenuConfig {
   onAddAutomation?: () => void
   /** Handler for "Add Project" action - for projects type */
   onAddProject?: () => void
+  /** Handler for "Add Employee" action - for employees type */
+  onAddEmployee?: () => void
   /** Source type filter for "Learn More" link - determines which docs page to open */
   sourceType?: 'api' | 'mcp' | 'local'
   /** Handler for "Edit Views" action - for views type */
@@ -247,6 +249,7 @@ export function LeftSidebar({ links, isCollapsed, getItemProps, focusedItemId, i
                         onAddSkill={link.contextMenu.onAddSkill}
                         onAddAutomation={link.contextMenu.onAddAutomation}
                         onAddProject={link.contextMenu.onAddProject}
+                        onAddEmployee={link.contextMenu.onAddEmployee}
                         sourceType={link.contextMenu.sourceType}
                         onConfigureViews={link.contextMenu.onConfigureViews}
                         viewId={link.contextMenu.viewId}
@@ -406,6 +409,7 @@ function SortableStatusList({ items, onReorder, getItemProps, focusedItemId, tra
                         onAddSource={item.contextMenu.onAddSource}
                         onAddSkill={item.contextMenu.onAddSkill}
                         onAddAutomation={item.contextMenu.onAddAutomation}
+                        onAddEmployee={item.contextMenu.onAddEmployee}
                         sourceType={item.contextMenu.sourceType}
                         onConfigureViews={item.contextMenu.onConfigureViews}
                         viewId={item.contextMenu.viewId}
