@@ -4492,7 +4492,50 @@ export class SessionManager implements ISessionManager {
           // target starts processing immediately. sendMessage throws for an
           // unknown session — that rejection propagates to the handler's catch.
           const targetBusy = this.sessions.get(sessionId)?.isProcessing === true
-          await this.sendMessage(sessionId, message, fileAttachments)
+          await new Promise<void>((resolve, reject) => {
+            let accepted = false
+            let settled = false
+
+            const resolveAccepted = () => {
+              accepted = true
+              if (!settled) {
+                settled = true
+                resolve()
+              }
+            }
+
+            try {
+              const sendPromise = this.sendMessage(
+                sessionId,
+                message,
+                fileAttachments,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                resolveAccepted,
+              )
+
+              sendPromise
+                .then(resolveAccepted)
+                .catch((error) => {
+                  if (accepted) {
+                    const msg = error instanceof Error ? error.message : String(error)
+                    sessionLog.warn(`send_agent_message: target session ${sessionId} failed after accepting message: ${msg}`)
+                    return
+                  }
+                  if (!settled) {
+                    settled = true
+                    reject(error)
+                  }
+                })
+            } catch (error) {
+              if (!settled) {
+                settled = true
+                reject(error)
+              }
+            }
+          })
           return {
             delivery: targetBusy ? ('queued' as const) : ('delivered' as const),
             targetBusy,
