@@ -44,6 +44,20 @@ describe('parseError network error handling', () => {
   })
 })
 
+describe('parseError service availability handling', () => {
+  it('maps Codex overloaded plain errors to service_unavailable', () => {
+    const parsed = parseError(new Error('Codex error: Our servers are currently overloaded. Please try again later.'))
+
+    expect(parsed.code).toBe('service_unavailable')
+  })
+
+  it('maps Codex overloaded JSON errors to service_unavailable', () => {
+    const parsed = parseError(new Error('Codex error: {"type":"error","error":{"type":"service_unavailable_error","code":"server_is_overloaded","message":"Our servers are currently overloaded. Please try again later.","param":null},"sequence_number":2}'))
+
+    expect(parsed.code).toBe('service_unavailable')
+  })
+})
+
 describe('parseError tool-support classification', () => {
   // Regression for the misclassification in the screenshot: an Anthropic
   // cache_control TTL ordering error mentioning `tools` in its hint string

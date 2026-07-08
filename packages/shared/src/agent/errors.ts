@@ -452,7 +452,15 @@ export function parseError(
     }
   } else if (lowerMessage.includes('429') || lowerMessage.includes('rate limit') || lowerMessage.includes('too many requests')) {
     code = 'rate_limited';
-  } else if (lowerMessage.includes('500') || lowerMessage.includes('502') || lowerMessage.includes('503') || lowerMessage.includes('504') || lowerMessage.includes('internal server error') || lowerMessage.includes('service unavailable')) {
+  } else if (
+    lowerMessage.includes('service_unavailable_error') ||
+    lowerMessage.includes('server_is_overloaded') ||
+    lowerMessage.includes('service unavailable') ||
+    lowerMessage.includes('currently overloaded') ||
+    lowerMessage.includes('overloaded')
+  ) {
+    code = 'service_unavailable';
+  } else if (lowerMessage.includes('500') || lowerMessage.includes('502') || lowerMessage.includes('503') || lowerMessage.includes('504') || lowerMessage.includes('internal server error')) {
     code = 'service_error';
   } else if (isLikelyNetworkErrorText(lowerMessage)) {
     code = 'network_error';
