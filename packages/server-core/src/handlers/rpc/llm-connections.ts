@@ -36,6 +36,11 @@ export const HANDLED_CHANNELS = [
   RPC_CHANNELS.chatgpt.CANCEL_OAUTH,
   RPC_CHANNELS.chatgpt.GET_AUTH_STATUS,
   RPC_CHANNELS.chatgpt.LOGOUT,
+  RPC_CHANNELS.xai.START_OAUTH,
+  RPC_CHANNELS.xai.COMPLETE_OAUTH,
+  RPC_CHANNELS.xai.CANCEL_OAUTH,
+  RPC_CHANNELS.xai.GET_AUTH_STATUS,
+  RPC_CHANNELS.xai.LOGOUT,
   RPC_CHANNELS.copilot.START_OAUTH,
   RPC_CHANNELS.copilot.CANCEL_OAUTH,
   RPC_CHANNELS.copilot.GET_AUTH_STATUS,
@@ -768,6 +773,153 @@ export function registerLlmConnectionsHandlers(server: RpcServer, deps: HandlerD
       return { success: true }
     } catch (error) {
       deps.platform.logger?.error('Failed to clear ChatGPT credentials:', error)
+      return { success: false }
+    }
+  })
+
+  // ============================================================
+  // xAI OAuth (Grok subscription via Pi xai-auth provider)
+  // Server-owned: prepare + exchange happen here, browser + callback on client.
+  // ============================================================
+
+  interface PendingXaiFlow {
+    flowId: string
+    state: string
+    codeVerifier: string
+    redirectUri: string
+    tokenEndpoint: string
+    connectionSlug: string
+    ownerClientId: string
+    createdAt: number
+  }
+  const pendingXaiFlows = new Map<string, PendingXaiFlow>()
+  const XAI_FLOW_TTL_MS = 5 * 60 * 1000
+
+  function cleanupExpiredXaiFlows() {
+    const now = Date.now()
+    for (const [state, flow] of pendingXaiFlows) {
+      if (now - flow.createdAt > XAI_FLOW_TTL_MS) {
+        pendingXaiFlows.delete(state)
+      }
+    }
+  }
+
+  server.handle(RPC_CHANNELS.xai.START_OAUTH, async (ctx, args: {
+    connectionSlug: string
+    redirectUri: string
+  }): Promise<{
+    authUrl: string
+    state: string
+    flowId: string
+  }> => {
+    cleanupExpiredXaiFlows()
+    const { prepareXaiOAuth } = await import('@craft-agent/shared/auth')
+
+    const prepared = await prepareXaiOAuth(args.redirectUri)
+    const flowId = randomUUID()
+
+    pendingXaiFlows.set(prepared.state, {
+      flowId,
+      state: prepared.state,
+      codeVerifier: prepared.codeVerifier,
+      redirectUri: prepared.redirectUri,
+      tokenEndpoint: prepared.tokenEndpoint,
+      connectionSlug: args.connectionSlug,
+      ownerClientId: ctx.clientId,
+      createdAt: Date.now(),
+    })
+
+    deps.platform.logger?.info(`[xAI OAuth] Flow started for ${args.connectionSlug} (flow=${flowId})`)
+    return { authUrl: prepared.authUrl, state: prepared.state, flowId }
+  })
+
+  server.handle(RPC_CHANNELS.xai.COMPLETE_OAUTH, async (ctx, args: {
+    flowId: string
+    code: string
+    state: string
+  }): Promise<{ success: boolean; error?: string }> => {
+    const { flowId, code, state } = args
+    const flow = pendingXaiFlows.get(state)
+
+    if (!flow) throw new Error('Unknown or expired xAI OAuth flow')
+    if (flow.flowId !== flowId) throw new Error('Flow ID mismatch')
+    if (flow.ownerClientId !== ctx.clientId) throw new Error('OAuth flow owned by different client')
+    if (Date.now() - flow.createdAt > XAI_FLOW_TTL_MS) {
+      pendingXaiFlows.delete(state)
+      throw new Error('xAI OAuth flow expired')
+    }
+
+    try {
+      const { exchangeXaiTokens } = await import('@craft-agent/shared/auth')
+      const credentialManager = getCredentialManager()
+      const tokens = await exchangeXaiTokens({
+        code,
+        codeVerifier: flow.codeVerifier,
+        redirectUri: flow.redirectUri,
+        tokenEndpoint: flow.tokenEndpoint,
+      })
+
+      await credentialManager.setLlmOAuth(flow.connectionSlug, {
+        accessToken: tokens.accessToken,
+        refreshToken: tokens.refreshToken,
+        expiresAt: tokens.expiresAt,
+        idToken: tokens.idToken,
+      })
+
+      pendingXaiFlows.delete(state)
+      deps.platform.logger?.info(`[xAI OAuth] Flow complete for ${flow.connectionSlug}`)
+      return { success: true }
+    } catch (error) {
+      pendingXaiFlows.delete(state)
+      deps.platform.logger?.error('[xAI OAuth] Token exchange failed:', error)
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Token exchange failed',
+      }
+    }
+  })
+
+  server.handle(RPC_CHANNELS.xai.CANCEL_OAUTH, async (ctx, args?: { state?: string }): Promise<{ success: boolean }> => {
+    if (args?.state) {
+      const flow = pendingXaiFlows.get(args.state)
+      if (flow && flow.ownerClientId === ctx.clientId) {
+        pendingXaiFlows.delete(args.state)
+        deps.platform.logger?.info(`[xAI OAuth] Flow cancelled for ${flow.connectionSlug}`)
+      }
+    }
+    return { success: true }
+  })
+
+  server.handle(RPC_CHANNELS.xai.GET_AUTH_STATUS, async (_ctx, connectionSlug: string): Promise<{
+    authenticated: boolean
+    expiresAt?: number
+    hasRefreshToken?: boolean
+  }> => {
+    try {
+      const credentialManager = getCredentialManager()
+      const creds = await credentialManager.getLlmOAuth(connectionSlug)
+      if (!creds) return { authenticated: false }
+
+      const isExpired = creds.expiresAt && Date.now() > creds.expiresAt - 5 * 60 * 1000
+      return {
+        authenticated: !isExpired || !!creds.refreshToken,
+        expiresAt: creds.expiresAt,
+        hasRefreshToken: !!creds.refreshToken,
+      }
+    } catch (error) {
+      deps.platform.logger?.error('Failed to get xAI auth status:', error)
+      return { authenticated: false }
+    }
+  })
+
+  server.handle(RPC_CHANNELS.xai.LOGOUT, async (_ctx, connectionSlug: string): Promise<{ success: boolean }> => {
+    try {
+      const credentialManager = getCredentialManager()
+      await credentialManager.deleteLlmCredentials(connectionSlug)
+      deps.platform.logger?.info('xAI credentials cleared')
+      return { success: true }
+    } catch (error) {
+      deps.platform.logger?.error('Failed to clear xAI credentials:', error)
       return { success: false }
     }
   })

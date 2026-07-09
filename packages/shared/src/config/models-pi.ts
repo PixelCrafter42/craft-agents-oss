@@ -39,6 +39,79 @@ function piModelToDefinition(m: Model<Api>): ModelDefinition {
   };
 }
 
+const XAI_AUTH_MODELS: ModelDefinition[] = [
+  {
+    id: 'pi/grok-4.5',
+    name: 'Grok 4.5',
+    shortName: '4.5',
+    description: 'xAI Grok model via subscription OAuth',
+    provider: 'pi',
+    contextWindow: 500_000,
+    supportsThinking: true,
+    supportsImages: true,
+  },
+  {
+    id: 'pi/grok-4.3',
+    name: 'Grok 4.3',
+    shortName: '4.3',
+    description: 'xAI Grok model via subscription OAuth',
+    provider: 'pi',
+    contextWindow: 1_000_000,
+    supportsThinking: true,
+    supportsImages: true,
+  },
+  {
+    id: 'pi/grok-build',
+    name: 'Grok Build',
+    shortName: 'Build',
+    description: 'xAI Grok Build model via subscription OAuth',
+    provider: 'pi',
+    contextWindow: 512_000,
+    supportsThinking: true,
+    supportsImages: true,
+  },
+  {
+    id: 'pi/grok-composer-2.5-fast',
+    name: 'Composer 2.5 Fast',
+    shortName: 'Fast',
+    description: 'xAI Composer model via subscription OAuth',
+    provider: 'pi',
+    contextWindow: 200_000,
+    supportsThinking: false,
+    supportsImages: true,
+  },
+  {
+    id: 'pi/grok-4.20-0309-reasoning',
+    name: 'Grok 4.20 Reasoning',
+    shortName: 'Reasoning',
+    description: 'xAI Grok model via subscription OAuth',
+    provider: 'pi',
+    contextWindow: 2_000_000,
+    supportsThinking: true,
+    supportsImages: true,
+  },
+  {
+    id: 'pi/grok-4.20-0309-non-reasoning',
+    name: 'Grok 4.20 Non-Reasoning',
+    shortName: 'Non-Reasoning',
+    description: 'xAI Grok model via subscription OAuth',
+    provider: 'pi',
+    contextWindow: 2_000_000,
+    supportsThinking: false,
+    supportsImages: true,
+  },
+  {
+    id: 'pi/grok-4.20-multi-agent-0309',
+    name: 'Grok 4.20 Multi-Agent',
+    shortName: 'Multi-Agent',
+    description: 'xAI Grok model via subscription OAuth',
+    provider: 'pi',
+    contextWindow: 2_000_000,
+    supportsThinking: true,
+    supportsImages: true,
+  },
+];
+
 /**
  * Models to EXCLUDE from the Pi model list.
  * Temporary workaround for models that are broken in the current Pi SDK version.
@@ -98,6 +171,10 @@ function isBareBedrockClaudeModel(modelId: string): boolean {
  * Get Pi models for a specific auth provider directly from the Pi SDK.
  */
 export function getPiModelsForAuthProvider(piAuthProvider: string): ModelDefinition[] {
+  if (piAuthProvider === 'xai-auth') {
+    return XAI_AUTH_MODELS.map(model => ({ ...model }));
+  }
+
   try {
     const models = getModels(piAuthProvider as KnownProvider);
     if (models.length > 0) {

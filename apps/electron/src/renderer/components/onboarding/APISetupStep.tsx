@@ -1,7 +1,7 @@
 import { useState } from "react"
 import { useTranslation } from "react-i18next"
 import { cn } from "@/lib/utils"
-import { Check, CreditCard, Key, Cpu } from "lucide-react"
+import { Check, CreditCard, Key, Cpu, Sparkles } from "lucide-react"
 import { StepFormLayout, BackButton, ContinueButton } from "./primitives"
 import type { LlmAuthType, LlmProviderType } from "@craft-agent/shared/config/llm-connections"
 
@@ -22,6 +22,7 @@ const BetaBadge = ({ label }: { label: string }) => (
  * - 'anthropic_api_key' → anthropic + api_key
  * - 'pi_chatgpt_oauth' → pi + oauth
  * - 'pi_copilot_oauth' → pi + oauth
+ * - 'pi_xai_oauth' → pi + oauth
  * - 'pi_api_key' → pi + api_key
  */
 export type ApiSetupMethod =
@@ -29,6 +30,7 @@ export type ApiSetupMethod =
   | 'claude_oauth'
   | 'pi_chatgpt_oauth'
   | 'pi_copilot_oauth'
+  | 'pi_xai_oauth'
   | 'pi_api_key'
 
 /**
@@ -46,6 +48,8 @@ export function apiSetupMethodToConnectionTypes(method: ApiSetupMethod): {
     case 'pi_chatgpt_oauth':
       return { providerType: 'pi', authType: 'oauth' };
     case 'pi_copilot_oauth':
+      return { providerType: 'pi', authType: 'oauth' };
+    case 'pi_xai_oauth':
       return { providerType: 'pi', authType: 'oauth' };
     case 'pi_api_key':
       return { providerType: 'pi', authType: 'api_key' };
@@ -65,6 +69,7 @@ const API_SETUP_ICONS: Record<ApiSetupMethod, React.ReactNode> = {
   anthropic_api_key: <Key className="size-4" />,
   pi_chatgpt_oauth: <Cpu className="size-4" />,
   pi_copilot_oauth: <Cpu className="size-4" />,
+  pi_xai_oauth: <Sparkles className="size-4" />,
   pi_api_key: <Key className="size-4" />,
 }
 
@@ -225,6 +230,13 @@ export function APISetupStep({
       name: 'GitHub Copilot',
       description: t("onboarding.apiSetup.githubCopilotDesc"),
       icon: API_SETUP_ICONS.pi_copilot_oauth,
+      providerType: 'pi',
+    },
+    {
+      id: 'pi_xai_oauth',
+      name: 'xAI / Grok',
+      description: 'Use your SuperGrok or X Premium subscription.',
+      icon: API_SETUP_ICONS.pi_xai_oauth,
       providerType: 'pi',
     },
     {

@@ -62,6 +62,7 @@ export function CredentialsStep({
   const isClaudeOAuth = apiSetupMethod === 'claude_oauth'
   const isChatGptOAuth = apiSetupMethod === 'pi_chatgpt_oauth'
   const isCopilotOAuth = apiSetupMethod === 'pi_copilot_oauth'
+  const isXaiOAuth = apiSetupMethod === 'pi_xai_oauth'
   const isAnthropicApiKey = apiSetupMethod === 'anthropic_api_key'
   const isPiApiKey = apiSetupMethod === 'pi_api_key'
   const isApiKey = isAnthropicApiKey || isPiApiKey
@@ -123,6 +124,46 @@ export function CredentialsStep({
           {status === 'success' && (
             <div className="rounded-lg bg-success/10 text-success text-sm p-3">
               {t("onboarding.credentials.chatGPTConnected")}
+            </div>
+          )}
+        </div>
+      </StepFormLayout>
+    )
+  }
+
+  // --- xAI OAuth flow (native browser OAuth) ---
+  if (isXaiOAuth) {
+    return (
+      <StepFormLayout
+        title="Connect xAI / Grok"
+        description="Sign in with a SuperGrok or X Premium subscription."
+        actions={
+          <>
+            <BackButton onClick={onBack} disabled={status === 'validating'} />
+            <ContinueButton
+              onClick={() => onStartOAuth?.()}
+              className="gap-2"
+              loading={status === 'validating'}
+              loadingText={t("common.connecting")}
+            >
+              <ExternalLink className="size-4" />
+              Sign in to xAI
+            </ContinueButton>
+          </>
+        }
+      >
+        <div className="space-y-4">
+          <div className="rounded-xl bg-foreground-2 p-4 text-sm text-muted-foreground">
+            <p>The browser will open xAI authorization and return to Craft Agents automatically.</p>
+          </div>
+          {status === 'error' && errorMessage && (
+            <div className="rounded-lg bg-destructive/10 text-destructive text-sm p-3">
+              {errorMessage}
+            </div>
+          )}
+          {status === 'success' && (
+            <div className="rounded-lg bg-success/10 text-success text-sm p-3">
+              xAI connected.
             </div>
           )}
         </div>

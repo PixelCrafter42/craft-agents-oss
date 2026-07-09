@@ -443,6 +443,12 @@ export interface ElectronAPI {
   copilotLogout(connectionSlug: string): Promise<{ success: boolean }>
   onCopilotDeviceCode(callback: (data: { userCode: string; verificationUri: string }) => void): () => void
 
+  // xAI OAuth
+  startXaiOAuth(connectionSlug: string): Promise<{ success: boolean; error?: string }>
+  cancelXaiOAuth(): Promise<{ success: boolean }>
+  getXaiAuthStatus(connectionSlug: string): Promise<{ authenticated: boolean; expiresAt?: number; hasRefreshToken?: boolean }>
+  xaiLogout(connectionSlug: string): Promise<{ success: boolean }>
+
   /** Unified LLM connection setup */
   setupLlmConnection(setup: LlmConnectionSetup): Promise<{ success: boolean; error?: string }>
   /** Unified connection test — spawns a lightweight agent subprocess to validate credentials */

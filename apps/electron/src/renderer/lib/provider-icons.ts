@@ -142,6 +142,7 @@ function piAuthProviderToIcon(piAuthProvider: string): ProviderIconKey | null {
 const PI_AUTH_PROVIDER_DOMAINS: Record<string, string> = {
   groq: 'groq.com',
   xai: 'x.ai',
+  'xai-auth': 'x.ai',
   cerebras: 'cerebras.ai',
   deepseek: 'deepseek.com',
   zai: 'z.ai',

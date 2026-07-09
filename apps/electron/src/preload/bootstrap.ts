@@ -24,6 +24,7 @@ import { buildClientApi } from '../transport/build-api'
 import { CHANNEL_MAP } from '../transport/channel-map'
 import { createCallbackServer } from '@craft-agent/shared/auth/callback-server'
 import { CHATGPT_OAUTH_CONFIG } from '@craft-agent/shared/auth/chatgpt-oauth-config'
+import { XAI_OAUTH_CONFIG } from '@craft-agent/shared/auth/xai-oauth-config'
 import {
   CLIENT_OPEN_EXTERNAL,
   CLIENT_OPEN_PATH,
@@ -414,6 +415,68 @@ client.onConnectionStateChanged((state) => {
     return {
       success: false,
       error: err instanceof Error ? err.message : 'ChatGPT OAuth flow failed',
+    }
+  } finally {
+    callbackServer?.close()
+  }
+}
+
+// ── performXaiOAuth ─────────────────────────────────────────────────────
+// callback server → xai:startOAuth → browser → callback → xai:completeOAuth.
+// xAI's public Grok OAuth flow expects a loopback callback; prefer the fixed
+// Grok CLI/OpenClaw port and fall back to an available 127.0.0.1 port.
+;(api as any).startXaiOAuth = async (
+  connectionSlug: string,
+): Promise<{ success: boolean; error?: string }> => {
+  let callbackServer: Awaited<ReturnType<typeof createCallbackServer>> | null = null
+  let flowId: string | undefined
+  let state: string | undefined
+
+  try {
+    try {
+      callbackServer = await createCallbackServer({
+        appType: 'electron',
+        host: XAI_OAUTH_CONFIG.CALLBACK_HOST,
+        port: XAI_OAUTH_CONFIG.CALLBACK_PORT,
+        callbackPaths: [XAI_OAUTH_CONFIG.CALLBACK_PATH],
+      })
+    } catch {
+      callbackServer = await createCallbackServer({
+        appType: 'electron',
+        host: XAI_OAUTH_CONFIG.CALLBACK_HOST,
+        callbackPaths: [XAI_OAUTH_CONFIG.CALLBACK_PATH],
+      })
+    }
+
+    const redirectUri = `${callbackServer.url}${XAI_OAUTH_CONFIG.CALLBACK_PATH}`
+    const startResult = await client.invoke('xai:startOAuth', { connectionSlug, redirectUri })
+    flowId = startResult.flowId
+    state = startResult.state
+
+    await shell.openExternal(startResult.authUrl)
+    const callback = await callbackServer.promise
+
+    if (callback.query.error) {
+      const error = callback.query.error_description || callback.query.error
+      await client.invoke('xai:cancelOAuth', { state })
+      return { success: false, error }
+    }
+
+    const code = callback.query.code
+    if (!code) {
+      await client.invoke('xai:cancelOAuth', { state })
+      return { success: false, error: 'No authorization code received' }
+    }
+
+    const result = await client.invoke('xai:completeOAuth', { flowId, code, state })
+    return { success: result.success, error: result.error }
+  } catch (err) {
+    if (state) {
+      client.invoke('xai:cancelOAuth', { state }).catch(() => {})
+    }
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : 'xAI OAuth flow failed',
     }
   } finally {
     callbackServer?.close()

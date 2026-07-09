@@ -217,6 +217,13 @@ export const RPC_CHANNELS = {
     LOGOUT: 'copilot:logout',
     DEVICE_CODE: 'copilot:deviceCode',
   },
+  xai: {
+    START_OAUTH: 'xai:startOAuth',
+    COMPLETE_OAUTH: 'xai:completeOAuth',
+    CANCEL_OAUTH: 'xai:cancelOAuth',
+    GET_AUTH_STATUS: 'xai:getAuthStatus',
+    LOGOUT: 'xai:logout',
+  },
   settings: {
     SETUP_LLM_CONNECTION: 'settings:setupLlmConnection',
     TEST_LLM_CONNECTION_SETUP: 'settings:testLlmConnectionSetup',

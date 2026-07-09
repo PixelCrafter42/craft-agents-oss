@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next"
 import { cn } from "@/lib/utils"
-import { Key, Monitor } from "lucide-react"
+import { Key, Monitor, Sparkles } from "lucide-react"
 import { CraftAgentsSymbol } from "@/components/icons/CraftAgentsSymbol"
 import { StepFormLayout } from "./primitives"
 
@@ -12,7 +12,7 @@ import copilotIcon from "@/assets/provider-icons/copilot.svg"
  * The high-level provider choice the user makes on first launch.
  * This maps to one or more ApiSetupMethods downstream.
  */
-export type ProviderChoice = 'claude' | 'chatgpt' | 'copilot' | 'api_key' | 'local'
+export type ProviderChoice = 'claude' | 'chatgpt' | 'copilot' | 'xai' | 'api_key' | 'local'
 
 interface ProviderOption {
   id: ProviderChoice
@@ -25,6 +25,7 @@ const PROVIDER_ICONS: Record<ProviderChoice, React.ReactNode> = {
   claude: <img src={claudeIcon} alt="" className="size-5 rounded-[3px]" />,
   chatgpt: <img src={openaiIcon} alt="" className="size-5 rounded-[3px]" />,
   copilot: <img src={copilotIcon} alt="" className="size-5 rounded-[3px]" />,
+  xai: <Sparkles className="size-5" />,
   api_key: <Key className="size-5" />,
   local: <Monitor className="size-5" />,
 }
@@ -63,6 +64,12 @@ export function ProviderSelectStep({ onSelect, onSkip }: ProviderSelectStepProps
       name: t("onboarding.providerSelect.githubCopilot"),
       description: t("onboarding.providerSelect.githubCopilotDesc"),
       icon: PROVIDER_ICONS.copilot,
+    },
+    {
+      id: 'xai',
+      name: 'xAI / Grok',
+      description: 'Use your SuperGrok or X Premium subscription.',
+      icon: PROVIDER_ICONS.xai,
     },
     {
       id: 'api_key',

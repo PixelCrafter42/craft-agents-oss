@@ -331,6 +331,13 @@ export const REMOTE_ELIGIBLE_CHANNELS = new Set<string>([
   RPC_CHANNELS.copilot.LOGOUT,
   RPC_CHANNELS.copilot.DEVICE_CODE,
 
+  // xAI — OAuth via capability passthrough
+  RPC_CHANNELS.xai.START_OAUTH,
+  RPC_CHANNELS.xai.COMPLETE_OAUTH,
+  RPC_CHANNELS.xai.CANCEL_OAUTH,
+  RPC_CHANNELS.xai.GET_AUTH_STATUS,
+  RPC_CHANNELS.xai.LOGOUT,
+
   // Claude OAuth — runs on workspace server so credentials and connection config
   // end up on the same server that will use them. Browser opening is client-side.
   // (ChatGPT OAuth stays LOCAL_ONLY — requires localhost callback server.)

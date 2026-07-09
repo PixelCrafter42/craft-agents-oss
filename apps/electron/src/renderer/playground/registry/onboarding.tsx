@@ -95,6 +95,7 @@ export const onboardingComponents: ComponentEntry[] = [
             { label: 'Anthropic API Key', value: 'anthropic_api_key' },
             { label: 'CAB ChatGPT OAuth', value: 'pi_chatgpt_oauth' },
             { label: 'CAB Copilot OAuth', value: 'pi_copilot_oauth' },
+            { label: 'CAB xAI OAuth', value: 'pi_xai_oauth' },
             { label: 'CAB API Key', value: 'pi_api_key' },
           ],
         },
@@ -121,6 +122,7 @@ export const onboardingComponents: ComponentEntry[] = [
       { name: 'CAB Segment', props: { selectedMethod: null, initialSegment: 'pi' } },
       { name: 'CAB - ChatGPT OAuth Selected', props: { selectedMethod: 'pi_chatgpt_oauth', initialSegment: 'pi' } },
       { name: 'CAB - Copilot OAuth Selected', props: { selectedMethod: 'pi_copilot_oauth', initialSegment: 'pi' } },
+      { name: 'CAB - xAI OAuth Selected', props: { selectedMethod: 'pi_xai_oauth', initialSegment: 'pi' } },
       { name: 'CAB - API Key Selected', props: { selectedMethod: 'pi_api_key', initialSegment: 'pi' } },
     ],
     mockData: () => ({

@@ -56,6 +56,7 @@ import { getCredentialManager } from '../credentials/manager.ts';
 
 // ChatGPT OAuth token refresh (used when Pi routes ChatGPT auth)
 import { refreshChatGptTokens } from '../auth/chatgpt-oauth.ts';
+import { refreshXaiTokens } from '../auth/xai-oauth.ts';
 
 // Session-scoped tool callbacks (for SubmitPlan, source auth, etc.)
 import {
@@ -519,11 +520,11 @@ export class PiAgent extends BaseAgent {
     // For Copilot OAuth: preemptively refresh the short-lived Copilot token
     // before fetching credentials, so getPiAuth() picks up a fresh token.
     // refreshAndPushTokens guards this.subprocess internally — safe to call pre-spawn.
-    if (this.config.authType === 'oauth' && runtime.piAuthProvider === 'github-copilot') {
+    if (this.config.authType === 'oauth' && (runtime.piAuthProvider === 'github-copilot' || runtime.piAuthProvider === 'xai-auth')) {
       const slug = this.config.connectionSlug || 'pi';
       const stored = await getCredentialManager().getLlmOAuth(slug);
       if (stored?.refreshToken && (!stored.expiresAt || stored.expiresAt < Date.now() + 5 * 60_000)) {
-        this.debug('Copilot token expired or expiring soon — refreshing before session start');
+        this.debug(`${runtime.piAuthProvider} token expired or expiring soon — refreshing before session start`);
         await this.refreshAndPushTokens();
       }
     }
@@ -691,10 +692,9 @@ export class PiAgent extends BaseAgent {
    * Returns a provider-aware credential object for the subprocess,
    * or null if no piAuthProvider is configured (falls back to legacy getApiKey).
    *
-   * OAuth tokens from Craft (Claude Max, ChatGPT Plus, Copilot) are passed as
-   * api_key type because they function as bearer tokens that the Pi SDK's provider
-   * modules use directly. The OAuth exchange happens on the Craft side; by the time
-   * it reaches Pi, it's just an access token.
+   * OAuth tokens from Craft are usually passed as bearer-token-like api_key
+   * credentials. Providers with provider-owned refresh/endpoint behavior
+   * (Copilot and xAI) receive the full OAuth credential shape.
    */
   private async getPiAuth(): Promise<{
     provider: string;
@@ -713,12 +713,10 @@ export class PiAgent extends BaseAgent {
       if (this.config.authType === 'oauth') {
         const oauth = await credentialManager.getLlmOAuth(slug);
         if (oauth?.accessToken) {
-          // Copilot: pass full OAuth credential so the Pi SDK can derive the
-          // correct API endpoint from the Copilot token's proxy-ep field.
-          // The refresh token is the GitHub access token used to obtain fresh
-          // Copilot tokens when they expire (~1 hour).
-          if (piAuthProvider === 'github-copilot' && oauth.refreshToken) {
-            this.debug(`Retrieved Copilot OAuth credential for Pi provider: ${piAuthProvider}`);
+          // Copilot and xAI: pass full OAuth credential so provider modules can
+          // refresh tokens and preserve provider-specific endpoint behavior.
+          if ((piAuthProvider === 'github-copilot' || piAuthProvider === 'xai-auth') && oauth.refreshToken) {
+            this.debug(`Retrieved full OAuth credential for Pi provider: ${piAuthProvider}`);
             return {
               provider: piAuthProvider,
               credential: {
@@ -815,7 +813,7 @@ export class PiAgent extends BaseAgent {
 
   /**
    * Refresh OAuth tokens and push updated credentials to the running subprocess.
-   * Handles both Copilot (Pi SDK) and ChatGPT Plus token refresh.
+   * Handles Copilot (Pi SDK), xAI, and ChatGPT Plus token refresh.
    */
   private async refreshAndPushTokens(): Promise<void> {
     if (this.config.authType !== 'oauth') return;
@@ -860,6 +858,14 @@ export class PiAgent extends BaseAgent {
             accessToken: newCreds.access,
             refreshToken: newCreds.refresh,
             expiresAt: newCreds.expires,
+          });
+        } else if (piAuthProvider === 'xai-auth') {
+          const newTokens = await refreshXaiTokens(stored.refreshToken);
+          await credentialManager.setLlmOAuth(slug, {
+            accessToken: newTokens.accessToken,
+            idToken: newTokens.idToken,
+            refreshToken: newTokens.refreshToken,
+            expiresAt: newTokens.expiresAt,
           });
         } else {
           // ChatGPT Plus: use existing refresh utility

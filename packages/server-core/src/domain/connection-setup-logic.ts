@@ -159,6 +159,12 @@ export const BUILT_IN_CONNECTION_TEMPLATES: Record<string, {
     authType: 'oauth',
     piAuthProvider: 'github-copilot',
   },
+  'xai-grok': {
+    name: 'xAI Grok',
+    providerType: 'pi',
+    authType: 'oauth',
+    piAuthProvider: 'xai-auth',
+  },
   'pi-api-key': {
     name: 'Craft Agents Backend (API Key)',
     providerType: 'pi',
@@ -182,6 +188,7 @@ const PI_AUTH_PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   groq: 'Groq',
   mistral: 'Mistral',
   xai: 'xAI',
+  'xai-auth': 'xAI',
   cerebras: 'Cerebras',
   zai: 'z.ai',
   huggingface: 'Hugging Face',

@@ -345,6 +345,7 @@ const PI_AUTH_PROVIDER_LABELS: Record<string, string> = {
   mistral: 'Mistral',
   deepseek: 'DeepSeek',
   xai: 'xAI',
+  'xai-auth': 'xAI Grok',
   cerebras: 'Cerebras',
   zai: 'z.ai',
   huggingface: 'Hugging Face',
@@ -987,7 +988,11 @@ export default function AiSettingsPage() {
 
     if (connection.authType === 'oauth') {
       const method = connection.providerType === 'pi'
-                   ? (connection.piAuthProvider === 'github-copilot' ? 'pi_copilot_oauth' : 'pi_chatgpt_oauth')
+                   ? (connection.piAuthProvider === 'github-copilot'
+                     ? 'pi_copilot_oauth'
+                     : connection.piAuthProvider === 'xai-auth'
+                       ? 'pi_xai_oauth'
+                       : 'pi_chatgpt_oauth')
                    : 'claude_oauth'
       apiSetupOnboarding.handleStartOAuth(method, connection.slug)
     }

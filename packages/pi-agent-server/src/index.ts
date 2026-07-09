@@ -23,6 +23,7 @@ import { homedir } from 'node:os';
 // Pi SDK
 import {
   createAgentSession,
+  createAgentSessionServices,
   SessionManager as PiSessionManager,
   AuthStorage as PiAuthStorage,
   ModelRegistry as PiModelRegistry,
@@ -75,10 +76,12 @@ import type { LLMQueryRequest, LLMQueryResult } from '../../shared/src/agent/llm
 import { PI_TOOL_NAME_MAP, THINKING_TO_PI } from '../../shared/src/agent/backend/pi/constants.ts';
 import { getDefaultSummarizationModel } from '../../shared/src/config/models.ts';
 import { createWebFetchTool } from './tools/web-fetch.ts';
+import { createXaiTools } from './tools/xai-tools.ts';
 import { resolveSearchProvider } from './tools/search/resolve-provider.ts';
 import { createSearchTool } from './tools/search/create-search-tool.ts';
 import { allowCraftMetadataProperties, stripCraftMetadata } from './craft-metadata-schema.ts';
 import { applySystemPromptOverride } from './system-prompt-override.ts';
+import xaiProviderExtension from './xai-provider-extension.ts';
 
 // ============================================================
 // Types — JSONL Protocol
@@ -516,13 +519,50 @@ function createAuthenticatedRegistry(): {
   return { authStorage, modelRegistry };
 }
 
+async function registerXaiProviderIfNeeded(
+  cwd: string,
+  authStorage: PiAuthStorage,
+  modelRegistry: PiModelRegistry,
+  agentDir?: string,
+): Promise<PiModelRegistry> {
+  if (initConfig?.piAuth?.provider !== 'xai-auth') {
+    return modelRegistry;
+  }
+
+  const services = await createAgentSessionServices({
+    cwd,
+    ...(agentDir ? { agentDir } : {}),
+    authStorage,
+    modelRegistry,
+    resourceLoaderOptions: {
+      extensionFactories: [xaiProviderExtension],
+    },
+  });
+
+  for (const diagnostic of services.diagnostics) {
+    debugLog(`[xAI extension] ${diagnostic.type}: ${diagnostic.message}`);
+  }
+
+  return services.modelRegistry;
+}
+
 async function ensureSession(): Promise<AgentSession> {
   if (piSession) return piSession;
   if (!initConfig) throw new Error('Cannot create session: init not received');
 
   const cwd = resolvedCwd();
 
-  const { authStorage, modelRegistry } = createAuthenticatedRegistry();
+  const { authStorage, modelRegistry: initialModelRegistry } = createAuthenticatedRegistry();
+  let modelRegistry = initialModelRegistry;
+
+  // Extension isolation: set agentDir to a temp directory under session path
+  // to prevent loading global Pi extensions from ~/.pi/agent.
+  let resolvedAgentDir = initConfig.agentDir;
+  if (initConfig.sessionPath) {
+    resolvedAgentDir = initConfig.agentDir || join(initConfig.sessionPath, '.pi-agent');
+    mkdirSync(resolvedAgentDir, { recursive: true });
+  }
+  modelRegistry = await registerXaiProviderIfNeeded(cwd, authStorage, modelRegistry, resolvedAgentDir);
   // Store at module scope for set_model handler
   piModelRegistry = modelRegistry;
 
@@ -548,6 +588,24 @@ async function ensureSession(): Promise<AgentSession> {
     initConfig ? getSessionPath(initConfig.workspaceRootPath, initConfig.sessionId) : null
   );
   const webTools = [searchTool, webFetchTool];
+  const xaiTools = initConfig.piAuth?.provider === 'xai-auth'
+    ? createXaiTools({
+        cwd,
+        getSessionPath: () => initConfig ? getSessionPath(initConfig.workspaceRootPath, initConfig.sessionId) : null,
+        resolveApiKey: async () => {
+          try {
+            const refreshed = await moduleAuthStorage?.getApiKey('xai-auth');
+            if (refreshed) return refreshed;
+          } catch (error) {
+            debugLog(`Failed to resolve xAI auth token from Pi auth storage: ${error instanceof Error ? error.message : String(error)}`);
+          }
+          const credential = initConfig?.piAuth?.credential;
+          if (credential?.type === 'oauth') return credential.access;
+          if (credential?.type === 'api_key') return credential.key;
+          return null;
+        },
+      })
+    : [];
 
   // Pi SDK 0.70.0 registration contract:
   //   - `customTools` accepts ToolDefinition[] — our hook-wrapped objects go here
@@ -568,9 +626,9 @@ async function ensureSession(): Promise<AgentSession> {
     createLsToolDefinition(cwd),
   ];
   const proxyTools = buildProxyTools();
-  const wrappedAll = wrapToolsWithHooks([...builtinDefs, ...webTools, ...proxyTools]);
+  const wrappedAll = wrapToolsWithHooks([...builtinDefs, ...webTools, ...xaiTools, ...proxyTools]);
   const toolAllowlist = wrappedAll.map(t => t.name);
-  debugLog(`Session tools: ${builtinDefs.length} builtin + ${webTools.length} web + ${proxyTools.length} proxy = ${wrappedAll.length} total`);
+  debugLog(`Session tools: ${builtinDefs.length} builtin + ${webTools.length} web + ${xaiTools.length} xAI + ${proxyTools.length} proxy = ${wrappedAll.length} total`);
 
   // Build session options
   const sessionOptions: CreateAgentSessionOptions = {
@@ -584,12 +642,8 @@ async function ensureSession(): Promise<AgentSession> {
     sessionOptions.agentDir = initConfig.agentDir;
   }
 
-  // Extension isolation: set agentDir to a temp directory under session path
-  // to prevent loading global Pi extensions from ~/.pi/agent
   if (initConfig.sessionPath) {
-    const agentDir = initConfig.agentDir || join(initConfig.sessionPath, '.pi-agent');
-    mkdirSync(agentDir, { recursive: true });
-    sessionOptions.agentDir = agentDir;
+    sessionOptions.agentDir = resolvedAgentDir;
 
     // Session resume: use a per-Craft-session directory so the Pi SDK can
     // persist and resume its own session across subprocess restarts.
@@ -899,8 +953,16 @@ async function queryLlm(request: LLMQueryRequest): Promise<LLMQueryResult> {
   // the same provider family.
   let model = request.model ?? initConfig.miniModel ?? getDefaultSummarizationModel();
 
+  const ephemeralAgentDir = initConfig.agentDir
+    || (initConfig.sessionPath ? join(initConfig.sessionPath, '.pi-agent') : getPiAgentDir());
+  if (initConfig.sessionPath) {
+    mkdirSync(ephemeralAgentDir, { recursive: true });
+  }
+
   // Create authenticated registry upfront — used by both the provider guard and the ephemeral session.
-  const { authStorage, modelRegistry } = createAuthenticatedRegistry();
+  const { authStorage, modelRegistry: initialModelRegistry } = createAuthenticatedRegistry();
+  let modelRegistry = initialModelRegistry;
+  modelRegistry = await registerXaiProviderIfNeeded(resolvedCwd(), authStorage, modelRegistry, ephemeralAgentDir);
 
   const piAuthProvider = initConfig.piAuth?.provider;
 
@@ -939,12 +1001,6 @@ async function queryLlm(request: LLMQueryRequest): Promise<LLMQueryResult> {
       throw new Error(
         `Could not resolve mini model "${modelId}" for provider "${initConfig!.piAuth?.provider ?? '(unknown)'}"`,
       );
-    }
-
-    const ephemeralAgentDir = initConfig!.agentDir
-      || (initConfig!.sessionPath ? join(initConfig!.sessionPath, '.pi-agent') : getPiAgentDir());
-    if (initConfig!.sessionPath) {
-      mkdirSync(ephemeralAgentDir, { recursive: true });
     }
 
     // Create minimal ephemeral session

@@ -639,6 +639,7 @@ export const PI_PREFERRED_DEFAULTS: Record<string, string[]> = {
   google: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-3-flash-preview', 'gemini-3.1-flash-lite-preview'],
   deepseek: ['deepseek-v4-pro', 'deepseek-v4-flash'],
   'github-copilot': ['claude-sonnet-4-6', 'gpt-5', 'o4-mini', 'claude-haiku-4-5'],
+  'xai-auth': ['grok-4.5', 'grok-4.3', 'grok-build', 'grok-composer-2.5-fast'],
   'amazon-bedrock': ['claude-opus-4-8', 'claude-opus-4-7', 'claude-sonnet-5', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
 };
 

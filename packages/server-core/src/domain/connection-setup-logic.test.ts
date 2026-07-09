@@ -133,6 +133,14 @@ describe('createBuiltInConnection seeds midStreamBehavior', () => {
     expect(conn.midStreamBehavior).toBe('steer')
   })
 
+  it("xAI Grok OAuth → 'steer' with xai-auth provider", () => {
+    const conn = createBuiltInConnection('xai-grok')
+    expect(conn.providerType).toBe('pi')
+    expect(conn.authType).toBe('oauth')
+    expect(conn.piAuthProvider).toBe('xai-auth')
+    expect(conn.midStreamBehavior).toBe('steer')
+  })
+
   it("Pi API key (Craft Agents Backend) → 'steer'", () => {
     const conn = createBuiltInConnection('pi-api-key')
     expect(conn.providerType).toBe('pi')

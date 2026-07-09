@@ -158,6 +158,12 @@ export const CHANNEL_MAP = {
   copilotLogout: invoke(RPC_CHANNELS.copilot.LOGOUT),
   onCopilotDeviceCode: listener(RPC_CHANNELS.copilot.DEVICE_CODE),
 
+  // xAI OAuth
+  startXaiOAuth: invoke(RPC_CHANNELS.xai.START_OAUTH),
+  cancelXaiOAuth: invoke(RPC_CHANNELS.xai.CANCEL_OAUTH),
+  getXaiAuthStatus: invoke(RPC_CHANNELS.xai.GET_AUTH_STATUS),
+  xaiLogout: invoke(RPC_CHANNELS.xai.LOGOUT),
+
   // Server info (REMOTE_ELIGIBLE)
   getServerHomeDir: invoke(RPC_CHANNELS.server.HOME_DIR),
 
