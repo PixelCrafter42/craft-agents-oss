@@ -3367,6 +3367,53 @@ export class SessionManager implements ISessionManager {
     }
   }
 
+  private resolveSpawnSessionEmployee(
+    workspaceRootPath: string,
+    request: { employeeId?: string; employeeSlug?: string; employeeName?: string },
+  ): { id: string; slug: string; name: string } | undefined {
+    const employeeId = request.employeeId?.trim()
+    const employeeSlug = request.employeeSlug?.trim().toLowerCase()
+    const employeeName = request.employeeName?.trim().toLowerCase()
+    if (!employeeId && !employeeSlug && !employeeName) return undefined
+
+    const employees = loadWorkspaceEmployees(workspaceRootPath).map(employee => employee.config)
+    const describeEmployees = (items = employees) =>
+      items.map(employee => `${employee.name} (${employee.slug}, ${employee.id})`).join(', ')
+
+    if (employeeId) {
+      const employee = employees.find(candidate => candidate.id === employeeId)
+      if (!employee) {
+        throw new Error(`Employee id not found: ${employeeId}. Available employees: ${describeEmployees() || 'none'}`)
+      }
+      return employee
+    }
+
+    if (employeeSlug) {
+      const employee = employees.find(candidate => candidate.slug.toLowerCase() === employeeSlug)
+      if (!employee) {
+        throw new Error(`Employee slug not found: ${request.employeeSlug}. Available employees: ${describeEmployees() || 'none'}`)
+      }
+      return employee
+    }
+
+    if (employeeName) {
+      const exactMatches = employees.filter(candidate => candidate.name.toLowerCase() === employeeName)
+      if (exactMatches.length === 1) return exactMatches[0]
+      if (exactMatches.length > 1) {
+        throw new Error(`Employee name is ambiguous: ${request.employeeName}. Matches: ${describeEmployees(exactMatches)}`)
+      }
+
+      const partialMatches = employees.filter(candidate => candidate.name.toLowerCase().includes(employeeName))
+      if (partialMatches.length === 1) return partialMatches[0]
+      if (partialMatches.length > 1) {
+        throw new Error(`Employee name is ambiguous: ${request.employeeName}. Matches: ${describeEmployees(partialMatches)}`)
+      }
+      throw new Error(`Employee name not found: ${request.employeeName}. Available employees: ${describeEmployees() || 'none'}`)
+    }
+
+    return undefined
+  }
+
   /**
    * Get or create agent for a session (lazy loading)
    * Creates the appropriate backend agent based on LLM connection.
@@ -4356,6 +4403,7 @@ export class SessionManager implements ISessionManager {
       // Wire up onSpawnSession to create independent sessions from agent tool calls
       managed.agent.onSpawnSession = async (request) => {
         sessionLog.info(`Spawn session request from session ${managed.id}:`, request.name || '(unnamed)')
+        const requestedEmployee = this.resolveSpawnSessionEmployee(managed.workspace.rootPath, request)
 
         const session = await this.createSession(managed.workspace.id, {
           name: request.name,
@@ -4367,9 +4415,15 @@ export class SessionManager implements ISessionManager {
           labels: request.labels ?? managed.labels,
           workingDirectory: request.workingDirectory,
           projectId: request.projectId ?? managed.projectId,
+          employeeId: requestedEmployee?.id,
           // Spawned sessions become subtasks of the spawning session.
           parentSessionId: managed.id,
         })
+        const sessionEmployee = session.employeeId
+          ? (requestedEmployee?.id === session.employeeId
+            ? requestedEmployee
+            : loadEmployeeById(managed.workspace.rootPath, session.employeeId)?.config)
+          : undefined
 
         // Build FileAttachment[] from paths (if any)
         let fileAttachments: FileAttachment[] | undefined
@@ -4408,6 +4462,9 @@ export class SessionManager implements ISessionManager {
           status: 'started' as const,
           connection: session.llmConnection,
           model: session.model,
+          employeeId: session.employeeId,
+          employeeSlug: sessionEmployee?.slug,
+          employeeName: sessionEmployee?.name,
         }
       }
 

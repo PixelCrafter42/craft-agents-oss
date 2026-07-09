@@ -27,6 +27,7 @@ import type { LoadedSource } from '../sources/types.ts';
 import { buildCallLlmRequest, type LLMQueryRequest, type LLMQueryResult } from './llm-tool.ts';
 import { getLlmConnections, getDefaultLlmConnection } from '../config/storage.ts';
 import { loadAllSources } from '../sources/storage.ts';
+import { loadWorkspaceEmployees } from '../employees/storage.ts';
 import type { ApiServerConfig } from '../mcp/mcp-pool.ts';
 
 import type {
@@ -102,6 +103,12 @@ export interface SpawnSessionRequest {
   workingDirectory?: string;
   /** Workspace project id to bind the spawned session to */
   projectId?: string;
+  /** Workspace employee id to bind the spawned session to */
+  employeeId?: string;
+  /** Workspace employee slug to bind the spawned session to */
+  employeeSlug?: string;
+  /** Workspace employee display name to bind the spawned session to */
+  employeeName?: string;
   attachments?: Array<{ path: string; name?: string }>;
 }
 
@@ -111,6 +118,9 @@ export interface SpawnSessionResult {
   status: 'started';
   connection?: string;
   model?: string;
+  employeeId?: string;
+  employeeSlug?: string;
+  employeeName?: string;
 }
 
 export interface SpawnSessionHelpResult {
@@ -127,6 +137,12 @@ export interface SpawnSessionHelpResult {
     name: string;
     type: string;
     enabled: boolean;
+  }>;
+  employees: Array<{
+    id: string;
+    slug: string;
+    name: string;
+    description?: string;
   }>;
   defaults: {
     defaultConnection: string | null;
@@ -1214,6 +1230,9 @@ ${formattedMessages}
         ? expandPath(input.workingDirectory)
         : undefined,
       projectId: input.projectId as string | undefined,
+      employeeId: input.employeeId as string | undefined,
+      employeeSlug: input.employeeSlug as string | undefined,
+      employeeName: input.employeeName as string | undefined,
       attachments: input.attachments as SpawnSessionRequest['attachments'],
     };
 
@@ -1227,6 +1246,7 @@ ${formattedMessages}
     const connections = getLlmConnections();
     const defaultConnectionSlug = getDefaultLlmConnection();
     const allSources = loadAllSources(this.config.workspace.rootPath);
+    const employees = loadWorkspaceEmployees(this.config.workspace.rootPath);
     const activeSlugs = this.sourceManager.getActiveSlugs();
 
     return {
@@ -1243,6 +1263,12 @@ ${formattedMessages}
         name: s.config.name,
         type: s.config.type,
         enabled: activeSlugs.has(s.config.slug),
+      })),
+      employees: employees.map(employee => ({
+        id: employee.config.id,
+        slug: employee.config.slug,
+        name: employee.config.name,
+        description: employee.config.description,
       })),
       defaults: {
         defaultConnection: defaultConnectionSlug,

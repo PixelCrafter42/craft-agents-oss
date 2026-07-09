@@ -47,7 +47,7 @@ Use this to delegate tasks to parallel sessions — research, analysis, drafts, 
 Call with help=true first to discover available connections, models, and sources.
 When spawning, the 'prompt' parameter is required.
 
-Optional overrides: model, llmConnection, permissionMode, thinkingLevel, enabledSourceSlugs, labels, workingDirectory. Omitted fields inherit from the spawning session or the workspace default.
+Optional overrides: model, llmConnection, permissionMode, thinkingLevel, enabledSourceSlugs, labels, workingDirectory, projectId, employeeId, employeeSlug, employeeName. Omitted project/employee fields inherit from the spawning session when available.
 
 thinkingLevel is silently ignored on non-reasoning models (e.g. gpt-4o, gemini-2.5-flash) — the SDK drops the reasoning param rather than erroring.
 
@@ -76,6 +76,12 @@ Only use 'attachments' for existing file paths on disk — the tool reads them a
         .describe('Working directory for the new session'),
       projectId: z.string().optional()
         .describe('Workspace project id to bind the new session to. Inherits the project working directory unless overridden.'),
+      employeeId: z.string().optional()
+        .describe('Workspace employee id to bind the new session to. Inherits the spawning session employee when omitted.'),
+      employeeSlug: z.string().optional()
+        .describe('Workspace employee slug to bind the new session to. Call help=true to discover slugs.'),
+      employeeName: z.string().optional()
+        .describe('Workspace employee display name to bind the new session to. Exact or unique partial match.'),
       attachments: z.array(z.object({
         path: z.string().describe('Absolute file path on disk'),
         name: z.string().optional().describe('Display name (defaults to file basename)'),

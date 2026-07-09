@@ -74,4 +74,17 @@ describe('spawn_session thinkingLevel forwarding', () => {
     expect(captured[0]?.model).toBe('claude-opus-4-7');
     expect(captured[0]?.labels).toEqual(['test']);
   });
+
+  it('forwards employee binding hints to onSpawnSession', async () => {
+    await agent.invokeSpawn({
+      prompt: 'hi',
+      employeeId: 'emp_dida_manager',
+      employeeSlug: 'dida-manager',
+      employeeName: '滴答管家',
+    });
+
+    expect(captured[0]?.employeeId).toBe('emp_dida_manager');
+    expect(captured[0]?.employeeSlug).toBe('dida-manager');
+    expect(captured[0]?.employeeName).toBe('滴答管家');
+  });
 });
