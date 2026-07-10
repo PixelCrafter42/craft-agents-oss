@@ -33,11 +33,32 @@ export type NodeRunState = 'pending' | 'running' | 'done' | 'failed' | 'cancelle
 
 /** Append-only run-log event. `t` is an ISO-8601 timestamp. */
 export type RunLogEntry =
-  | { t: string; kind: 'run-started'; taskId: string; runId: string; orchestratorSessionId?: string }
+  | {
+      t: string;
+      kind: 'run-started';
+      taskId: string;
+      runId: string;
+      orchestratorSessionId?: string;
+      /** Immutable resolved invocation params. Optional for pre-migration logs. */
+      params?: Record<string, unknown>;
+      /** Run-time verification choice. Optional for pre-migration logs (defaults true). */
+      verifyOnComplete?: boolean;
+      /** Present on runs that require an immutable spec.json for recovery. */
+      specSnapshotVersion?: 1;
+    }
   | { t: string; kind: 'node-scheduled'; nodeId: string }
-  | { t: string; kind: 'node-spawned'; nodeId: string; sessionId: string }
+  | { t: string; kind: 'node-spawned'; nodeId: string; sessionId: string; attempt?: number }
   | { t: string; kind: 'node-finished'; nodeId: string; sessionId: string; state: NodeRunState; reason?: string }
   | { t: string; kind: 'node-retry'; nodeId: string; attempt: number; reason: string }
+  | {
+      t: string;
+      kind: 'token-usage';
+      sessionId: string;
+      /** Last observed cumulative token count for this child session. */
+      cumulative: number;
+      /** Run-wide total after applying this update. */
+      tokensUsed: number;
+    }
   | { t: string; kind: 'run-paused' | 'run-resumed' | 'run-stopped' | 'run-completed' | 'run-failed' | 'run-verifying' }
   | { t: string; kind: 'verdict'; result: 'pass' | 'fail' | 'unparsed'; reason?: string; nodes?: string[] }
   | { t: string; kind: 'budget-breach'; metric: 'tokens' | 'parallel' | 'iterations'; value: number; limit: number };

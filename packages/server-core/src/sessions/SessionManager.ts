@@ -73,7 +73,7 @@ import {
   type SessionHeader,
   pickSessionFields,
 } from '@craft-agent/shared/sessions'
-import { appendUsageRecords, estimateUsageCost, type UsageRecordV1 } from '@craft-agent/shared/usage'
+import { appendUsageRecords, estimateUsageCost, readUsageRecords, type UsageRecordV1 } from '@craft-agent/shared/usage'
 import { loadWorkspaceSources, loadAllSources, getSourcesBySlugs, isSourceUsable, type LoadedSource, type McpServerConfig, getSourcesNeedingAuth, getSourceCredentialManager, getSourceServerBuilder, type SourceWithCredential, isApiOAuthProvider, hasRenewEndpoint, SERVER_BUILD_ERRORS, TokenRefreshManager, createTokenGetter, markSourceAuthenticated, createSourceCookieCredentialValue } from '@craft-agent/shared/sources'
 import { ConfigWatcher, type ConfigWatcherCallbacks } from '@craft-agent/shared/config'
 import { getValidClaudeOAuthToken } from '@craft-agent/shared/auth'
@@ -1258,6 +1258,15 @@ export class SessionManager implements ISessionManager {
   private agentRefreshLocks: Map<string, Promise<void>> = new Map()
   /** Per-matcher lock so concurrent reuse triggers do not spawn duplicate sessions. */
   private automationReuseLocks: Map<string, Promise<void>> = new Map()
+  /**
+   * Per-target-session lock for automation turns. A single matcher can emit
+   * multiple prompt actions for the same target in one batch; without this
+   * serialization, both calls can observe an idle session and start chat() on
+   * the same agent concurrently.
+   */
+  private automationTargetLocks: Map<string, Promise<void>> = new Map()
+  /** Sessions already checked for the one-time pre-ledger usage baseline. */
+  private legacyUsageBaselineChecked = new Set<string>()
   /** Monotonic clock to ensure strictly increasing message timestamps */
   private lastTimestamp = 0
 
@@ -1332,6 +1341,32 @@ export class SessionManager implements ISessionManager {
     } finally {
       if (this.automationReuseLocks.get(key) === done) {
         this.automationReuseLocks.delete(key)
+      }
+    }
+  }
+
+  private async withAutomationTargetLock<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.automationTargetLocks.get(sessionId)
+    // Start an uncontended target synchronously so fire-and-forget test runs
+    // preserve their "prompt dispatched before return" contract. Contended
+    // targets chain after the prior full turn.
+    let run: Promise<T>
+    if (prev) {
+      run = prev.catch(() => undefined).then(fn)
+    } else {
+      try {
+        run = Promise.resolve(fn())
+      } catch (error) {
+        run = Promise.reject(error)
+      }
+    }
+    const done = run.then(() => undefined, () => undefined)
+    this.automationTargetLocks.set(sessionId, done)
+    try {
+      return await run
+    } finally {
+      if (this.automationTargetLocks.get(sessionId) === done) {
+        this.automationTargetLocks.delete(sessionId)
       }
     }
   }
@@ -6079,6 +6114,27 @@ export class SessionManager implements ISessionManager {
     }
   }
 
+  /**
+   * Cancel-aware Conductor send. The signal is captured by sendMessage before
+   * its first await and checked throughout preflight, so stop() cannot miss a
+   * child merely because the model turn has not flipped isProcessing yet.
+   */
+  async sendTaskMessage(sessionId: string, message: string, signal: AbortSignal): Promise<void> {
+    return this.sendMessage(
+      sessionId,
+      message,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      signal,
+    )
+  }
+
   async sendMessage(
     sessionId: string,
     message: string,
@@ -6103,11 +6159,14 @@ export class SessionManager implements ISessionManager {
      */
     rpcContext?: { callerClientId?: string },
     _isModelFallbackRetry?: boolean,
+    _taskDispatchSignal?: AbortSignal,
   ): Promise<void> {
     const managed = this.sessions.get(sessionId)
     if (!managed) {
       throw new Error(`Session ${sessionId} not found`)
     }
+    const taskDispatchAborted = () => _taskDispatchSignal?.aborted === true
+    if (taskDispatchAborted()) return
     const employeeDefaults = this.resolveEmployeeDefaultsForTurn(managed, options)
     options = employeeDefaults.options
     this.setLastMessageClientId(sessionId, rpcContext?.callerClientId)
@@ -6122,16 +6181,23 @@ export class SessionManager implements ISessionManager {
       return
     }
 
+    // Capture cumulative pre-ledger metadata before any await, user-message
+    // persistence, or usage_update can overwrite its latest-context fields.
+    this.ensureLegacyUsageBaseline(managed)
+
     // Clear any pending plan execution state when a new user message is sent.
     // This acts as a safety valve - if the user moves on, we don't want to
     // auto-execute an old plan later.
     await clearStoredPendingPlanExecution(managed.workspace.rootPath, sessionId)
+    if (taskDispatchAborted()) return
 
     // Ensure messages are loaded before we try to add new ones
     await this.ensureMessagesLoaded(managed)
+    if (taskDispatchAborted()) return
 
     const displayStoredAttachments = storedAttachments ??
       (await this.materializeStoredAttachmentsForMessage(managed, attachments))
+    if (taskDispatchAborted()) return
 
     // If currently processing, behavior depends on the connection's
     // `midStreamBehavior` (resolved via {@link resolveMidStreamBehavior},
@@ -6204,6 +6270,7 @@ export class SessionManager implements ISessionManager {
       // before we tell the renderer "accepted" — `persistSession` only
       // enqueues with a 500ms debounce. (#616 reliability fix.)
       await this.flushSession(managed.id)
+      if (taskDispatchAborted()) return
       onAck?.(userMessage.id)
       return
     }
@@ -6276,6 +6343,7 @@ export class SessionManager implements ISessionManager {
         this.persistSession(managed)
         // Flush immediately so disk is authoritative before notifying renderer
         await this.flushSession(managed.id)
+        if (taskDispatchAborted()) return
         this.sendEvent({
           type: 'title_generated',
           sessionId,
@@ -6317,6 +6385,10 @@ export class SessionManager implements ISessionManager {
       sessionLog.warn(`Auto-label evaluation failed for session ${sessionId}:`, e)
     }
 
+    // Last preflight guard. There is no await between this check and
+    // setProcessing(), so once it passes a concurrent stop() is guaranteed to
+    // observe the child as processing and can use the normal cancellation path.
+    if (taskDispatchAborted()) return
     managed.lastMessageAt = Date.now()
     this.setProcessing(managed, true)
     managed.streamingText = ''
@@ -6403,6 +6475,17 @@ export class SessionManager implements ISessionManager {
 
     // Start perf span for entire sendMessage flow
     const sendSpan = perf.span('session.sendMessage', { sessionId })
+    const stopAbortedTaskDispatch = (): boolean => {
+      if (!taskDispatchAborted()) return false
+      sendSpan.mark('task_dispatch.aborted')
+      sendSpan.end()
+      if (managed.isProcessing && managed.processingGeneration === myGeneration) {
+        managed.stopRequested = true
+        managed.agent?.forceAbort(AbortReason.UserStop)
+        this.onProcessingStopped(sessionId, 'interrupted')
+      }
+      return true
+    }
 
     const workspaceRootPath = managed.workspace.rootPath
     const enabledSlugs = Array.from(new Set([
@@ -6421,6 +6504,7 @@ export class SessionManager implements ISessionManager {
 
     if (hasSources && managed.tokenRefreshManager) {
       const refreshResult = await refreshExpiredCredentials(sources, managed.tokenRefreshManager)
+      if (stopAbortedTaskDispatch()) return
       if (refreshResult.failedSources.length > 0) {
         sessionLog.warn('[OAuth] Some sources failed token refresh:', refreshResult.failedSources.map(f => f.slug))
       }
@@ -6435,7 +6519,9 @@ export class SessionManager implements ISessionManager {
     let agent: AgentInstance
     try {
       agent = await this.getOrCreateAgent(managed)
+      if (stopAbortedTaskDispatch()) return
     } catch (error) {
+      if (stopAbortedTaskDispatch()) return
       sessionLog.error('Error creating agent:', error)
       const parsedError = this.parseAgentErrorForCurrentBackend(managed, error)
       if (await this.tryStartModelFallback(sessionId, managed, parsedError)) {
@@ -6464,11 +6550,14 @@ export class SessionManager implements ISessionManager {
     agent.setAllSources(allSources)
     sendSpan.mark('sources.loaded')
 
-    // Apply source servers if any are enabled
+    // Apply source servers for this turn. The empty case is just as important:
+    // it revokes sources removed from an employee/session since the previous
+    // turn by clearing SourceManager state and synchronizing an empty MCP pool.
+    const sessionPath = getSessionStoragePath(workspaceRootPath, sessionId)
     if (hasSources) {
-      const sessionPath = getSessionStoragePath(workspaceRootPath, sessionId)
       // Single fresh build — tokens already refreshed above.
       const { mcpServers, apiServers, errors } = await buildServersFromSources(sources, sessionPath, managed.tokenRefreshManager, agent.getSummarizeCallback())
+      if (stopAbortedTaskDispatch()) return
       if (errors.length > 0) {
         sessionLog.warn(`Source build errors:`, errors)
       }
@@ -6479,13 +6568,22 @@ export class SessionManager implements ISessionManager {
         const usableSources = sources.filter(isSourceUsable)
         const intendedSlugs = usableSources.map(s => s.config.slug)
         await agent.setSourceServers(mcpServers, apiServers, intendedSlugs)
+        if (stopAbortedTaskDispatch()) return
         await applyBridgeUpdates(agent, sessionPath, usableSources, mcpServers, sessionId, workspaceRootPath, 'send message', managed.poolServer?.url)
+        if (stopAbortedTaskDispatch()) return
         sessionLog.info(`Applied ${mcpCount} MCP + ${apiCount} API sources to session ${sessionId} (${allSources.length} total)`)
       }
       sendSpan.mark('servers.applied')
+    } else {
+      await agent.setSourceServers({}, {}, [])
+      if (stopAbortedTaskDispatch()) return
+      await applyBridgeUpdates(agent, sessionPath, [], {}, sessionId, workspaceRootPath, 'source clear', managed.poolServer?.url)
+      if (stopAbortedTaskDispatch()) return
+      sendSpan.mark('servers.cleared')
     }
 
     try {
+      if (stopAbortedTaskDispatch()) return
       sessionLog.info('Starting chat for session:', sessionId)
       sessionLog.info('Workspace:', JSON.stringify(managed.workspace, null, 2))
       sessionLog.info('Message:', message)
@@ -8278,6 +8376,67 @@ Please continue the conversation naturally from where we left off.
     ].join(':')
   }
 
+  /**
+   * Persist the session's pre-ledger cumulative usage exactly once, immediately
+   * before its first ledger-backed turn. Post-hoc residuals cannot recover the
+   * old latest input/cache snapshot after usage_update replaces it.
+   */
+  private ensureLegacyUsageBaseline(managed: ManagedSession): void {
+    const key = `${managed.workspace.rootPath}\0${managed.id}`
+    if (this.legacyUsageBaselineChecked.has(key)) return
+
+    const usage = managed.tokenUsage
+    const inputTokens = Math.max(0, Number.isFinite(usage?.inputTokens) ? usage!.inputTokens : 0)
+    const outputTokens = Math.max(0, Number.isFinite(usage?.outputTokens) ? usage!.outputTokens : 0)
+    const cacheReadTokens = Math.max(0, Number.isFinite(usage?.cacheReadTokens) ? usage!.cacheReadTokens! : 0)
+    const cacheCreationTokens = Math.max(0, Number.isFinite(usage?.cacheCreationTokens) ? usage!.cacheCreationTokens! : 0)
+    const costUsd = Number.isFinite(usage?.costUsd) ? Math.max(0, usage!.costUsd) : null
+    const hasLegacyUsage = inputTokens + outputTokens + cacheReadTokens + cacheCreationTokens > 0
+      || (costUsd ?? 0) > 0
+
+    if (!hasLegacyUsage) {
+      this.legacyUsageBaselineChecked.add(key)
+      return
+    }
+
+    try {
+      const hasTurnLedger = readUsageRecords(managed.workspace.rootPath).some(
+        record => record.sessionId === managed.id && record.usageScope !== 'tool',
+      )
+      if (!hasTurnLedger) {
+        const provider = this.providerForUsage(managed)
+        const model = managed.agent?.getModel() || managed.model || 'unknown'
+        const timestamp = managed.lastMessageAt > 0
+          ? managed.lastMessageAt
+          : (managed.createdAt && managed.createdAt > 0 ? managed.createdAt : Date.now())
+        appendUsageRecords(managed.workspace.rootPath, [{
+          version: 1,
+          id: `usage:${managed.id}:legacy-baseline:v1`,
+          timestamp,
+          sessionId: managed.id,
+          ...(managed.projectId ? { projectId: managed.projectId } : {}),
+          ...(managed.llmConnection ? { llmConnection: managed.llmConnection } : {}),
+          ...(provider ? { provider } : {}),
+          model,
+          inputTokens,
+          outputTokens,
+          cacheReadTokens,
+          cacheCreationTokens,
+          totalTokens: inputTokens + outputTokens,
+          costUsd,
+          costSource: 'legacy',
+          ...(usage?.contextWindow ? { contextWindow: usage.contextWindow } : {}),
+          legacyEstimate: true,
+        }])
+      }
+      this.legacyUsageBaselineChecked.add(key)
+    } catch (error) {
+      // A ledger write failure must not block the user's turn. Leave the key
+      // unchecked so the next send retries the migration.
+      sessionLog.warn(`Failed to persist legacy usage baseline for ${managed.id}: ${error instanceof Error ? error.message : error}`)
+    }
+  }
+
   private providerForUsage(managed: ManagedSession): string | undefined {
     const connection = managed.llmConnection ? getLlmConnection(managed.llmConnection) : undefined
     return connection?.providerType
@@ -8386,6 +8545,53 @@ Please continue the conversation naturally from where we left off.
       appendUsageRecords(managed.workspace.rootPath, records)
     } catch (error) {
       sessionLog.warn(`Failed to append usage ledger record for ${managed.id}: ${error instanceof Error ? error.message : error}`)
+    }
+  }
+
+  /**
+   * Record usage from an independently billed tool/API call. These records are
+   * intentionally separate from the main turn and must not change the
+   * session's cumulative tokenUsage (which represents model turns only).
+   */
+  private recordExternalUsageEvent(
+    managed: ManagedSession,
+    event: Extract<AgentEvent, { type: 'external_usage' }>,
+  ): void {
+    const usage = event.usage
+    const inputTokens = usage.inputTokens ?? 0
+    const outputTokens = usage.outputTokens ?? 0
+    const cacheReadTokens = usage.cacheReadTokens ?? 0
+    const cacheCreationTokens = usage.cacheCreationTokens ?? 0
+    const costFields = this.usageCostFields(event.provider, event.model, {
+      inputTokens,
+      outputTokens,
+      cacheReadTokens,
+      cacheCreationTokens,
+      ...(typeof usage.costUsd === 'number' ? { costUsd: usage.costUsd } : {}),
+    })
+    const record: UsageRecordV1 = {
+      version: 1,
+      id: this.buildUsageRecordId(managed, usage, event.model, 0),
+      timestamp: Date.now(),
+      sessionId: managed.id,
+      ...(managed.projectId ? { projectId: managed.projectId } : {}),
+      ...(managed.llmConnection ? { llmConnection: managed.llmConnection } : {}),
+      provider: event.provider,
+      model: event.model,
+      inputTokens,
+      outputTokens,
+      cacheReadTokens,
+      cacheCreationTokens,
+      totalTokens: usage.totalTokens ?? (inputTokens + outputTokens),
+      usageScope: 'tool',
+      ...costFields,
+      ...(usage.contextWindow ? { contextWindow: usage.contextWindow } : {}),
+    }
+
+    try {
+      appendUsageRecords(managed.workspace.rootPath, [record])
+    } catch (error) {
+      sessionLog.warn(`Failed to append external usage ledger record for ${managed.id}: ${error instanceof Error ? error.message : error}`)
     }
   }
 
@@ -9161,6 +9367,10 @@ Please continue the conversation naturally from where we left off.
         }
         break
 
+      case 'external_usage':
+        this.recordExternalUsageEvent(managed, event)
+        break
+
       case 'usage_update':
         // Real-time usage update for context display during processing
         // Update managed session's tokenUsage with latest context size
@@ -9436,10 +9646,12 @@ Please continue the conversation naturally from where we left off.
     // until the entire turn (including tool calls) finishes and trips the 30s
     // client timeout (craft-agents-oss#943). The session streams live either
     // way; a background failure surfaces in the session UI and is logged here.
+    const sendPrompt = () => this.sendMessage(sessionId, prompt, undefined, undefined, {
+      skillSlugs: resolved?.skillSlugs,
+    })
+
     if (waitForCompletion === false) {
-      void this.sendMessage(sessionId, prompt, undefined, undefined, {
-        skillSlugs: resolved?.skillSlugs,
-      }).catch((err) => {
+      void this.withAutomationTargetLock(sessionId, sendPrompt).catch((err) => {
         sessionLog.error('[Automations] background sendMessage failed for test run', {
           sessionId,
           error: err instanceof Error ? err.message : String(err),
@@ -9448,9 +9660,7 @@ Please continue the conversation naturally from where we left off.
       return { sessionId }
     }
 
-    await this.sendMessage(sessionId, prompt, undefined, undefined, {
-      skillSlugs: resolved?.skillSlugs,
-    })
+    await this.withAutomationTargetLock(sessionId, sendPrompt)
 
     return { sessionId }
   }

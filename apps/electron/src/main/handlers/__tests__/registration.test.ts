@@ -83,6 +83,9 @@ function createMockDeps(): HandlerDeps {
       dispose: () => {},
       size: 0,
     } as unknown as HandlerDeps['oauthFlowStore'],
+    // Messaging handlers are conditional; a registry is enough to exercise
+    // registration because its methods are only called when a handler runs.
+    messagingRegistry: {} as NonNullable<HandlerDeps['messagingRegistry']>,
   }
 }
 
@@ -107,6 +110,9 @@ async function getExpectedChannels(): Promise<Set<string>> {
     transfer,
     tasks,
     projects,
+    employees,
+    usage,
+    messaging,
   ] = await Promise.all([
     import('@craft-agent/server-core/handlers/rpc/auth'),
     import('@craft-agent/server-core/handlers/rpc/automations'),
@@ -126,6 +132,9 @@ async function getExpectedChannels(): Promise<Set<string>> {
     import('@craft-agent/server-core/handlers/rpc/transfer'),
     import('@craft-agent/server-core/handlers/rpc/tasks'),
     import('@craft-agent/server-core/handlers/rpc/projects'),
+    import('@craft-agent/server-core/handlers/rpc/employees'),
+    import('@craft-agent/server-core/handlers/rpc/usage'),
+    import('@craft-agent/server-core/handlers/rpc/messaging'),
   ])
 
   // GUI handler channels (remain in electron)
@@ -155,6 +164,9 @@ async function getExpectedChannels(): Promise<Set<string>> {
     ...transfer.HANDLED_CHANNELS,
     ...tasks.HANDLED_CHANNELS,
     ...projects.HANDLED_CHANNELS,
+    ...employees.HANDLED_CHANNELS,
+    ...usage.HANDLED_CHANNELS,
+    ...messaging.HANDLED_CHANNELS,
     ...browser.HANDLED_CHANNELS,
     ...guiSystem.GUI_HANDLED_CHANNELS,
     ...guiWorkspace.GUI_HANDLED_CHANNELS,

@@ -76,7 +76,7 @@ import type { LLMQueryRequest, LLMQueryResult } from '../../shared/src/agent/llm
 import { PI_TOOL_NAME_MAP, THINKING_TO_PI } from '../../shared/src/agent/backend/pi/constants.ts';
 import { getDefaultSummarizationModel } from '../../shared/src/config/models.ts';
 import { createWebFetchTool } from './tools/web-fetch.ts';
-import { createXaiTools } from './tools/xai-tools.ts';
+import { createXaiTools, type XaiToolUsage } from './tools/xai-tools.ts';
 import { resolveSearchProvider } from './tools/search/resolve-provider.ts';
 import { createSearchTool } from './tools/search/create-search-tool.ts';
 import { allowCraftMetadataProperties, stripCraftMetadata } from './craft-metadata-schema.ts';
@@ -171,7 +171,14 @@ type EnrichedToolExecutionStartEvent = Extract<AgentSessionEvent, { type: 'tool_
   toolMetadata?: ToolExecutionMetadata;
 };
 
-type OutboundAgentEvent = AgentSessionEvent | EnrichedToolExecutionStartEvent;
+interface ExternalUsageEvent {
+  type: 'external_usage';
+  provider: string;
+  model: string;
+  usage: Omit<XaiToolUsage, 'provider' | 'model'>;
+}
+
+type OutboundAgentEvent = AgentSessionEvent | EnrichedToolExecutionStartEvent | ExternalUsageEvent;
 
 /** Messages to main process (stdout) */
 interface OutboundReady { type: 'ready'; sessionId: string | null; callbackPort: number }
@@ -589,9 +596,15 @@ async function ensureSession(): Promise<AgentSession> {
   );
   const webTools = [searchTool, webFetchTool];
   const xaiTools = initConfig.piAuth?.provider === 'xai-auth'
-    ? createXaiTools({
+      ? createXaiTools({
         cwd,
         getSessionPath: () => initConfig ? getSessionPath(initConfig.workspaceRootPath, initConfig.sessionId) : null,
+        onUsage: ({ provider, model, ...usage }) => {
+          send({
+            type: 'event',
+            event: { type: 'external_usage', provider, model, usage },
+          });
+        },
         resolveApiKey: async () => {
           try {
             const refreshed = await moduleAuthStorage?.getApiKey('xai-auth');

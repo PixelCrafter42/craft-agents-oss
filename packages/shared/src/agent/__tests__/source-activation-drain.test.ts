@@ -47,6 +47,21 @@ function makeTextComplete(text: string): AgentEvent {
   };
 }
 
+function makeExternalUsage(): AgentEvent {
+  return {
+    type: 'external_usage',
+    provider: 'xai',
+    model: 'grok-4.5',
+    usage: {
+      usageId: 'response-1',
+      inputTokens: 10,
+      outputTokens: 2,
+      totalTokens: 12,
+      costUsd: 0.001,
+    },
+  };
+}
+
 /**
  * Build a consume function that hands out the given pending restarts in
  * order and returns null after they're exhausted.
@@ -214,6 +229,27 @@ describe('SourceActivationDrainController — fire-on-non-tool-result policy', (
     // Pretend the queue drained naturally — no boundary event arrived.
     const fire = drain.shouldFireAtBoundary();
     expect(fire?.sourceSlug).toBe('sourceA');
+  });
+
+  it('keeps external tool accounting transparent while sibling tool results drain', () => {
+    const drain = new SourceActivationDrainController('fire-on-non-tool-result');
+    const consume = consumeQueue(
+      { sourceSlug: 'sourceA', userMessage: 'go' },
+      null,
+    );
+
+    const sourceResult = makeToolResult('source');
+    expect(drain.observe(sourceResult, consume)).toBe(true);
+
+    const usage = makeExternalUsage();
+    expect(drain.shouldFireBeforeEvent(usage)).toBeNull();
+    expect(drain.observe(usage, consume)).toBe(true);
+
+    const siblingResult = makeToolResult('xai', 'xai_web_search');
+    expect(drain.shouldFireBeforeEvent(siblingResult)).toBeNull();
+    expect(drain.observe(siblingResult, consume)).toBe(true);
+
+    expect(drain.shouldFireBeforeEvent(makeTextComplete('next turn'))?.sourceSlug).toBe('sourceA');
   });
 
   it('no capture means no fire — even on non-tool_result event', () => {

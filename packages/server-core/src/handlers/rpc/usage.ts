@@ -7,6 +7,7 @@ import {
   readLegacyUsageEstimates,
   readUsageRecords,
   type UsageQuery,
+  type UsageRecordV1,
   type UsageReport,
 } from '@craft-agent/shared/usage'
 import type { RpcServer } from '@craft-agent/server-core/transport'
@@ -22,6 +23,19 @@ function defaultUsageWindow(): { from: number; to: number } {
   return { from, to }
 }
 
+export function filterUsageLedgerRecords(
+  records: readonly UsageRecordV1[],
+  from: number,
+  to: number,
+  includeLegacy: boolean,
+): UsageRecordV1[] {
+  return records.filter(record => (
+    record.timestamp >= from
+    && record.timestamp < to
+    && (includeLegacy || (!record.legacyEstimate && record.costSource !== 'legacy'))
+  ))
+}
+
 export function registerUsageHandlers(server: RpcServer, deps: HandlerDeps): void {
   const log = deps.platform.logger
 
@@ -35,11 +49,14 @@ export function registerUsageHandlers(server: RpcServer, deps: HandlerDeps): voi
     const timezone = query.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
 
     try {
-      const ledgerRecords = readUsageRecords(workspace.rootPath, { from, to })
-      const ledgerSessionIds = new Set(ledgerRecords.map(record => record.sessionId))
-      const legacyRecords = query.includeLegacy === false
+      // Legacy session metadata is cumulative, so residual calculation needs the
+      // full ledger even when the requested report covers a narrower window.
+      const allLedgerRecords = readUsageRecords(workspace.rootPath)
+      const includeLegacy = query.includeLegacy !== false
+      const ledgerRecords = filterUsageLedgerRecords(allLedgerRecords, from, to, includeLegacy)
+      const legacyRecords = !includeLegacy
         ? []
-        : readLegacyUsageEstimates(workspace.rootPath, ledgerSessionIds, { from, to })
+        : readLegacyUsageEstimates(workspace.rootPath, allLedgerRecords, { from, to })
       const records = [...ledgerRecords, ...legacyRecords]
 
       const sessions = listSessions(workspace.rootPath)
@@ -62,4 +79,3 @@ export function registerUsageHandlers(server: RpcServer, deps: HandlerDeps): voi
     }
   })
 }
-

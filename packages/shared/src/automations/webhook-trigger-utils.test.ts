@@ -3,6 +3,7 @@ import { validateAutomationsConfig } from './validation.ts';
 import {
   getPathValue,
   normalizeWebhookPayload,
+  redactQuery,
   redactHeaders,
   resolveMappingRule,
 } from './webhook-trigger-utils.ts';
@@ -35,6 +36,70 @@ describe('webhook trigger utilities', () => {
       'x-notion-signature': '[redacted]',
       'x-request-id': 'req-1',
     });
+  });
+
+  it('removes authentication query parameters before mapping and payload creation', () => {
+    expect(redactQuery({ token: 'super-secret', event: 'created' }, ['token'])).toEqual({
+      event: 'created',
+    });
+
+    const payload = normalizeWebhookPayload({
+      workspaceId: 'workspace-1',
+      triggerId: 'query-auth',
+      config: {
+        source: 'generic',
+        mapping: {
+          eventType: { from: 'query', path: 'event' },
+          copiedSecret: { from: 'query', path: 'token', default: 'not-available' },
+        },
+      },
+      body: {},
+      headers: {},
+      query: { token: 'super-secret', event: 'created' },
+      redactQueryNames: ['token'],
+      verified: true,
+    });
+
+    expect(payload.matcherValue).toBe('generic:created');
+    expect(payload.query).toEqual({ event: 'created' });
+    expect(payload.mapped.copiedSecret).toBe('not-available');
+    expect(JSON.stringify(payload)).not.toContain('super-secret');
+  });
+
+  it('redacts authentication headers before mapping while preserving ordinary headers', () => {
+    const payload = normalizeWebhookPayload({
+      workspaceId: 'workspace-1',
+      triggerId: 'header-auth',
+      config: {
+        source: 'generic',
+        mapping: {
+          eventType: { from: 'header', path: 'x-event-type' },
+          copiedAuthorization: { from: 'header', path: 'authorization' },
+          copiedCustomSecret: { from: 'header', path: 'x-custom-secret' },
+          requestId: { from: 'header', path: 'x-request-id' },
+        },
+      },
+      body: {},
+      headers: {
+        Authorization: 'Bearer super-secret',
+        'X-Custom-Secret': 'ultra-private-value',
+        'X-Event-Type': 'created',
+        'X-Request-Id': 'request-1',
+      },
+      query: {},
+      redactHeaderNames: ['x-custom-secret'],
+      verified: true,
+    });
+
+    expect(payload.matcherValue).toBe('generic:created');
+    expect(payload.mapped).toMatchObject({
+      copiedAuthorization: '[redacted]',
+      copiedCustomSecret: '[redacted]',
+      requestId: 'request-1',
+    });
+    expect(payload.headers['x-request-id']).toBe('request-1');
+    expect(JSON.stringify(payload)).not.toContain('super-secret');
+    expect(JSON.stringify(payload)).not.toContain('ultra-private-value');
   });
 
   it('normalizes arbitrary webhook payloads into WebhookReceived payloads', () => {

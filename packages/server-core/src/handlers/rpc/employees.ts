@@ -1,5 +1,6 @@
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
 import { getWorkspaceByNameOrId } from '@craft-agent/shared/config'
+import { assertValidEmployeeSlug, isValidEmployeeSlug } from '@craft-agent/shared/employees'
 import { pushTyped, type RpcServer } from '@craft-agent/server-core/transport'
 import type { HandlerDeps } from '../handler-deps'
 
@@ -36,7 +37,7 @@ export function registerEmployeesHandlers(server: RpcServer, deps: HandlerDeps):
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) return null
     const { loadEmployee, loadEmployeeById } = await import('@craft-agent/shared/employees')
-    return loadEmployee(workspace.rootPath, employeeIdOrSlug)
+    return (isValidEmployeeSlug(employeeIdOrSlug) ? loadEmployee(workspace.rootPath, employeeIdOrSlug) : null)
       ?? loadEmployeeById(workspace.rootPath, employeeIdOrSlug)
   })
 
@@ -63,6 +64,7 @@ export function registerEmployeesHandlers(server: RpcServer, deps: HandlerDeps):
     employeeSlug: string,
     patch: Partial<Omit<import('@craft-agent/shared/employees').EmployeeConfig, 'id' | 'slug' | 'createdAt'>>,
   ) => {
+    assertValidEmployeeSlug(employeeSlug)
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
     const { updateEmployee } = await import('@craft-agent/shared/employees')
@@ -72,6 +74,7 @@ export function registerEmployeesHandlers(server: RpcServer, deps: HandlerDeps):
   })
 
   server.handle(RPC_CHANNELS.employees.UPDATE_DEFINITION, async (_ctx, workspaceId: string, employeeSlug: string, content: string) => {
+    assertValidEmployeeSlug(employeeSlug)
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
     const { updateEmployeeDefinition } = await import('@craft-agent/shared/employees')
@@ -80,6 +83,7 @@ export function registerEmployeesHandlers(server: RpcServer, deps: HandlerDeps):
   })
 
   server.handle(RPC_CHANNELS.employees.UPDATE_MEMORY, async (_ctx, workspaceId: string, employeeSlug: string, content: string) => {
+    assertValidEmployeeSlug(employeeSlug)
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
     const { updateEmployeeMemory } = await import('@craft-agent/shared/employees')
@@ -88,6 +92,7 @@ export function registerEmployeesHandlers(server: RpcServer, deps: HandlerDeps):
   })
 
   server.handle(RPC_CHANNELS.employees.DELETE, async (_ctx, workspaceId: string, employeeSlug: string) => {
+    assertValidEmployeeSlug(employeeSlug)
     const workspace = getWorkspaceByNameOrId(workspaceId)
     if (!workspace) throw new Error(`Workspace not found: ${workspaceId}`)
 

@@ -45,7 +45,7 @@ export default function EmployeeInfoPage({ employeeSlug }: EmployeeInfoPageProps
   const { t } = useTranslation()
   const workspace = useActiveWorkspace()
   const workspaceId = workspace?.id
-  const { onCreateSession } = useAppShellContext()
+  const { onCreateSession, onOpenFile } = useAppShellContext()
   const sessionMetaMap = useAtomValue(sessionMetaMapAtom)
   const skills = useAtomValue(skillsAtom)
   const sources = useAtomValue(sourcesAtom)
@@ -446,7 +446,7 @@ export default function EmployeeInfoPage({ employeeSlug }: EmployeeInfoPageProps
                     <TooltipTrigger asChild>
                       <button
                         type="button"
-                        onClick={() => window.electronAPI.openFile(employee.folderPath)}
+                        onClick={() => onOpenFile(employee.folderPath)}
                         className="shrink-0 inline-flex h-6 w-6 items-center justify-center rounded text-foreground/50 hover:text-foreground hover:bg-foreground/5 transition-colors"
                         aria-label={t('employeeInfo.openLocation', '打开位置')}
                       >

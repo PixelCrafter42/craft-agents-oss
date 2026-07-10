@@ -24,7 +24,7 @@ import {
   type WorkerEvent,
 } from './protocol'
 import { loadContextToken, saveContextToken } from './context-token-cache'
-import { shouldUsePersistedContextTokenFallback } from './send-error'
+import { sendTextWithPersistedFallback } from './send-text'
 
 declare const __WEIXIN_WORKER_BUILD_ID__: string
 declare const __WEIXIN_WORKER_GIT_SHA__: string
@@ -728,19 +728,21 @@ async function handleSendText(id: string, channelId: string, text: string): Prom
     emit({ type: 'send_result', id, ok: false, error: 'Weixin v1 only sends to the logged-in user channel' })
     return
   }
+  const activeSession = session
   try {
-    await session.bot.sendMessage(text)
-    emit({ type: 'send_result', id, ok: true, messageId: id })
-  } catch (err) {
-    if (!shouldUsePersistedContextTokenFallback(err)) {
-      emit({ type: 'send_result', id, ok: false, error: err instanceof Error ? err.message : String(err) })
-      return
-    }
-  }
-  try {
-    log(`[weixin] native send failed; using persisted token for ${channelId}`)
-    const messageId = await sendTextWithPersistedContextToken(session, channelId, text)
-    emit({ type: 'send_result', id, ok: true, messageId })
+    const result = await sendTextWithPersistedFallback(
+      () => activeSession.bot.sendMessage(text),
+      () => {
+        log(`[weixin] native send failed; using persisted token for ${channelId}`)
+        return sendTextWithPersistedContextToken(activeSession, channelId, text)
+      },
+    )
+    emit({
+      type: 'send_result',
+      id,
+      ok: true,
+      messageId: result.usedFallback ? result.messageId : id,
+    })
   } catch (err) {
     emit({ type: 'send_result', id, ok: false, error: err instanceof Error ? err.message : String(err) })
   }

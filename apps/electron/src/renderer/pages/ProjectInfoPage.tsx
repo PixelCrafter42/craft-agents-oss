@@ -27,6 +27,7 @@ import { cn } from '@/lib/utils'
 import { PROJECT_COLOR_PALETTE } from '@/utils/project-colors'
 import { InlineColorPickerRow } from '@/components/ui/inline-color-picker-row'
 import type { LoadedProject, ProjectAsset } from '@craft-agent/shared/projects/types'
+import { bytesToBase64 } from '@/lib/base64'
 
 interface ProjectInfoPageProps {
   projectSlug: string
@@ -39,7 +40,7 @@ export default function ProjectInfoPage({ projectSlug }: ProjectInfoPageProps) {
   const workspace = useActiveWorkspace()
   const workspaceId = workspace?.id
   const sessionMetaMap = useAtomValue(sessionMetaMapAtom)
-  const { onCreateSession } = useAppShellContext()
+  const { onCreateSession, onOpenFile } = useAppShellContext()
 
   const [project, setProject] = useState<LoadedProject | null>(null)
   const [loading, setLoading] = useState(true)
@@ -179,11 +180,15 @@ export default function ProjectInfoPage({ projectSlug }: ProjectInfoPageProps) {
   const handleUpload = useCallback(async (file: File) => {
     if (!workspaceId || !project) return
     try {
-      const arrayBuffer = await file.arrayBuffer()
-      const base64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)))
+      const sourcePath = window.electronAPI.getFilePath?.(file) ?? null
+      const input = sourcePath
+        ? { filename: file.name, sourcePath }
+        : {
+            filename: file.name,
+            base64: bytesToBase64(new Uint8Array(await file.arrayBuffer())),
+          }
       await window.electronAPI.uploadProjectAsset(workspaceId, project.config.slug, {
-        filename: file.name,
-        base64,
+        ...input,
       })
       await refreshAssets()
       toast.success(t('projectInfo.assetUploaded', { name: file.name }))
@@ -402,7 +407,7 @@ export default function ProjectInfoPage({ projectSlug }: ProjectInfoPageProps) {
                     <TooltipTrigger asChild>
                       <button
                         type="button"
-                        onClick={() => window.electronAPI.openFile(project.folderPath)}
+                        onClick={() => onOpenFile(project.folderPath)}
                         className="shrink-0 inline-flex h-6 w-6 items-center justify-center rounded text-foreground/50 hover:text-foreground hover:bg-foreground/5 transition-colors"
                         aria-label={t('projectInfo.openLocation')}
                       >

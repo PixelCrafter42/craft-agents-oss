@@ -45,6 +45,72 @@ export interface XaiToolsOptions {
   resolveApiKey: () => Promise<string | null>;
   getSessionPath: () => string | null;
   cwd: string;
+  onUsage?: (usage: XaiToolUsage) => void;
+}
+
+export interface XaiToolUsage {
+  usageId: string;
+  provider: 'xai';
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  cacheReadTokens?: number;
+  costUsd?: number;
+}
+
+function usageNumber(value: unknown): number {
+  if (typeof value === 'number' && Number.isFinite(value) && value >= 0) return value;
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+  }
+  return 0;
+}
+
+function optionalUsageNumber(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value) && value >= 0) return value;
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+  }
+  return undefined;
+}
+
+function reportUsage(
+  onUsage: XaiToolsOptions['onUsage'],
+  data: unknown,
+  model: string,
+  fallbackUsageId: string,
+): void {
+  if (!onUsage || !data || typeof data !== 'object') return;
+  const response = data as Record<string, unknown>;
+  const rawUsage = response.usage;
+  if (!rawUsage || typeof rawUsage !== 'object') return;
+  const usage = rawUsage as Record<string, unknown>;
+  const inputTokens = usageNumber(usage.input_tokens);
+  const outputTokens = usageNumber(usage.output_tokens);
+  const totalTokens = usageNumber(usage.total_tokens) || inputTokens + outputTokens;
+  const details = usage.input_tokens_details && typeof usage.input_tokens_details === 'object'
+    ? usage.input_tokens_details as Record<string, unknown>
+    : undefined;
+  const cacheReadTokens = usageNumber(details?.cached_tokens);
+  // Presence matters: an explicit zero is an authoritative billed cost and
+  // must not fall through to local price estimation.
+  const costTicks = optionalUsageNumber(usage.cost_in_usd_ticks);
+  if (totalTokens === 0 && costTicks === undefined) return;
+  const responseId = typeof response.id === 'string' && response.id ? response.id : fallbackUsageId;
+
+  onUsage({
+    usageId: responseId,
+    provider: 'xai',
+    model,
+    inputTokens,
+    outputTokens,
+    totalTokens,
+    ...(cacheReadTokens > 0 ? { cacheReadTokens } : {}),
+    ...(costTicks !== undefined ? { costUsd: costTicks / 10_000_000_000 } : {}),
+  });
 }
 
 function result(text: string, isError = false, details: Record<string, unknown> = {}): AgentToolResult<any> {
@@ -63,7 +129,13 @@ function compactErrorText(text: string): string {
   return normalized ? normalized.slice(0, 800) : 'Unknown error';
 }
 
-async function postXaiJson(apiKey: string, url: string, body: Record<string, unknown>, signal?: AbortSignal): Promise<any> {
+async function postXaiJson(
+  apiKey: string,
+  url: string,
+  body: Record<string, unknown>,
+  signal?: AbortSignal,
+  onResponse?: (data: unknown) => void,
+): Promise<any> {
   const response = await fetch(url, {
     method: 'POST',
     headers: {
@@ -75,20 +147,30 @@ async function postXaiJson(apiKey: string, url: string, body: Record<string, unk
   });
 
   const text = await response.text();
+  let data: unknown = {};
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = text;
+    }
+  }
+  // xAI can return billed usage for rejected requests too (for example a
+  // guideline-violation fee), so report it before checking response.ok.
+  onResponse?.(data);
+
   if (!response.ok) {
     let message = text;
-    try {
-      const errorJson = JSON.parse(text);
+    if (data && typeof data === 'object') {
+      const errorJson = data as Record<string, any>;
       message = errorJson?.error?.message || errorJson?.error_description || errorJson?.error || text;
-    } catch {
-      // keep raw text
     }
     const error = new Error(compactErrorText(message));
     (error as Error & { status?: number }).status = response.status;
     throw error;
   }
 
-  return text ? JSON.parse(text) : {};
+  return data;
 }
 
 function extractResponsesText(data: any): string {
@@ -266,7 +348,7 @@ function saveGeneratedImage(sessionPath: string, index: number, buffer: Buffer, 
 }
 
 export function createXaiTools(options: XaiToolsOptions): ToolDefinition<any, any>[] {
-  const { resolveApiKey, getSessionPath, cwd } = options;
+  const { resolveApiKey, getSessionPath, cwd, onUsage } = options;
 
   return [
     {
@@ -275,7 +357,7 @@ export function createXaiTools(options: XaiToolsOptions): ToolDefinition<any, an
       description: 'Search the web using Grok native real-time web search. Returns concise findings with sources, dates, and summaries.',
       promptSnippet: 'Use xai_web_search for Grok native real-time web search when xAI/Grok subscription search is requested.',
       parameters: webSearchSchema,
-      async execute(_toolCallId, params: any, signal?: AbortSignal) {
+      async execute(toolCallId, params: any, signal?: AbortSignal) {
         try {
           const apiKey = await resolveRequiredApiKey(resolveApiKey);
           const query = String(params.query || '').trim();
@@ -284,7 +366,7 @@ export function createXaiTools(options: XaiToolsOptions): ToolDefinition<any, an
             input: textInput(`Search the web for: ${query}\n\nReturn sources, dates, short summaries, and the most important recent developments. Prioritize authoritative sources.`),
             reasoning: { effort: 'medium' },
             tools: [{ type: 'web_search', enable_image_understanding: true }],
-          }, signal);
+          }, signal, response => reportUsage(onUsage, response, DEFAULT_XAI_MODEL, toolCallId));
           return result(extractResponsesText(data), false, { query });
         } catch (error) {
           return result(xaiErrorMessage('xAI web search failed', error), true);
@@ -297,7 +379,7 @@ export function createXaiTools(options: XaiToolsOptions): ToolDefinition<any, an
       description: 'Search X using Grok native X search. Returns posts, users, trends, sentiment, and timeline summaries.',
       promptSnippet: 'Use xai_x_search for Grok native X/Twitter search, trends, sentiment, and timeline summaries.',
       parameters: xSearchSchema,
-      async execute(_toolCallId, params: any, signal?: AbortSignal) {
+      async execute(toolCallId, params: any, signal?: AbortSignal) {
         try {
           const apiKey = await resolveRequiredApiKey(resolveApiKey);
           const query = String(params.query || '').trim();
@@ -313,7 +395,7 @@ export function createXaiTools(options: XaiToolsOptions): ToolDefinition<any, an
             ),
             reasoning: { effort: 'medium' },
             tools: [tool],
-          }, signal);
+          }, signal, response => reportUsage(onUsage, response, DEFAULT_XAI_MODEL, toolCallId));
           return result(extractResponsesText(data), false, { query, count });
         } catch (error) {
           return result(xaiErrorMessage('xAI X search failed', error), true);
@@ -326,7 +408,7 @@ export function createXaiTools(options: XaiToolsOptions): ToolDefinition<any, an
       description: 'Combine Grok web search and X search with higher reasoning to produce a synthesized research report.',
       promptSnippet: 'Use xai_deep_research for broader research that should combine web sources, X discussion, and high-reasoning synthesis.',
       parameters: deepResearchSchema,
-      async execute(_toolCallId, params: any, signal?: AbortSignal) {
+      async execute(toolCallId, params: any, signal?: AbortSignal) {
         try {
           const apiKey = await resolveRequiredApiKey(resolveApiKey);
           const topic = String(params.topic || '').trim();
@@ -341,7 +423,7 @@ export function createXaiTools(options: XaiToolsOptions): ToolDefinition<any, an
               { type: 'web_search', enable_image_understanding: true },
               { type: 'x_search', enable_image_understanding: true },
             ],
-          }, signal);
+          }, signal, response => reportUsage(onUsage, response, DEFAULT_XAI_MODEL, toolCallId));
           return result(extractResponsesText(data), false, { topic, depth });
         } catch (error) {
           return result(xaiErrorMessage('xAI deep research failed', error), true);
@@ -354,7 +436,7 @@ export function createXaiTools(options: XaiToolsOptions): ToolDefinition<any, an
       description: 'Generate images with Grok Imagine and immediately save them to the current Craft session downloads.',
       promptSnippet: 'Use xai_generate_image to generate images with Grok Imagine. Generated images are saved to the session downloads directory and returned as local image paths.',
       parameters: generateImageSchema,
-      async execute(_toolCallId, params: any, signal?: AbortSignal) {
+      async execute(toolCallId, params: any, signal?: AbortSignal) {
         try {
           const sessionPath = getSessionPath();
           if (!sessionPath) throw new Error('No active session path available for saving generated images');
@@ -369,7 +451,13 @@ export function createXaiTools(options: XaiToolsOptions): ToolDefinition<any, an
           if (params.aspect_ratio) body.aspect_ratio = String(params.aspect_ratio);
           if (params.resolution) body.resolution = String(params.resolution);
 
-          const data = await postXaiJson(apiKey, XAI_IMAGES_GENERATIONS_URL, body, signal);
+          const data = await postXaiJson(
+            apiKey,
+            XAI_IMAGES_GENERATIONS_URL,
+            body,
+            signal,
+            response => reportUsage(onUsage, response, String(body.model), toolCallId),
+          );
           const entries = collectImageEntries(data);
           if (entries.length === 0) {
             return result('xAI image generation completed, but no image data or URL was returned.', true, { prompt: params.prompt });
@@ -399,7 +487,7 @@ export function createXaiTools(options: XaiToolsOptions): ToolDefinition<any, an
       description: 'Upload an image to Grok vision for analysis. Accepts URL, local image path, file:// URL, or data:image base64 URL.',
       promptSnippet: 'Use xai_analyze_image to analyze a user-specified image with Grok vision. This uploads the image content to xAI when a local path or data URL is provided.',
       parameters: analyzeImageSchema,
-      async execute(_toolCallId, params: any, signal?: AbortSignal) {
+      async execute(toolCallId, params: any, signal?: AbortSignal) {
         try {
           const apiKey = await resolveRequiredApiKey(resolveApiKey);
           const imageUrl = await normalizeImageInput(String(params.image || ''), cwd);
@@ -416,7 +504,7 @@ export function createXaiTools(options: XaiToolsOptions): ToolDefinition<any, an
               },
             ],
             reasoning: { effort: 'medium' },
-          }, signal);
+          }, signal, response => reportUsage(onUsage, response, DEFAULT_XAI_MODEL, toolCallId));
           return result(extractResponsesText(data), false, { image: params.image, question });
         } catch (error) {
           return result(xaiErrorMessage('xAI image analysis failed', error), true);

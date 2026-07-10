@@ -888,10 +888,21 @@ export function TaskEditor({
         notifyCreated()
         return
       }
-      const runResult = await window.electronAPI.runTask(workspaceId, {
-        slug: created.slug,
-        orchestratorSessionId: created.orchestratorSessionId,
-      })
+      let runResult: Awaited<ReturnType<typeof window.electronAPI.runTask>>
+      try {
+        runResult = await window.electronAPI.runTask(workspaceId, {
+          slug: created.slug,
+          orchestratorSessionId: created.orchestratorSessionId,
+        })
+      } catch (err) {
+        // Creation already succeeded. Close onto the persisted task so retrying
+        // cannot accidentally create another orchestrator, and report only the
+        // failed run step rather than claiming task creation failed.
+        toast.error(t('tasks.toastRunFailed'), { description: err instanceof Error ? err.message : String(err) })
+        onClose()
+        notifyCreated()
+        return
+      }
       toast.success(t('tasks.toastStarted'), {
         description: t('tasks.toastStartedDesc', { slug: created.slug, runId: runResult.runId, count: runResult.nodes.length }),
       })

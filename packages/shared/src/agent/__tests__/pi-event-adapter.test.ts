@@ -49,6 +49,34 @@ describe('PiEventAdapter', () => {
       expect(events[0]).toMatchObject({ type: 'complete' });
     });
 
+    it('forwards independently billed xAI tool usage', () => {
+      const events = collect(adapter.adaptEvent({
+        type: 'external_usage',
+        provider: 'xai',
+        model: 'grok-imagine-image-quality',
+        usage: {
+          usageId: 'image-1',
+          inputTokens: 0,
+          outputTokens: 0,
+          totalTokens: 0,
+          costUsd: 0.05,
+        },
+      } as any));
+
+      expect(events).toEqual([{
+        type: 'external_usage',
+        provider: 'xai',
+        model: 'grok-imagine-image-quality',
+        usage: {
+          usageId: 'image-1',
+          inputTokens: 0,
+          outputTokens: 0,
+          totalTokens: 0,
+          costUsd: 0.05,
+        },
+      }]);
+    });
+
     it('should attach usageId from assistant message usage to complete', () => {
       collect(adapter.adaptEvent({ type: 'turn_start' } as any));
       collect(adapter.adaptEvent({

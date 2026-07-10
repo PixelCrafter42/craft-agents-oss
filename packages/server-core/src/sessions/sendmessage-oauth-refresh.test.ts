@@ -1,7 +1,8 @@
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
+import { sessionPersistenceQueue } from '@craft-agent/shared/sessions'
 import { SessionManager, createManagedSession } from './SessionManager.ts'
 
 // Regression tests for #710 — OAuth tokens expire without silent refresh.
@@ -31,7 +32,9 @@ describe('sendMessage OAuth refresh ordering (#710)', () => {
     sm = new SessionManager()
   })
 
-  afterEach(() => {
+  afterEach(async () => {
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    await sessionPersistenceQueue.flushAll()
     rmSync(tmpRoot, { recursive: true, force: true })
   })
 
@@ -133,5 +136,67 @@ describe('sendMessage OAuth refresh ordering (#710)', () => {
       config: { ...reloaded[0]!.config, isAuthenticated: false, connectionStatus: 'needs_auth' as const },
     }
     expect(isSourceUsable(mutated)).toBe(false)
+  })
+
+  it('explicitly clears source servers when the effective source set becomes empty', async () => {
+    const sessionId = 'source-revocation'
+    const managed = buildSession(sessionId)
+    managed.enabledSourceSlugs = []
+
+    const setSourceServers = mock(async () => {})
+    const applyBridgeUpdates = mock(async () => {})
+    const fakeAgent = {
+      setAllSources: () => {},
+      setSourceServers,
+      applyBridgeUpdates,
+      getModel: () => 'test-model',
+      getSessionId: () => null,
+      async *chat() {
+        yield { type: 'text_complete', text: 'ok', isIntermediate: false }
+        yield { type: 'complete' }
+      },
+    }
+    ;(sm as unknown as { getOrCreateAgent: unknown }).getOrCreateAgent = async () => fakeAgent
+
+    await sm.sendMessage(sessionId, 'hello')
+
+    expect(setSourceServers).toHaveBeenCalledWith({}, {}, [])
+    expect(applyBridgeUpdates).toHaveBeenCalledWith(expect.objectContaining({
+      enabledSources: [],
+      mcpServers: {},
+      context: 'source clear',
+    }))
+  })
+
+  it('cancels a task send while agent creation preflight is still awaiting', async () => {
+    const sessionId = 'task-send-cancel'
+    const managed = buildSession(sessionId)
+    const controller = new AbortController()
+    const chat = mock(() => { throw new Error('chat must not start after task cancellation') })
+
+    let markAgentCreationStarted!: () => void
+    const agentCreationStarted = new Promise<void>((resolve) => { markAgentCreationStarted = resolve })
+    let resolveAgent!: (agent: unknown) => void
+    const pendingAgent = new Promise<unknown>((resolve) => { resolveAgent = resolve })
+    ;(sm as unknown as { getOrCreateAgent: unknown }).getOrCreateAgent = () => {
+      markAgentCreationStarted()
+      return pendingAgent
+    }
+
+    const send = sm.sendTaskMessage(sessionId, 'task prompt', controller.signal)
+    await agentCreationStarted
+    expect(managed.isProcessing).toBe(true)
+
+    // This is the exact stop ordering used by TaskRunner: invalidate preflight
+    // first, then use normal session cancellation if processing was claimed.
+    controller.abort()
+    await sm.cancelProcessing(sessionId, true)
+    resolveAgent({ chat })
+    await send
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+
+    expect(chat).not.toHaveBeenCalled()
+    expect(managed.isProcessing).toBe(false)
+    expect(managed.stopRequested).toBe(false)
   })
 })

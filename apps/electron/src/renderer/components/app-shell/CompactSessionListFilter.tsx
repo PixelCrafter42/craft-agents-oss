@@ -10,11 +10,11 @@
  *
  * Behaviour notes vs. the desktop dropdown:
  * - Hierarchical submenus collapse to a single flat list per section
- *   (Statuses, Labels). Tapping a row toggles include; tapping the trailing
+ *   (Statuses, Labels, Projects, Employees). Tapping a row toggles include; tapping the trailing
  *   mode chip on an active row toggles include ↔ exclude.
  * - Pinned filters (from the route, e.g. flagged / state / label views) are
  *   shown as disabled rows with a check mark, matching the dropdown.
- * - The search input filters statuses + labels into a single combined view,
+ * - The search input filters every filter family into a single combined view,
  *   reusing the same scoring helpers as the desktop dropdown
  *   (`filterSessionStatuses`, `filterItems` from `label-menu-utils`).
  */
@@ -25,6 +25,7 @@ import {
   Calendar,
   Check,
   Flag,
+  FolderKanban,
   Inbox,
   Layers,
   ListFilter,
@@ -77,6 +78,20 @@ interface CompactSessionListFilterProps {
       | Map<string, FilterMode>
       | ((prev: Map<string, FilterMode>) => Map<string, FilterMode>),
   ) => void
+  projectFilter: Map<string, FilterMode>
+  setProjectFilter: (
+    updater:
+      | Map<string, FilterMode>
+      | ((prev: Map<string, FilterMode>) => Map<string, FilterMode>),
+  ) => void
+  employeeFilter: Map<string, FilterMode>
+  setEmployeeFilter: (
+    updater:
+      | Map<string, FilterMode>
+      | ((prev: Map<string, FilterMode>) => Map<string, FilterMode>),
+  ) => void
+  projects: Array<{ id: string; name: string; color?: string }>
+  employees: Array<{ id: string; name: string; color?: string }>
   pinnedFilters: PinnedFilters
   effectiveSessionStatuses: SessionStatus[]
   displayLabelConfigs: LabelConfig[]
@@ -92,6 +107,12 @@ export function CompactSessionListFilter({
   setListFilter,
   labelFilter,
   setLabelFilter,
+  projectFilter,
+  setProjectFilter,
+  employeeFilter,
+  setEmployeeFilter,
+  projects,
+  employees,
   pinnedFilters,
   effectiveSessionStatuses,
   displayLabelConfigs,
@@ -116,6 +137,7 @@ export function CompactSessionListFilter({
 
   const trimmedQuery = query.trim()
   const isSearching = trimmedQuery !== ''
+  const normalizedQuery = trimmedQuery.toLocaleLowerCase()
 
   const results = React.useMemo(() => {
     return {
@@ -125,10 +147,20 @@ export function CompactSessionListFilter({
       labels: isSearching
         ? filterLabelMenuItems(flatLabelItems, trimmedQuery)
         : flatLabelItems,
+      projects: isSearching
+        ? projects.filter(project => project.name.toLocaleLowerCase().includes(normalizedQuery))
+        : projects,
+      employees: isSearching
+        ? employees.filter(employee => employee.name.toLocaleLowerCase().includes(normalizedQuery))
+        : employees,
     }
-  }, [isSearching, trimmedQuery, effectiveSessionStatuses, flatLabelItems])
+  }, [isSearching, trimmedQuery, normalizedQuery, effectiveSessionStatuses, flatLabelItems, projects, employees])
 
-  const hasUserFilter = listFilter.size > 0 || labelFilter.size > 0
+  const hasUserFilter =
+    listFilter.size > 0
+    || labelFilter.size > 0
+    || projectFilter.size > 0
+    || employeeFilter.size > 0
   const hasAnyFilter =
     hasUserFilter
     || pinnedFilters.pinnedFlagged
@@ -177,6 +209,46 @@ export function CompactSessionListFilter({
     })
   }
 
+  const toggleProject = (id: string) => {
+    setProjectFilter(prev => {
+      const next = new Map(prev)
+      if (next.has(id)) next.delete(id)
+      else next.set(id, 'include')
+      return next
+    })
+  }
+
+  const cycleProjectMode = (id: string) => {
+    setProjectFilter(prev => {
+      const next = new Map(prev)
+      const current = next.get(id)
+      if (current === 'include') next.set(id, 'exclude')
+      else if (current === 'exclude') next.delete(id)
+      else next.set(id, 'include')
+      return next
+    })
+  }
+
+  const toggleEmployee = (id: string) => {
+    setEmployeeFilter(prev => {
+      const next = new Map(prev)
+      if (next.has(id)) next.delete(id)
+      else next.set(id, 'include')
+      return next
+    })
+  }
+
+  const cycleEmployeeMode = (id: string) => {
+    setEmployeeFilter(prev => {
+      const next = new Map(prev)
+      const current = next.get(id)
+      if (current === 'include') next.set(id, 'exclude')
+      else if (current === 'exclude') next.delete(id)
+      else next.set(id, 'include')
+      return next
+    })
+  }
+
   return (
     <Drawer open={open} onOpenChange={setOpen}>
       <DrawerTrigger asChild>
@@ -204,6 +276,8 @@ export function CompactSessionListFilter({
               onClick={() => {
                 setListFilter(new Map())
                 setLabelFilter(new Map())
+                setProjectFilter(new Map())
+                setEmployeeFilter(new Map())
               }}
               className="text-xs text-muted-foreground hover:text-foreground"
             >
@@ -219,7 +293,7 @@ export function CompactSessionListFilter({
               type="text"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder={t('sidebar.searchStatusesLabels')}
+              placeholder={t('sidebar.search')}
               className="flex-1 min-w-0 bg-transparent text-sm text-foreground placeholder:text-muted-foreground outline-none"
             />
             {query && (
@@ -296,11 +370,54 @@ export function CompactSessionListFilter({
             </Section>
           )}
 
-          {isSearching && results.states.length === 0 && results.labels.length === 0 && (
+          {results.projects.length > 0 && (
+            <Section title={t('sidebar.projects')}>
+              {results.projects.map(project => {
+                const mode = projectFilter.get(project.id)
+                return (
+                  <FilterRow
+                    key={project.id}
+                    icon={<FolderKanban className="h-4 w-4" />}
+                    iconColor={project.color}
+                    label={project.name}
+                    mode={mode}
+                    onTap={() => toggleProject(project.id)}
+                    onModeTap={mode ? () => cycleProjectMode(project.id) : undefined}
+                  />
+                )
+              })}
+            </Section>
+          )}
+
+          {results.employees.length > 0 && (
+            <Section title={t('kanban.employees')}>
+              {results.employees.map(employee => {
+                const mode = employeeFilter.get(employee.id)
+                return (
+                  <FilterRow
+                    key={employee.id}
+                    icon={<UserRound className="h-4 w-4" />}
+                    iconColor={employee.color}
+                    label={employee.name}
+                    mode={mode}
+                    onTap={() => toggleEmployee(employee.id)}
+                    onModeTap={mode ? () => cycleEmployeeMode(employee.id) : undefined}
+                  />
+                )
+              })}
+            </Section>
+          )}
+
+          {isSearching
+            && results.states.length === 0
+            && results.labels.length === 0
+            && results.projects.length === 0
+            && results.employees.length === 0
+            && (
             <div className="px-4 py-6 text-center text-sm text-muted-foreground">
               No matches
             </div>
-          )}
+            )}
 
           {!isSearching && !isStateSubView && (
             <Section title={t('sidebar.group')} icon={<Layers className="h-3.5 w-3.5" />}>

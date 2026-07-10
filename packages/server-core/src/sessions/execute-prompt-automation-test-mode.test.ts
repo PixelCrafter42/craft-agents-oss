@@ -198,6 +198,51 @@ describe('executePromptAutomation session reuse', () => {
     expect(existsSync(join(tmpRoot, AUTOMATIONS_SESSION_STATE_FILE))).toBe(false)
   })
 
+  it('serializes concurrent prompts sent to the same explicit target session', async () => {
+    const { created, sent, sessions } = installStubs()
+    sessions.set('existing-session', {
+      id: 'existing-session',
+      workspace: { id: 'ws_test', rootPath: tmpRoot },
+    })
+
+    let releaseFirst!: () => void
+    const firstTurn = new Promise<void>((resolve) => { releaseFirst = resolve })
+    let calls = 0
+    ;(sm as unknown as { sendMessage: unknown }).sendMessage = async (sessionId: string, message: string) => {
+      sent.push({ sessionId, message })
+      calls += 1
+      if (calls === 1) await firstTurn
+    }
+
+    const first = sm.executePromptAutomation({
+      workspaceId: 'ws_test',
+      workspaceRootPath: tmpRoot,
+      targetSessionId: 'existing-session',
+      prompt: 'first',
+    })
+    await Promise.resolve()
+    await Promise.resolve()
+
+    const second = sm.executePromptAutomation({
+      workspaceId: 'ws_test',
+      workspaceRootPath: tmpRoot,
+      targetSessionId: 'existing-session',
+      prompt: 'second',
+    })
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(created).toEqual([])
+    expect(sent).toEqual([{ sessionId: 'existing-session', message: 'first' }])
+
+    releaseFirst()
+    await Promise.all([first, second])
+    expect(sent).toEqual([
+      { sessionId: 'existing-session', message: 'first' },
+      { sessionId: 'existing-session', message: 'second' },
+    ])
+  })
+
   it('test-mode reuseSession does not read or write production reuse state', async () => {
     const { created, sent } = installStubs()
 

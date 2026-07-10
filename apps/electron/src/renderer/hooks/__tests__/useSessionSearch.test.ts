@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test'
-import { computeCollapsedPagination } from '../useSessionSearch'
+import { computeCollapsedPagination, sessionMatchesCurrentFilter } from '../useSessionSearch'
 import type { SessionMeta } from '@/atoms/sessions'
 
 function makeSession(id: string, opts: Partial<SessionMeta> = {}): SessionMeta {
@@ -84,5 +84,42 @@ describe('computeCollapsedPagination', () => {
 
     expect(result.paginatedItems.map(session => session.id)).toEqual(['alice'])
     expect(result.collapsedGroupsMeta).toEqual([{ key: 'employee-__none__', count: 2 }])
+  })
+})
+
+describe('sessionMatchesCurrentFilter entity filters', () => {
+  const assigned = makeSession('assigned', {
+    projectId: 'project-1',
+    employeeId: 'employee-1',
+  })
+
+  it('applies project includes and excludes', () => {
+    expect(sessionMatchesCurrentFilter(assigned, undefined, {
+      projectFilterMap: new Map([['project-1', 'include']]),
+    })).toBe(true)
+    expect(sessionMatchesCurrentFilter(assigned, undefined, {
+      projectFilterMap: new Map([['project-2', 'include']]),
+    })).toBe(false)
+    expect(sessionMatchesCurrentFilter(assigned, undefined, {
+      projectFilterMap: new Map([['project-1', 'exclude']]),
+    })).toBe(false)
+  })
+
+  it('applies employee filters together with project filters', () => {
+    expect(sessionMatchesCurrentFilter(assigned, undefined, {
+      projectFilterMap: new Map([['project-1', 'include']]),
+      employeeFilterMap: new Map([['employee-1', 'include']]),
+    })).toBe(true)
+    expect(sessionMatchesCurrentFilter(assigned, undefined, {
+      projectFilterMap: new Map([['project-1', 'include']]),
+      employeeFilterMap: new Map([['employee-2', 'include']]),
+    })).toBe(false)
+  })
+
+  it('allows unassigned sessions through an exclude-only entity filter', () => {
+    expect(sessionMatchesCurrentFilter(makeSession('unassigned'), undefined, {
+      projectFilterMap: new Map([['project-1', 'exclude']]),
+      employeeFilterMap: new Map([['employee-1', 'exclude']]),
+    })).toBe(true)
   })
 })

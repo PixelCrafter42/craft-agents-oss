@@ -19,6 +19,8 @@ export {
   getEmployeePath,
   getEmployeeDefinitionPath,
   getEmployeeMemoryPath,
+  isValidEmployeeSlug,
+  assertValidEmployeeSlug,
   loadEmployeeConfig,
   saveEmployeeConfig,
   loadEmployeeDefinition,

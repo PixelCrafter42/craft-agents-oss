@@ -23,6 +23,7 @@ import { BoardListToggle } from './BoardListToggle'
 import { KanbanProjectFilter, type KanbanProjectFilterOption } from './KanbanProjectFilter'
 import { TaskEditor } from './TaskEditor'
 import { mergeSubtaskRows, type SpecNodeSummary, type SubtaskChildRow } from './subtask-merge'
+import { selectDefaultTaskModel } from './task-model-selection'
 import type { SpecNode } from './task-spec-form'
 import type {
   KanbanColumnId,
@@ -296,7 +297,7 @@ export function KanbanBoardContainer() {
     return tasks.filter(task => task.projectId !== undefined && allow.has(task.projectId))
   }, [tasks, projectFilter])
 
-  const defaultSubtaskModel = modelToConnection.has(DEFAULT_MODEL) ? DEFAULT_MODEL : undefined
+  const defaultSubtaskModel = selectDefaultTaskModel(subtaskModelGroups, modelToConnection)
 
   const handleToggleSubtasks = React.useCallback((taskId: string) => {
     setExpandedTaskIds(prev => {

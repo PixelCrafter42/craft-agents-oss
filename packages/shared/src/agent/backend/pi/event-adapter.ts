@@ -44,7 +44,22 @@ const OVERFLOW_FALLBACK_TIMEOUT_MS = 5_000;
  * Combined event type the adapter can handle.
  * AgentSessionEvent is a superset of PiAgentEvent (adds compaction_*, auto_retry_*, queue_update).
  */
-type PiEvent = PiAgentEvent | AgentSessionEvent;
+type ExternalUsageEvent = {
+  type: 'external_usage';
+  provider: string;
+  model: string;
+  usage: {
+    usageId?: string;
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens?: number;
+    cacheReadTokens?: number;
+    cacheCreationTokens?: number;
+    costUsd?: number;
+  };
+};
+
+type PiEvent = PiAgentEvent | AgentSessionEvent | ExternalUsageEvent;
 
 type PiUsage = {
   input: number;
@@ -246,6 +261,15 @@ export class PiEventAdapter extends BaseEventAdapter {
     }
 
     switch (event.type) {
+      case 'external_usage':
+        yield {
+          type: 'external_usage',
+          provider: event.provider,
+          model: event.model,
+          usage: event.usage,
+        };
+        break;
+
       // ============================================================
       // Agent lifecycle events
       // ============================================================

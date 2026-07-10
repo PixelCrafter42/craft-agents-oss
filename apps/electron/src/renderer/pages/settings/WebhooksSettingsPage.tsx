@@ -36,6 +36,11 @@ interface WebhookFormState {
   triggerId: string
 }
 
+function isNotionEnrollmentPending(result: DesktopWebhookLocalTestResult | null): boolean {
+  if (!result?.response || typeof result.response !== 'object') return false
+  return (result.response as { enrollmentPending?: unknown }).enrollmentPending === true
+}
+
 function webhookConfigToForm(config: DesktopWebhookListenerConfig, workspaceId = ''): WebhookFormState {
   return {
     enabled: config.enabled,
@@ -125,6 +130,7 @@ export default function WebhooksSettingsPage() {
   useEffect(() => {
     const workspaceId = form.workspaceId.trim()
     const triggerId = form.triggerId.trim()
+    setTestResult(null)
     if (!workspaceId || !triggerId) {
       setSecret(null)
       return
@@ -215,7 +221,9 @@ export default function WebhooksSettingsPage() {
       setTestResult(result)
       setSecret(await window.electronAPI.getDesktopWebhookTriggerSecret(workspaceId, triggerId))
       await refreshStatus()
-      if (result.ok) toast.success('Dry-run webhook test received')
+      if (isNotionEnrollmentPending(result)) {
+        toast.success('Notion verification armed for 10 minutes. Copy the one-time endpoint into Notion.')
+      } else if (result.ok) toast.success('Dry-run webhook test received')
       else toast.error(result.error ?? 'Dry-run webhook test failed')
     } finally {
       setIsTesting(false)
@@ -252,6 +260,8 @@ export default function WebhooksSettingsPage() {
   const localBaseUrl = `http://${host}:${port}`
   const publicBaseUrl = (form.publicBaseUrl.trim() || localBaseUrl).replace(/\/+$/, '')
   const endpoint = `${publicBaseUrl}/webhooks/${encodeURIComponent(form.workspaceId.trim() || '<workspaceId>')}/${encodeURIComponent(form.triggerId.trim() || '<triggerId>')}`
+  const enrollmentPending = isNotionEnrollmentPending(testResult)
+  const displayedEndpoint = enrollmentPending ? testResult!.endpoint : endpoint
   const curl = [
     `curl -X POST "${endpoint}?dryRun=1&test=1"`,
     '-H "Content-Type: application/json"',
@@ -330,8 +340,8 @@ export default function WebhooksSettingsPage() {
               <SettingsInputRow label="Trigger id" value={form.triggerId} onChange={(triggerId) => setForm(f => ({ ...f, triggerId }))} placeholder="notion-page-created" />
               <SettingsRow label="Endpoint">
                 <div className="flex items-center gap-1.5 min-w-0 max-w-[360px]">
-                  <code className="text-xs font-mono text-muted-foreground bg-muted px-2 py-0.5 rounded truncate">{endpoint}</code>
-                  <Button variant="ghost" size="sm" className="h-6 w-6 p-0 shrink-0" onClick={() => copy(endpoint, 'Endpoint')}>
+                  <code className="text-xs font-mono text-muted-foreground bg-muted px-2 py-0.5 rounded truncate">{displayedEndpoint}</code>
+                  <Button variant="ghost" size="sm" className="h-6 w-6 p-0 shrink-0" onClick={() => copy(displayedEndpoint, enrollmentPending ? 'One-time Notion endpoint' : 'Endpoint')}>
                     <Copy className="h-3 w-3" />
                   </Button>
                 </div>

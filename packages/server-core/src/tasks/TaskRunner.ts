@@ -35,6 +35,8 @@ import {
   readRunLog,
   loadTaskSpec,
   writeRunSpecSnapshot,
+  readRunSpecSnapshot,
+  validateTaskInput,
   DEFAULT_REPAIR_ATTEMPTS,
   MAX_REPAIR_ATTEMPTS_CAP,
 } from '@craft-agent/shared/tasks';
@@ -48,6 +50,8 @@ export interface ConductorSessionHost {
    *  session_created by default), so the subtask appears on the board with its real title. */
   createSession(workspaceId: string, options: CreateSessionOptions): Promise<{ id: string }>;
   sendMessage(sessionId: string, message: string): Promise<void>;
+  /** Task-specific send path whose preflight can be cancelled before model work starts. */
+  sendTaskMessage(sessionId: string, message: string, signal: AbortSignal): Promise<void>;
   setSessionStatus(sessionId: string, status: string): Promise<void>;
   setKanbanColumn(sessionId: string, column: string | null): Promise<void>;
   /** Records the total DAG node count on the orchestrator session for a stable board progress denominator. */
@@ -137,6 +141,23 @@ interface NodeStateEntry {
   attempt: number;
   /** Reason the previous attempt failed, fed back into the retry prompt (failure-aware retry). */
   lastFailure?: string;
+  /** Cancels send preflight when stop/retry invalidates this attempt. */
+  dispatchAbortController?: AbortController;
+}
+
+interface SessionAttemptBinding {
+  nodeId: string;
+  attempt: number;
+}
+
+function assertExecutableSpec(spec: TaskSpec): void {
+  const unsupported = spec.nodes.filter((node) => node.kind !== 'session');
+  if (unsupported.length === 0) return;
+  throw new Error(
+    `Task "${spec.id}" contains node kinds that this runner does not execute: ${unsupported
+      .map((node) => `${node.id} (${node.kind})`)
+      .join(', ')}. Only kind="session" is supported.`,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -145,7 +166,7 @@ interface NodeStateEntry {
 
 class ActiveRun {
   private readonly state = new Map<string, NodeStateEntry>();
-  private readonly sessionToNode = new Map<string, string>();
+  private readonly sessionToNode = new Map<string, SessionAttemptBinding>();
   private readonly outputs: Record<string, NodeOutput> = {};
   private readonly edges: Map<string, Set<string>>;
   private readonly maxParallel: number;
@@ -167,6 +188,10 @@ class ActiveRun {
   private dependents?: Map<string, Set<string>>;
   private settled = false;
   private settleResolvers: ((s: RunSnapshot) => void)[] = [];
+  /** Invalidates async dispatch continuations when a run is stopped. */
+  private dispatchEpoch = 0;
+  /** Avoid duplicate cancellation when stop() races a post-create dispatch guard. */
+  private readonly cancelledSessions = new Set<string>();
 
   constructor(
     private readonly spec: TaskSpec,
@@ -175,6 +200,7 @@ class ActiveRun {
     private readonly opts: Required<Pick<RunOptions, 'verifyOnComplete'>> & RunOptions,
     private readonly deps: TaskRunnerDeps,
   ) {
+    assertExecutableSpec(spec);
     this.edges = materializeDeps(spec);
     this.maxParallel = spec.max_parallel ?? deps.defaultMaxParallel ?? DEFAULT_MAX_PARALLEL;
     // Runner-side clamp (belt-and-suspenders: the schema already caps `max_iterations` at the same
@@ -186,15 +212,27 @@ class ActiveRun {
   // --- lifecycle ---
 
   start(): void {
+    // Recovery correctness depends on this immutable snapshot. Persist it
+    // before subscribing, logging run-started, or dispatching any child; a new
+    // run without a durable snapshot must fail closed rather than later resume
+    // against an edited task.yaml.
+    writeRunSpecSnapshot(this.deps.workspaceRoot, this.slug, this.runId, this.spec);
     this.unsubscribe = this.deps.host.onSessionComplete((evt) => this.onSessionComplete(evt));
-    // Snapshot the spec for this run so the Results view labels nodes by run-time titles even after
-    // the live task.yaml is edited. Best-effort: a snapshot failure must not abort the run.
     try {
-      writeRunSpecSnapshot(this.deps.workspaceRoot, this.slug, this.runId, this.spec);
-    } catch {
-      // ignore — Results falls back to run-log node ids when no snapshot exists
+      this.log({
+        kind: 'run-started',
+        taskId: this.spec.id,
+        runId: this.runId,
+        orchestratorSessionId: this.opts.orchestratorSessionId,
+        params: this.opts.params ?? {},
+        verifyOnComplete: this.opts.verifyOnComplete,
+        specSnapshotVersion: 1,
+      });
+    } catch (error) {
+      this.unsubscribe?.();
+      this.unsubscribe = undefined;
+      throw error;
     }
-    this.log({ kind: 'run-started', taskId: this.spec.id, runId: this.runId, orchestratorSessionId: this.opts.orchestratorSessionId });
     this.runStatus = 'running';
     // Move the task tile to the in-progress column for the duration of the run.
     if (this.opts.orchestratorSessionId) {
@@ -235,20 +273,38 @@ class ActiveRun {
         const st = this.state.get(e.nodeId);
         if (st) {
           st.sessionId = e.sessionId;
-          this.sessionToNode.set(e.sessionId, e.nodeId);
+          this.sessionToNode.set(e.sessionId, { nodeId: e.nodeId, attempt: e.attempt ?? st.attempt });
         }
       } else if (e.kind === 'node-scheduled') {
         const st = this.state.get(e.nodeId);
-        if (st) st.attempt += 1;
+        if (st) {
+          st.state = 'running';
+          st.attempt += 1;
+        }
       } else if (e.kind === 'node-finished') {
         const st = this.state.get(e.nodeId);
         if (st) st.state = e.state;
+      } else if (e.kind === 'node-retry') {
+        const st = this.state.get(e.nodeId);
+        if (st) {
+          st.state = 'pending';
+          st.sessionId = undefined;
+          st.lastFailure = e.reason.startsWith('verdict-fail:')
+            ? `The previous result was rejected on verification: ${e.reason.slice('verdict-fail:'.length).trim()}. Revise your output to meet the acceptance criteria.`
+            : `Previous attempt failed: ${e.reason}. Address the cause before retrying.`;
+        }
       } else if (e.kind === 'verdict') {
         // Reconstruct the durable repair counters so a cross-restart resume honors the cap rather
         // than restarting the budget from zero (the in-memory counters reset on a fresh process).
         if (e.result === 'fail') this.repairsUsed += 1;
         else if (e.result === 'unparsed') this.unparsedReAsks += 1;
         else if (e.result === 'pass') this.unparsedReAsks = 0;
+      } else if (e.kind === 'token-usage') {
+        this.sessionTokens.set(
+          e.sessionId,
+          Math.max(this.sessionTokens.get(e.sessionId) ?? 0, Math.max(0, e.cumulative)),
+        );
+        this.tokensUsed = Math.max(this.tokensUsed, Math.max(0, e.tokensUsed));
       }
     }
     for (const [nodeId, st] of this.state) {
@@ -258,8 +314,11 @@ class ActiveRun {
         else st.state = 'pending'; // recorded output missing → must re-run
       } else if (st.state === 'running' || st.state === 'cancelled') {
         st.state = 'pending'; // in-flight at shutdown / cancelled → re-dispatch on resume
+        st.sessionId = undefined;
       }
     }
+    // A fresh process must never accept completions from pre-restart attempts.
+    this.sessionToNode.clear();
     this.inFlight = 0;
   }
 
@@ -274,19 +333,24 @@ class ActiveRun {
 
   async stop(): Promise<void> {
     if (this.isTerminal()) return;
+    this.dispatchEpoch += 1;
     this.runStatus = 'stopped';
     this.log({ kind: 'run-stopped' });
+    const cancellations: Promise<void>[] = [];
     for (const [nodeId, st] of this.state) {
       if (st.state === 'running') {
+        st.dispatchAbortController?.abort();
+        st.dispatchAbortController = undefined;
         st.state = 'cancelled';
         this.log({ kind: 'node-finished', nodeId, sessionId: st.sessionId ?? '', state: 'cancelled', reason: 'stopped' });
         if (st.sessionId) {
-          void this.deps.host.cancelProcessing(st.sessionId, true);
-          void this.deps.host.setKanbanColumn(st.sessionId, 'todo');
+          this.sessionToNode.delete(st.sessionId);
+          cancellations.push(this.cancelSessionOnce(st.sessionId));
         }
       }
     }
     this.inFlight = 0;
+    await Promise.allSettled(cancellations);
     this.finalize();
   }
 
@@ -322,7 +386,8 @@ class ActiveRun {
         return;
       }
       this.markRunning(node);
-      void this.dispatch(node);
+      const st = this.state.get(node.id)!;
+      void this.dispatch(node, st.attempt, this.dispatchEpoch, st.dispatchAbortController!);
     }
     this.maybeFinish();
   }
@@ -337,17 +402,46 @@ class ActiveRun {
 
   private markRunning(node: TaskNode): void {
     const st = this.state.get(node.id)!;
+    st.dispatchAbortController?.abort();
+    if (st.sessionId) this.sessionToNode.delete(st.sessionId);
+    st.sessionId = undefined;
+    st.dispatchAbortController = new AbortController();
     st.state = 'running';
     st.attempt += 1;
     this.inFlight += 1;
     this.log({ kind: 'node-scheduled', nodeId: node.id });
   }
 
-  private async dispatch(node: TaskNode): Promise<void> {
+  private isCurrentDispatch(nodeId: string, attempt: number, epoch: number): boolean {
+    const st = this.state.get(nodeId);
+    return (
+      epoch === this.dispatchEpoch &&
+      !this.isTerminal() &&
+      st?.state === 'running' &&
+      st.attempt === attempt
+    );
+  }
+
+  private async cancelSessionOnce(sessionId: string): Promise<void> {
+    if (this.cancelledSessions.has(sessionId)) return;
+    this.cancelledSessions.add(sessionId);
+    await Promise.allSettled([
+      this.deps.host.cancelProcessing(sessionId, true),
+      this.deps.host.setKanbanColumn(sessionId, 'todo'),
+    ]);
+  }
+
+  private async dispatch(
+    node: TaskNode,
+    attempt: number,
+    epoch: number,
+    abortController: AbortController,
+  ): Promise<void> {
     try {
       // Task-level skills ride as [skill:slug] mentions on every child prompt — the agent
       // pipeline resolves each SKILL.md and blocks tools until it is read (skills-as-context).
       const prompt = skillsPreamble(this.spec.skills) + (await this.buildPrompt(node));
+      if (abortController.signal.aborted || !this.isCurrentDispatch(node.id, attempt, epoch)) return;
       // Children run where the parent runs: inherit the orchestrator's resolved working directory,
       // falling back to the spec's declared `cwd`. Without this they default to the workspace cwd
       // rather than the parent session's (project) directory.
@@ -382,14 +476,28 @@ class ActiveRun {
       // createSession announces the child to the renderer by default, so it nests under the task
       // tile with its real title instead of a fabricated "New Chat" (or never appearing).
       const child = await this.deps.host.createSession(this.deps.workspaceId, options);
+      if (abortController.signal.aborted || !this.isCurrentDispatch(node.id, attempt, epoch)) {
+        await this.cancelSessionOnce(child.id);
+        return;
+      }
       const st = this.state.get(node.id)!;
       st.sessionId = child.id;
-      this.sessionToNode.set(child.id, node.id);
-      this.log({ kind: 'node-spawned', nodeId: node.id, sessionId: child.id });
+      this.sessionToNode.set(child.id, { nodeId: node.id, attempt });
+      this.log({ kind: 'node-spawned', nodeId: node.id, sessionId: child.id, attempt });
       await this.deps.host.setKanbanColumn(child.id, 'in-progress');
-      await this.deps.host.sendMessage(child.id, prompt);
+      if (
+        abortController.signal.aborted ||
+        !this.isCurrentDispatch(node.id, attempt, epoch) ||
+        st.sessionId !== child.id
+      ) {
+        await this.cancelSessionOnce(child.id);
+        return;
+      }
+      await this.deps.host.sendTaskMessage(child.id, prompt, abortController.signal);
     } catch (err) {
-      this.failNode(node.id, `dispatch failed: ${(err as Error).message}`);
+      if (!abortController.signal.aborted && this.isCurrentDispatch(node.id, attempt, epoch)) {
+        this.failNode(node.id, `dispatch failed: ${(err as Error).message}`);
+      }
     }
   }
 
@@ -418,10 +526,18 @@ class ActiveRun {
   // --- completion ---
 
   private onSessionComplete(evt: SessionCompletionEvent): void {
-    const nodeId = this.sessionToNode.get(evt.sessionId);
-    if (!nodeId) return; // not one of our child nodes
+    const binding = this.sessionToNode.get(evt.sessionId);
+    if (!binding) return; // not one of our current child attempts
+    const { nodeId, attempt } = binding;
     const st = this.state.get(nodeId);
-    if (!st || st.state !== 'running') return; // already settled/cancelled
+    if (
+      !st ||
+      st.state !== 'running' ||
+      st.sessionId !== evt.sessionId ||
+      st.attempt !== attempt
+    ) return; // stale/replaced attempt or already settled
+    this.sessionToNode.delete(evt.sessionId);
+    st.dispatchAbortController = undefined;
 
     if (evt.tokenUsage) {
       // `tokenUsage` is cumulative-per-session; add only the delta since this session's last
@@ -430,6 +546,7 @@ class ActiveRun {
       const prev = this.sessionTokens.get(evt.sessionId) ?? 0;
       this.tokensUsed += Math.max(0, cumulative - prev);
       this.sessionTokens.set(evt.sessionId, cumulative);
+      this.log({ kind: 'token-usage', sessionId: evt.sessionId, cumulative, tokensUsed: this.tokensUsed });
     }
 
     // Completion-time budget check: pause immediately on breach (not only at schedule-time), but
@@ -475,6 +592,7 @@ class ActiveRun {
 
   private failNode(nodeId: string, reason: string, sessionId?: string): void {
     const st = this.state.get(nodeId)!;
+    st.dispatchAbortController = undefined;
     const wasRunning = st.state === 'running';
     if (wasRunning) this.inFlight = Math.max(0, this.inFlight - 1);
 
@@ -483,10 +601,12 @@ class ActiveRun {
     // to the `error` retry trigger (empty/invalid detection is deferred).
     const node = this.spec.nodes.find((n) => n.id === nodeId);
     const retry = node?.retry;
+    const settledSessionId = sessionId ?? st.sessionId;
+    if (settledSessionId) this.sessionToNode.delete(settledSessionId);
     if (retry && st.attempt <= retry.limit && retryMatches(retry.when, 'error')) {
       st.lastFailure = `Previous attempt failed: ${reason}. Address the cause before retrying.`;
       st.state = 'pending';
-      const sid = sessionId ?? st.sessionId;
+      const sid = settledSessionId;
       if (sid) void this.deps.host.setKanbanColumn(sid, 'todo');
       this.log({ kind: 'node-retry', nodeId, attempt: st.attempt, reason });
       this.scheduleReady();
@@ -494,7 +614,7 @@ class ActiveRun {
     }
 
     st.state = 'failed';
-    const sid = sessionId ?? st.sessionId;
+    const sid = settledSessionId;
     this.log({ kind: 'node-finished', nodeId, sessionId: sid ?? '', state: 'failed', reason });
     if (sid) void this.deps.host.setSessionStatus(sid, FAILED_STATUS);
     this.scheduleReady();
@@ -868,7 +988,12 @@ export class TaskRunner {
       this.deps,
     );
     this.runs.set(this.key(slug, runId), run);
-    run.start();
+    try {
+      run.start();
+    } catch (error) {
+      this.runs.delete(this.key(slug, runId));
+      throw error;
+    }
     return run.snapshot();
   }
 
@@ -888,19 +1013,40 @@ export class TaskRunner {
 
   /** Reconstruct an in-memory run from its persisted run-log + node outputs, then resume it. */
   private rehydrate(slug: string, runId: string): RunSnapshot {
-    const loaded = loadTaskSpec(this.deps.workspaceRoot, slug);
-    if (!loaded?.spec || !loaded.valid) {
-      throw new Error(`Cannot resume "${slug}:${runId}": task.yaml is missing or invalid`);
-    }
     const log = readRunLog(this.deps.workspaceRoot, slug, runId);
     if (log.length === 0) throw new Error(`Cannot resume "${slug}:${runId}": no run-log found`);
     const started = log.find((e) => e.kind === 'run-started');
     const orchestratorSessionId = started && started.kind === 'run-started' ? started.orchestratorSessionId : undefined;
+
+    // The run must resume against the immutable spec it started with. Falling
+    // back to task.yaml is retained only for legacy runs created before spec
+    // snapshots existed.
+    const snapshot = readRunSpecSnapshot(this.deps.workspaceRoot, slug, runId);
+    const requiresSnapshot = started?.kind === 'run-started' && started.specSnapshotVersion === 1;
+    if (requiresSnapshot && !snapshot) {
+      throw new Error(`Cannot resume "${slug}:${runId}": required run spec snapshot is missing or corrupt`);
+    }
+    const loaded = snapshot
+      ? validateTaskInput(snapshot)
+      : loadTaskSpec(this.deps.workspaceRoot, slug);
+    if (!loaded?.spec || !loaded.valid) {
+      const source = snapshot ? 'run spec snapshot' : 'task.yaml (legacy run without a snapshot)';
+      throw new Error(`Cannot resume "${slug}:${runId}": ${source} is missing or invalid`);
+    }
+
+    const persistedParams = started?.kind === 'run-started' ? started.params : undefined;
+    const verifyOnComplete = started?.kind === 'run-started'
+      ? (started.verifyOnComplete ?? true)
+      : true;
     const run = new ActiveRun(
       loaded.spec,
       slug,
       runId,
-      { orchestratorSessionId, params: resolveParams(loaded.spec), verifyOnComplete: true },
+      {
+        orchestratorSessionId,
+        params: persistedParams ?? resolveParams(loaded.spec),
+        verifyOnComplete,
+      },
       this.deps,
     );
     run.hydrate(log, (nodeId) => readNodeOutput(this.deps.workspaceRoot, slug, runId, nodeId));

@@ -56,6 +56,7 @@ export interface NormalizeWebhookPayloadInput {
   deliveryId?: string;
   timestamp?: number;
   redactHeaderNames?: string[];
+  redactQueryNames?: string[];
 }
 
 export function normalizeHeaders(headers: Record<string, string | string[] | undefined>): Record<string, string> {
@@ -72,6 +73,17 @@ export function normalizeQuery(query: Record<string, string | string[] | undefin
   for (const [key, value] of Object.entries(query)) {
     if (value === undefined) continue;
     normalized[key] = Array.isArray(value) ? value.map(String) : String(value);
+  }
+  return normalized;
+}
+
+export function redactQuery(
+  query: Record<string, string | string[] | undefined>,
+  secretQueryNames: string[] = [],
+): Record<string, string | string[]> {
+  const normalized = normalizeQuery(query);
+  for (const name of secretQueryNames) {
+    delete normalized[name];
   }
   return normalized;
 }
@@ -155,8 +167,11 @@ export function getWebhookMatcherValue(payload: Pick<WebhookReceivedPayload, 'so
 }
 
 export function normalizeWebhookPayload(input: NormalizeWebhookPayloadInput): WebhookReceivedPayload {
-  const headers = normalizeHeaders(input.headers);
-  const query = normalizeQuery(input.query);
+  // Authentication headers and query parameters must be sanitized before
+  // mapping so secrets cannot be copied into mapped fields, logs, or agent
+  // context. Non-sensitive request metadata remains available to mappings.
+  const headers = redactHeaders(input.headers, input.redactHeaderNames);
+  const query = redactQuery(input.query, input.redactQueryNames);
   const mapping = input.config?.mapping ?? {};
   const request = { body: input.body, headers, query };
 
@@ -178,7 +193,7 @@ export function normalizeWebhookPayload(input: NormalizeWebhookPayloadInput): We
     eventType,
     matcherValue,
     verified: input.verified,
-    headers: redactHeaders(headers, input.redactHeaderNames),
+    headers,
     query,
     body: input.body,
     mapped,

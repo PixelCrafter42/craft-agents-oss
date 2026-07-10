@@ -153,6 +153,8 @@ import {
 import { hasOpenOverlay } from "@/lib/overlay-detection"
 import { clearSourceIconCaches } from "@/lib/icon-cache"
 import { dispatchFocusInputEvent } from "./input/focus-input-events"
+import { getInheritedNewSessionParams } from "./session-filter-utils"
+import { kanbanEditorTargetAtom } from "@/atoms/kanban"
 
 /**
  * AppShellProps - Minimal props interface for AppShell component
@@ -602,6 +604,7 @@ function AppShellContent({
   const navState = useNavigationState()
 
   const store = useStore()
+  const setKanbanEditorTarget = useSetAtom(kanbanEditorTargetAtom)
   const panelStack = useAtomValue(panelStackAtom)
   const panelCount = useAtomValue(panelCountAtom)
   const focusedSessionId = useAtomValue(focusedSessionIdAtom)
@@ -1094,7 +1097,10 @@ function AppShellContent({
   // This prevents stale search queries, focused items, and filter state from persisting
   const previousWorkspaceRef = React.useRef<string | null>(null)
   React.useEffect(() => {
-    if (!activeWorkspaceId) return
+    if (!activeWorkspaceId) {
+      setKanbanEditorTarget(null)
+      return
+    }
 
     const previousWorkspaceId = previousWorkspaceRef.current
 
@@ -1110,6 +1116,10 @@ function AppShellContent({
 
       // Clear focused sidebar item
       setFocusedSidebarItemId(null)
+
+      // The target contains task/session ids scoped to the old workspace. The
+      // board may be unmounted during this switch, so clear it at the shell level.
+      setKanbanEditorTarget(null)
     }
 
     // Load workspace-scoped state on BOTH initial mount AND workspace switch
@@ -1126,7 +1136,7 @@ function AppShellContent({
     }
 
     previousWorkspaceRef.current = activeWorkspaceId
-  }, [activeWorkspaceId])
+  }, [activeWorkspaceId, setKanbanEditorTarget])
 
   // Load sources from backend on mount
   React.useEffect(() => {
@@ -2175,29 +2185,12 @@ function AppShellContent({
    * params. Otherwise return null (fall back to workspace defaults).
    */
   const resolveInheritedNewSessionParams = useCallback((): { status?: string; label?: string; project?: string; employee?: string } | null => {
-    const statusCount = listFilter.size
-    const labelCount = labelFilter.size
-    const projectCount = projectFilter.size
-    const employeeCount = employeeFilter.size
-    const total = statusCount + labelCount + projectCount + employeeCount
-    if (total !== 1) return null
-    if (statusCount === 1) {
-      const [stateId] = [...listFilter.keys()]
-      return { status: stateId }
-    }
-    if (labelCount === 1) {
-      const [labelId] = [...labelFilter.keys()]
-      return { label: labelId }
-    }
-    if (projectCount === 1) {
-      const [projectId] = [...projectFilter.keys()]
-      return { project: projectId }
-    }
-    if (employeeCount === 1) {
-      const [employeeId] = [...employeeFilter.keys()]
-      return { employee: employeeId }
-    }
-    return null
+    return getInheritedNewSessionParams({
+      statuses: listFilter,
+      labels: labelFilter,
+      projects: projectFilter,
+      employees: employeeFilter,
+    })
   }, [listFilter, labelFilter, projectFilter, employeeFilter])
 
   // Create a new chat and select it
@@ -2944,6 +2937,12 @@ function AppShellContent({
                         setListFilter={setListFilter}
                         labelFilter={labelFilter}
                         setLabelFilter={setLabelFilter}
+                        projectFilter={projectFilter}
+                        setProjectFilter={setProjectFilter}
+                        employeeFilter={employeeFilter}
+                        setEmployeeFilter={setEmployeeFilter}
+                        projects={projectMenuOptions}
+                        employees={employeeMenuOptions}
                         pinnedFilters={pinnedFilters}
                         effectiveSessionStatuses={effectiveSessionStatuses}
                         displayLabelConfigs={displayLabelConfigs}
@@ -3903,6 +3902,8 @@ function AppShellContent({
                   workspaceId={activeWorkspaceId ?? undefined}
                   statusFilter={listFilter}
                   labelFilterMap={labelFilter}
+                  projectFilterMap={projectFilter}
+                  employeeFilterMap={employeeFilter}
                   focusedSessionId={panelCount === 0 ? null : panelCount > 1 ? focusedSessionId : undefined}
                   onNavigateToSession={panelCount > 1 ? navigateToSessionInPanel : undefined}
                   hasPendingPrompt={hasPendingPrompt}

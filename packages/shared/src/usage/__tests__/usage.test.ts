@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { existsSync, mkdirSync, readFileSync, rmSync } from 'fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import {
@@ -7,6 +7,7 @@ import {
   appendUsageRecords,
   estimateUsageCost,
   getUsageFilePath,
+  readLegacyUsageEstimates,
   readUsageRecords,
 } from '../index.ts';
 import type { UsageRecordV1 } from '../types.ts';
@@ -63,6 +64,17 @@ describe('usage ledger storage', () => {
     expect(readUsageRecords(workspace)).toHaveLength(1);
   });
 
+  it('invalidates a cached month when another writer changes the file', () => {
+    const first = record({ id: 'first' });
+    appendUsageRecords(workspace, [first]);
+    expect(readUsageRecords(workspace).map(item => item.id)).toEqual(['first']);
+
+    const second = record({ id: 'second', timestamp: first.timestamp + 1 });
+    appendFileSync(getUsageFilePath(workspace, second.timestamp), `${JSON.stringify(second)}\n`);
+
+    expect(readUsageRecords(workspace).map(item => item.id)).toEqual(['first', 'second']);
+  });
+
   it('keeps unknown prices as unknown instead of fabricating cost', () => {
     appendUsageRecords(workspace, [record({ id: 'unknown', costUsd: null, costSource: 'unknown' })]);
 
@@ -90,6 +102,109 @@ describe('usage ledger storage', () => {
     expect(estimate).not.toBeNull();
     expect(estimate!.priceSnapshot.source).toBe('local:xai-provider-extension');
     expect(estimate!.costUsd).toBeCloseTo(0.000148, 9);
+  });
+
+  it('keeps only the pre-ledger residual from cumulative legacy session usage', () => {
+    const sessionDir = join(workspace, 'sessions', 's1');
+    mkdirSync(sessionDir, { recursive: true });
+    writeFileSync(join(sessionDir, 'session.jsonl'), JSON.stringify({
+      id: 's1',
+      workspaceRootPath: workspace,
+      createdAt: 1,
+      lastUsedAt: 200,
+      lastMessageAt: 200,
+      messageCount: 2,
+      model: 'grok-4.5',
+      tokenUsage: {
+        inputTokens: 120,
+        outputTokens: 70,
+        totalTokens: 190,
+        contextTokens: 0,
+        costUsd: 0.07,
+        cacheReadTokens: 10,
+        cacheCreationTokens: 4,
+      },
+    }) + '\n');
+
+    const turn = record({
+      id: 'turn-1',
+      timestamp: 200,
+      inputTokens: 120,
+      outputTokens: 20,
+      totalTokens: 140,
+      cacheReadTokens: 10,
+      cacheCreationTokens: 4,
+      costUsd: 0.02,
+    });
+    const tool = record({
+      id: 'tool-1',
+      timestamp: 199,
+      inputTokens: 5,
+      outputTokens: 5,
+      totalTokens: 10,
+      costUsd: 0.005,
+      usageScope: 'tool',
+    });
+
+    const legacy = readLegacyUsageEstimates(workspace, [turn, tool], { from: 0, to: 1_000 });
+    expect(legacy).toHaveLength(1);
+    expect(legacy[0]).toMatchObject({
+      sessionId: 's1',
+      inputTokens: 0,
+      outputTokens: 50,
+      totalTokens: 50,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      costUsd: 0.05,
+      legacyEstimate: true,
+    });
+  });
+
+  it('does not subtract locally estimated ledger cost from SDK-only session totals', () => {
+    const sessionDir = join(workspace, 'sessions', 's1');
+    mkdirSync(sessionDir, { recursive: true });
+    writeFileSync(join(sessionDir, 'session.jsonl'), JSON.stringify({
+      id: 's1',
+      workspaceRootPath: workspace,
+      createdAt: 1,
+      lastUsedAt: 200,
+      lastMessageAt: 200,
+      messageCount: 2,
+      model: 'grok-4.5',
+      tokenUsage: {
+        inputTokens: 200,
+        outputTokens: 60,
+        totalTokens: 260,
+        contextTokens: 0,
+        costUsd: 0.10,
+      },
+    }) + '\n');
+
+    const estimatedTurn = record({
+      id: 'estimated-turn',
+      timestamp: 200,
+      inputTokens: 200,
+      outputTokens: 10,
+      totalTokens: 210,
+      costUsd: 0.02,
+      costSource: 'estimated',
+    });
+
+    const legacy = readLegacyUsageEstimates(workspace, [estimatedTurn], { from: 0, to: 1_000 });
+    expect(legacy).toHaveLength(1);
+    expect(legacy[0]).toMatchObject({
+      inputTokens: 0,
+      outputTokens: 50,
+      totalTokens: 50,
+      costUsd: 0.10,
+    });
+
+    const report = aggregateUsageRecords([estimatedTurn, ...legacy], {
+      from: 0,
+      to: 1_000,
+      timezone: 'UTC',
+    });
+    expect(report.totals.costUsd).toBeCloseTo(0.12, 10);
   });
 });
 

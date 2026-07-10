@@ -1,10 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { existsSync, mkdtempSync, rmSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
   createEmployee,
   deleteEmployee,
+  getEmployeePath,
+  isValidEmployeeSlug,
+  loadEmployeeConfig,
   loadEmployeeById,
   loadWorkspaceEmployees,
   updateEmployeeMemory,
@@ -31,6 +34,22 @@ afterEach(() => {
 });
 
 describe('employee storage', () => {
+  it('rejects traversal and non-canonical directory names at every employee path entry', () => {
+    mkdirSync(workspaceRoot, { recursive: true });
+    const sentinel = join(workspaceRoot, 'config.json');
+    writeFileSync(sentinel, '{"workspace":"safe"}');
+
+    for (const slug of ['..', '../outside', 'valid/../../outside', '/tmp/outside', '.', '', 'Uppercase', 'a--b']) {
+      expect(isValidEmployeeSlug(slug)).toBe(false);
+      expect(() => getEmployeePath(workspaceRoot, slug)).toThrow('Invalid employee slug');
+      expect(() => loadEmployeeConfig(workspaceRoot, slug)).toThrow('Invalid employee slug');
+      expect(() => deleteEmployee(workspaceRoot, slug)).toThrow('Invalid employee slug');
+    }
+
+    expect(existsSync(workspaceRoot)).toBe(true);
+    expect(existsSync(sentinel)).toBe(true);
+  });
+
   it('creates a workspace employee with definition, memory, skills, and sources', () => {
     const employee = createEmployee(workspaceRoot, {
       name: 'Status Manager',

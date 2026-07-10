@@ -51,6 +51,8 @@ export interface UseSessionSearchOptions {
   evaluateViews?: (meta: SessionMeta) => ViewConfig[]
   statusFilter?: Map<string, FilterMode>
   labelFilterMap?: Map<string, FilterMode>
+  projectFilterMap?: Map<string, FilterMode>
+  employeeFilterMap?: Map<string, FilterMode>
   /** Workspace label tree — label filters match descendants through it (shared matchesLabelFilter). */
   labelConfigs?: LabelConfig[]
   /** Collapsed group keys — collapsed items are excluded from pagination and flatItems */
@@ -215,7 +217,26 @@ interface FilterMatchOptions {
   evaluateViews?: (meta: SessionMeta) => ViewConfig[]
   statusFilter?: Map<string, 'include' | 'exclude'>
   labelFilterMap?: Map<string, 'include' | 'exclude'>
+  projectFilterMap?: Map<string, 'include' | 'exclude'>
+  employeeFilterMap?: Map<string, 'include' | 'exclude'>
   labelConfigs?: LabelConfig[]
+}
+
+function passesEntityFilter(
+  entityId: string | undefined,
+  filter: Map<string, 'include' | 'exclude'> | undefined,
+): boolean {
+  if (!filter || filter.size === 0) return true
+  let hasIncludes = false
+  let matchesInclude = false
+  for (const [id, mode] of filter) {
+    if (mode === 'exclude' && entityId === id) return false
+    if (mode === 'include') {
+      hasIncludes = true
+      if (entityId === id) matchesInclude = true
+    }
+  }
+  return !hasIncludes || matchesInclude
 }
 
 export function sessionMatchesCurrentFilter(
@@ -223,7 +244,14 @@ export function sessionMatchesCurrentFilter(
   currentFilter: SessionFilter | undefined,
   options: FilterMatchOptions = {}
 ): boolean {
-  const { evaluateViews, statusFilter, labelFilterMap, labelConfigs } = options
+  const {
+    evaluateViews,
+    statusFilter,
+    labelFilterMap,
+    projectFilterMap,
+    employeeFilterMap,
+    labelConfigs,
+  } = options
 
   const passesStatusFilter = (): boolean => {
     if (!statusFilter || statusFilter.size === 0) return true
@@ -257,7 +285,12 @@ export function sessionMatchesCurrentFilter(
     return !hasIncludes || matchesInclude
   }
 
-  if (!passesStatusFilter() || !passesLabelFilter()) return false
+  if (
+    !passesStatusFilter()
+    || !passesLabelFilter()
+    || !passesEntityFilter(session.projectId, projectFilterMap)
+    || !passesEntityFilter(session.employeeId, employeeFilterMap)
+  ) return false
 
   if (!currentFilter) return true
 
@@ -307,6 +340,8 @@ export function useSessionSearch({
   evaluateViews,
   statusFilter,
   labelFilterMap,
+  projectFilterMap,
+  employeeFilterMap,
   labelConfigs,
   collapsedGroups,
   groupingMode,
@@ -414,7 +449,14 @@ export function useSessionSearch({
   const searchFilteredItems = useMemo(() => {
     if (!isSearchMode) {
       return sortedItems.filter(item =>
-        sessionMatchesCurrentFilter(item, currentFilter, { evaluateViews, statusFilter, labelFilterMap, labelConfigs })
+        sessionMatchesCurrentFilter(item, currentFilter, {
+          evaluateViews,
+          statusFilter,
+          labelFilterMap,
+          projectFilterMap,
+          employeeFilterMap,
+          labelConfigs,
+        })
       )
     }
 
@@ -432,14 +474,16 @@ export function useSessionSearch({
         const countB = contentSearchResults.get(b.id)?.matchCount || 0
         return countB - countA
       })
-  }, [sortedItems, isSearchMode, searchQuery, contentSearchResults, currentFilter, evaluateViews, statusFilter, labelFilterMap, labelConfigs])
+  }, [sortedItems, isSearchMode, searchQuery, contentSearchResults, currentFilter, evaluateViews, statusFilter, labelFilterMap, projectFilterMap, employeeFilterMap, labelConfigs])
 
   // Split search results: matching current filter vs others
   const { matchingFilterItems, otherResultItems, exceededSearchLimit } = useMemo(() => {
     const hasActiveFilters =
       (currentFilter && currentFilter.kind !== 'allSessions') ||
       (statusFilter && statusFilter.size > 0) ||
-      (labelFilterMap && labelFilterMap.size > 0)
+      (labelFilterMap && labelFilterMap.size > 0) ||
+      (projectFilterMap && projectFilterMap.size > 0) ||
+      (employeeFilterMap && employeeFilterMap.size > 0)
 
     if (searchQuery.trim() && searchFilteredItems.length > 0) {
       searchLog.info('search:grouping', {
@@ -449,6 +493,8 @@ export function useSessionSearch({
         hasActiveFilters,
         statusFilterSize: statusFilter?.size ?? 0,
         labelFilterSize: labelFilterMap?.size ?? 0,
+        projectFilterSize: projectFilterMap?.size ?? 0,
+        employeeFilterSize: employeeFilterMap?.size ?? 0,
         itemCount: searchFilteredItems.length,
       })
     }
@@ -467,7 +513,14 @@ export function useSessionSearch({
     for (const item of searchFilteredItems) {
       if (matching.length + others.length >= MAX_SEARCH_RESULTS) break
 
-      const matches = sessionMatchesCurrentFilter(item, currentFilter, { evaluateViews, statusFilter, labelFilterMap, labelConfigs })
+      const matches = sessionMatchesCurrentFilter(item, currentFilter, {
+        evaluateViews,
+        statusFilter,
+        labelFilterMap,
+        projectFilterMap,
+        employeeFilterMap,
+        labelConfigs,
+      })
       if (matches) {
         matching.push(item)
       } else {
@@ -484,7 +537,7 @@ export function useSessionSearch({
     }
 
     return { matchingFilterItems: matching, otherResultItems: others, exceededSearchLimit: exceeded }
-  }, [searchFilteredItems, currentFilter, evaluateViews, isSearchMode, statusFilter, labelFilterMap, labelConfigs, searchQuery])
+  }, [searchFilteredItems, currentFilter, evaluateViews, isSearchMode, statusFilter, labelFilterMap, projectFilterMap, employeeFilterMap, labelConfigs, searchQuery])
 
   // --- Pagination ---
 

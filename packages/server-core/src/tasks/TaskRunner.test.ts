@@ -4,7 +4,15 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import type { TokenUsage } from '@craft-agent/core/types';
 import type { CreateSessionOptions } from '@craft-agent/shared/protocol';
-import { parseTaskSpec, saveTaskSpec, readRunLog, readNodeOutput, type TaskSpec } from '@craft-agent/shared/tasks';
+import {
+  appendRunLog,
+  parseTaskSpec,
+  saveTaskSpec,
+  readRunLog,
+  readNodeOutput,
+  writeNodeOutput,
+  type TaskSpec,
+} from '@craft-agent/shared/tasks';
 import type { SessionCompletionEvent } from '../sessions/SessionManager';
 import { TaskRunner, type ConductorSessionHost } from './TaskRunner';
 
@@ -41,6 +49,9 @@ class MockHost implements ConductorSessionHost {
   }
   async sendMessage(sessionId: string, message: string): Promise<void> {
     this.sent.push({ sessionId, message });
+  }
+  async sendTaskMessage(sessionId: string, message: string, _signal: AbortSignal): Promise<void> {
+    await this.sendMessage(sessionId, message);
   }
   async setSessionStatus(sessionId: string, status: string): Promise<void> {
     this.statuses.push({ sessionId, status });
@@ -484,6 +495,213 @@ describe('TaskRunner (Conductor)', () => {
     expect(r2.getRunState('res', 'r1')!.status).toBe('completed');
   });
 
+  it('rehydrates the immutable spec, resolved params, verification choice, and token total', async () => {
+    saveTaskSpec(
+      root,
+      specOf({
+        id: 'durable',
+        title: 'Durable',
+        goal: 'g',
+        params: [{ name: 'flavor', default: 'default' }],
+        nodes: [
+          { id: 'a', prompt: 'a ${params.flavor}' },
+          { id: 'b', depends_on: ['a'], prompt: 'original ${params.flavor} ${nodes.a.output}' },
+        ],
+      }),
+    );
+    const r1 = makeRunner();
+    r1.run('durable', {
+      runId: 'r1',
+      orchestratorSessionId: 'orch',
+      params: { flavor: 'invocation' },
+      verifyOnComplete: false,
+    });
+    await tick();
+    r1.pause('durable', 'r1');
+    host.complete('a', { finalText: 'A', tokenUsage: tu(3, 4) });
+    await tick();
+
+    // Editing task.yaml after the run starts must not alter the in-flight DAG.
+    saveTaskSpec(
+      root,
+      specOf({
+        id: 'durable',
+        title: 'Edited',
+        goal: 'edited',
+        params: [{ name: 'flavor', default: 'edited-default' }],
+        nodes: [
+          { id: 'a', prompt: 'edited a' },
+          { id: 'b', depends_on: ['a'], prompt: 'EDITED ${params.flavor} ${nodes.a.output}' },
+        ],
+      }),
+    );
+
+    const host2 = new MockHost();
+    const r2 = new TaskRunner({ host: host2, workspaceId: 'ws', workspaceRoot: root });
+    r2.resume('durable', 'r1');
+    await tick();
+
+    expect(r2.getRunState('durable', 'r1')!.tokensUsed).toBe(7);
+    expect(host2.promptFor('b')).toBe('original invocation A');
+
+    host2.complete('b', { finalText: 'B', tokenUsage: tu(2, 3) });
+    await tick();
+    const snap = r2.getRunState('durable', 'r1')!;
+    expect(snap.tokensUsed).toBe(12);
+    expect(snap.status).toBe('completed');
+    expect(host2.sent.some((entry) => entry.sessionId === 'orch')).toBe(false);
+    expect(readRunLog(root, 'durable', 'r1').some((entry) => entry.kind === 'token-usage')).toBe(true);
+  });
+
+  it('still resumes legacy logs that predate snapshots and durable run inputs', async () => {
+    saveTaskSpec(
+      root,
+      specOf({ id: 'legacy', title: 'Legacy', goal: 'g', nodes: [{ id: 'a', prompt: 'a' }] }),
+    );
+    const t = '2026-06-07T00:00:00.000Z';
+    appendRunLog(root, 'legacy', 'r1', { t, kind: 'run-started', taskId: 'legacy', runId: 'r1' });
+    appendRunLog(root, 'legacy', 'r1', { t, kind: 'node-scheduled', nodeId: 'a' });
+    appendRunLog(root, 'legacy', 'r1', { t, kind: 'node-spawned', nodeId: 'a', sessionId: 'old-session' });
+    appendRunLog(root, 'legacy', 'r1', { t, kind: 'node-finished', nodeId: 'a', sessionId: 'old-session', state: 'done' });
+    writeNodeOutput(root, 'legacy', 'r1', 'a', { text: 'legacy output' });
+
+    const runner = makeRunner();
+    expect(() => runner.resume('legacy', 'r1')).not.toThrow();
+    await tick();
+    expect(runner.getRunState('legacy', 'r1')).toMatchObject({ status: 'completed', tokensUsed: 0 });
+    expect(host.created).toEqual([]);
+  });
+
+  it('fails closed when a new-format run loses its required spec snapshot', async () => {
+    saveTaskSpec(
+      root,
+      specOf({ id: 'snapshot-required', title: 'Snapshot', goal: 'g', nodes: [{ id: 'a', prompt: 'a' }] }),
+    );
+    const first = makeRunner();
+    first.run('snapshot-required', { runId: 'r1', verifyOnComplete: false });
+    await tick();
+    await first.stop('snapshot-required', 'r1');
+
+    const started = readRunLog(root, 'snapshot-required', 'r1').find((entry) => entry.kind === 'run-started');
+    expect(started).toMatchObject({ kind: 'run-started', specSnapshotVersion: 1 });
+    rmSync(join(root, 'tasks', 'snapshot-required', 'runs', 'r1', 'spec.json'), { force: true });
+
+    const restarted = new TaskRunner({ host: new MockHost(), workspaceId: 'ws', workspaceRoot: root });
+    expect(() => restarted.resume('snapshot-required', 'r1')).toThrow(
+      'required run spec snapshot is missing or corrupt',
+    );
+  });
+
+  it('rejects deferred node kinds instead of executing them as sessions', () => {
+    saveTaskSpec(
+      root,
+      specOf({
+        id: 'unsupported',
+        title: 'Unsupported',
+        goal: 'g',
+        nodes: [{ id: 'approve', kind: 'approval', approval: true }],
+      }),
+    );
+
+    expect(() => makeRunner().run('unsupported', { runId: 'r1' })).toThrow(
+      'Only kind="session" is supported',
+    );
+    expect(host.created).toEqual([]);
+  });
+
+  it('ignores a completion from a stale retry attempt', async () => {
+    class UniqueAttemptHost extends MockHost {
+      private nextId = 0;
+      override async createSession(_workspaceId: string, options: CreateSessionOptions): Promise<{ id: string }> {
+        const id = `sess-${options.name}-${++this.nextId}`;
+        this.created.push({ id, options });
+        return { id };
+      }
+    }
+
+    saveTaskSpec(
+      root,
+      specOf({ id: 'stale', title: 'Stale', goal: 'g', nodes: [{ id: 'a', prompt: 'a', retry: { limit: 1 } }] }),
+    );
+    const uniqueHost = new UniqueAttemptHost();
+    const runner = new TaskRunner({ host: uniqueHost, workspaceId: 'ws', workspaceRoot: root });
+    runner.run('stale', { runId: 'r1', verifyOnComplete: false });
+    await tick();
+    const firstSession = uniqueHost.created[0]!.id;
+
+    uniqueHost.completeSession(firstSession, { reason: 'error' });
+    await tick();
+    const secondSession = uniqueHost.created[1]!.id;
+    expect(secondSession).not.toBe(firstSession);
+
+    uniqueHost.completeSession(firstSession, { finalText: 'STALE' });
+    await tick();
+    expect(runner.getRunState('stale', 'r1')!.status).toBe('running');
+    expect(readNodeOutput(root, 'stale', 'r1', 'a')).toBeNull();
+
+    uniqueHost.completeSession(secondSession, { finalText: 'FRESH' });
+    await tick();
+    expect(runner.getRunState('stale', 'r1')!.status).toBe('completed');
+    expect(readNodeOutput(root, 'stale', 'r1', 'a')).toEqual({ text: 'FRESH' });
+  });
+
+  it('cancels a child created after stop and never sends its prompt', async () => {
+    class DeferredCreateHost extends MockHost {
+      resolveCreate!: (child: { id: string }) => void;
+      override createSession(_workspaceId: string, options: CreateSessionOptions): Promise<{ id: string }> {
+        this.created.push({ id: 'late-child', options });
+        return new Promise((resolve) => { this.resolveCreate = resolve });
+      }
+    }
+
+    saveTaskSpec(root, specOf({ id: 'race', title: 'Race', goal: 'g', nodes: [{ id: 'a', prompt: 'a' }] }));
+    const deferredHost = new DeferredCreateHost();
+    const runner = new TaskRunner({ host: deferredHost, workspaceId: 'ws', workspaceRoot: root });
+    runner.run('race', { runId: 'r1', verifyOnComplete: false });
+    await tick();
+
+    await runner.stop('race', 'r1');
+    deferredHost.resolveCreate({ id: 'late-child' });
+    await tick();
+    await tick();
+
+    expect(runner.getRunState('race', 'r1')!.status).toBe('stopped');
+    expect(deferredHost.cancelled).toContain('late-child');
+    expect(deferredHost.sent).toEqual([]);
+  });
+
+  it('aborts an in-progress send preflight before stop can miss an idle child', async () => {
+    class DeferredSendHost extends MockHost {
+      entered!: () => void;
+      release!: () => void;
+      readonly sendEntered = new Promise<void>((resolve) => { this.entered = resolve });
+      private readonly sendRelease = new Promise<void>((resolve) => { this.release = resolve });
+      observedSignal?: AbortSignal;
+
+      override async sendTaskMessage(sessionId: string, message: string, signal: AbortSignal): Promise<void> {
+        this.observedSignal = signal;
+        this.entered();
+        await this.sendRelease;
+        if (signal.aborted) return;
+        await super.sendTaskMessage(sessionId, message, signal);
+      }
+    }
+
+    saveTaskSpec(root, specOf({ id: 'send-race', title: 'Send Race', goal: 'g', nodes: [{ id: 'a', prompt: 'a' }] }));
+    const deferredHost = new DeferredSendHost();
+    const runner = new TaskRunner({ host: deferredHost, workspaceId: 'ws', workspaceRoot: root });
+    runner.run('send-race', { runId: 'r1', verifyOnComplete: false });
+    await deferredHost.sendEntered;
+
+    await runner.stop('send-race', 'r1');
+    deferredHost.release();
+    await tick();
+
+    expect(deferredHost.observedSignal?.aborted).toBe(true);
+    expect(deferredHost.sent).toEqual([]);
+    expect(runner.getRunState('send-race', 'r1')!.status).toBe('stopped');
+  });
+
   it('retries a failed node up to retry.limit, then fails', async () => {
     saveTaskSpec(
       root,
@@ -772,6 +990,13 @@ describe('TaskRunner (Conductor)', () => {
     const host2 = new MockHost();
     const r2 = new TaskRunner({ host: host2, workspaceId: 'ws', workspaceRoot: root, now: () => '2026-06-07T00:00:00.000Z' });
     r2.resume('hyd', 'r1');
+    await tick();
+
+    // The repair attempt was in flight at the crash, so it is re-dispatched;
+    // the old pre-repair output must not be treated as the repaired result.
+    expect(r2.getRunState('hyd', 'r1')!.status).toBe('running');
+    expect(host2.dispatchedNames()).toEqual(['a']);
+    host2.complete('a', { finalText: 'repaired after restart' });
     await tick();
     expect(r2.getRunState('hyd', 'r1')!.status).toBe('verifying');
 

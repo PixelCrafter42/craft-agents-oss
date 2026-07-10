@@ -56,7 +56,8 @@ export class SourceActivationDrainController {
    * Pre-yield check used only with `'fire-on-non-tool-result'` policy.
    *
    * If we have a captured restart AND the incoming event is not a
-   * `tool_result`, we've reached the end of the parallel-tool batch.
+   * `tool_result` or transparent out-of-band accounting event, we've reached
+   * the end of the parallel-tool batch.
    * Returns the `source_activated` event the caller should yield BEFORE
    * yielding the boundary event (which belongs to the next assistant turn
    * we're about to cancel — letting it through would leak a fragment of the
@@ -68,7 +69,10 @@ export class SourceActivationDrainController {
   shouldFireBeforeEvent(event: AgentEvent): SourceActivatedEvent | null {
     if (this.policy !== 'fire-on-non-tool-result') return null;
     if (!this.captured || this.fired) return null;
-    if (event.type === 'tool_result') return null;
+    // Independently billed tool usage is emitted as soon as an HTTP response
+    // arrives, which can be before sibling tool_results in the same parallel
+    // batch. It must pass through without becoming a false turn boundary.
+    if (event.type === 'tool_result' || event.type === 'external_usage') return null;
     return this.takeFire();
   }
 

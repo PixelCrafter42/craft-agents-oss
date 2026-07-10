@@ -91,6 +91,10 @@ interface SessionListProps {
   statusFilter?: Map<string, FilterMode>
   /** Secondary label filter (label chips) - for search result grouping */
   labelFilterMap?: Map<string, FilterMode>
+  /** Secondary project filter - for search result grouping. */
+  projectFilterMap?: Map<string, FilterMode>
+  /** Secondary employee filter - for search result grouping. */
+  employeeFilterMap?: Map<string, FilterMode>
   /** Override which session is highlighted (for multi-panel focused panel tracking) */
   focusedSessionId?: string | null
   /** Override navigation target (for multi-panel: focuses existing panel or navigates focused panel) */
@@ -149,6 +153,8 @@ export function SessionList({
   workspaceId,
   statusFilter,
   labelFilterMap,
+  projectFilterMap,
+  employeeFilterMap,
   focusedSessionId,
   onNavigateToSession,
   hasPendingPrompt,
@@ -266,6 +272,8 @@ export function SessionList({
     evaluateViews,
     statusFilter,
     labelFilterMap,
+    projectFilterMap,
+    employeeFilterMap,
     labelConfigs: labels,
     collapsedGroups,
     groupingMode,

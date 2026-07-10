@@ -171,20 +171,24 @@ bun run electron:build           # All of the above
 
 ## macOS Liquid Glass Icon
 
-The app includes a pre-compiled `Assets.car` for macOS 26+ Liquid Glass icons. This enables the layered glass effect on macOS Tahoe. On older macOS versions, the app falls back to `icon.icns`.
+The macOS packaging hook compiles `resources/icon.icon` into `Assets.car` with Xcode's `actool`. This enables the layered glass effect on macOS Tahoe. On older macOS versions, the app falls back to `icon.icns`.
 
 **Regenerating after icon changes:**
 
-If you modify `resources/icon.icon`, regenerate the Assets.car:
+To verify the asset manually after modifying `resources/icon.icon`, first give
+the bundle the same basename used by `CFBundleIconName`:
 
 ```bash
 cd apps/electron
-xcrun actool "resources/icon.icon" --compile "resources" \
+tmpdir="$(mktemp -d)"
+cp -R "resources/icon.icon" "$tmpdir/AppIcon.icon"
+xcrun actool "$tmpdir/AppIcon.icon" --compile "resources" \
   --app-icon AppIcon --minimum-deployment-target 26.0 \
   --platform macosx --output-partial-info-plist /dev/null
+rm -rf "$tmpdir"
 ```
 
-> **Note:** This requires macOS 26 with Xcode 26 (macOS 26 SDK). The pre-compiled Assets.car is committed to the repo so CI builds work without the SDK.
+> **Note:** Release packaging requires Xcode 26+ (macOS 26 SDK). Development packages may explicitly fall back to `icon.icns` via `CRAFT_DEV_RUNTIME=1`; release builds fail instead of silently shipping without the Liquid Glass asset.
 
 ## Debugging
 

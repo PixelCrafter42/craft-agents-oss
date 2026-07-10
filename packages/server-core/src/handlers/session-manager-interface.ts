@@ -120,6 +120,8 @@ export interface ISessionManager {
     onAck?: (messageId: string) => void,
     rpcContext?: { callerClientId?: string },
   ): Promise<void>
+  /** Cancel-aware send used by the Tasks Conductor during child preflight. */
+  sendTaskMessage(sessionId: string, message: string, signal: AbortSignal): Promise<void>
   cancelProcessing(sessionId: string, silent?: boolean): Promise<void>
   killShell(sessionId: string, shellId: string): Promise<{ success: boolean; error?: string }>
   getTaskOutput(taskId: string): Promise<string | null>

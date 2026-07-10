@@ -4,13 +4,18 @@
  * Uses real temp directories to exercise actual filesystem operations.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdtempSync, writeFileSync, rmSync, existsSync } from 'fs';
+import { mkdtempSync, writeFileSync, rmSync, existsSync, mkdirSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { estimateTokensDensityAware } from '../../utils/large-response.ts';
 import {
   createProject,
+  deleteProject,
+  getProjectPath,
   getProjectMemoryPath,
+  isValidProjectSlug,
+  loadProjectConfig,
+  loadWorkspaceProjects,
   loadProjectMemory,
   sanitizeAssetFilename,
 } from '../storage.ts';
@@ -45,6 +50,34 @@ describe('sanitizeAssetFilename', () => {
 
   it('falls back to a generated name when the input reduces to empty', () => {
     expect(sanitizeAssetFilename('\x00\n\t')).toMatch(/^asset_[0-9a-f]{8}$/);
+  });
+});
+
+describe('project slug path safety', () => {
+  it('rejects traversal and non-canonical directory names at every project path entry', () => {
+    mkdirSync(workspaceRoot, { recursive: true });
+    const sentinel = join(workspaceRoot, 'config.json');
+    writeFileSync(sentinel, '{"workspace":"safe"}');
+
+    for (const slug of ['..', '../outside', 'valid/../../outside', '/tmp/outside', '.', '', 'Uppercase', 'a--b']) {
+      expect(isValidProjectSlug(slug)).toBe(false);
+      expect(() => getProjectPath(workspaceRoot, slug)).toThrow('Invalid project slug');
+      expect(() => loadProjectConfig(workspaceRoot, slug)).toThrow('Invalid project slug');
+      expect(() => deleteProject(workspaceRoot, slug)).toThrow('Invalid project slug');
+    }
+
+    expect(existsSync(workspaceRoot)).toBe(true);
+    expect(existsSync(sentinel)).toBe(true);
+  });
+
+  it('ignores invalid folders while listing valid projects', () => {
+    const project = createProject(workspaceRoot, { name: 'Valid Project' });
+    mkdirSync(join(workspaceRoot, 'projects', 'Not-A-Slug'), { recursive: true });
+    writeFileSync(join(workspaceRoot, 'projects', 'Not-A-Slug', 'config.json'), '{}');
+    mkdirSync(join(workspaceRoot, 'projects', 'bad-config'), { recursive: true });
+    writeFileSync(join(workspaceRoot, 'projects', 'bad-config', 'config.json'), JSON.stringify({ slug: '..' }));
+
+    expect(loadWorkspaceProjects(workspaceRoot).map((entry) => entry.config.slug)).toEqual([project.slug]);
   });
 });
 

@@ -476,6 +476,8 @@ export class ClaudeAgent extends BaseAgent {
   // Note: ClaudeAgentConfig is compatible with BackendConfig, so we use the inherited this.config
   private currentQuery: Query | null = null;
   private currentQueryAbortController: AbortController | null = null;
+  /** Number of public chat turns currently executing (normally 0 or 1; retries nest). */
+  private activeTurnDepth = 0;
   private lastAbortReason: AbortReason | null = null;
   private sessionId: string | null = null;
   // Whether the most recent user turn included image/PDF attachments. Read by
@@ -520,6 +522,8 @@ export class ClaudeAgent extends BaseAgent {
   // ── WS2 persistent streaming-input query state (flag ON only) ─────────────
   /** Pushable prompt feeding the one long-lived `query()`; `push()` per turn, `end()` to tear down. */
   private persistentInput: PushableInputStream<SDKUserMessage> | null = null;
+  /** Stable identity of the long-lived query (separate from the active-query routing pointer). */
+  private persistentQuery: Query | null = null;
   /** The sole iterator over the persistent query — owned exclusively by the consumer loop. */
   private persistentIterator: AsyncIterator<SDKMessage> | null = null;
   /** AbortController bound to the persistent query for its whole life (hard-kill backstop). */
@@ -538,20 +542,54 @@ export class ClaudeAgent extends BaseAgent {
    * iterator, and — as a hard backstop — aborts the controller (SIGTERM/SIGKILL)
    * so the subprocess dies even if the graceful close is ignored.
    */
-  private teardownPersistentQuery(reason: string = 'teardown'): void {
-    if (!this.persistentInput && !this.persistentIterator && !this.persistentAbortController) {
-      return; // already torn down
+  private teardownPersistentQuery(reason: string = 'teardown'): Promise<void> {
+    if (!this.persistentInput && !this.persistentQuery && !this.persistentIterator && !this.persistentAbortController) {
+      return Promise.resolve(); // already torn down
     }
     debug(`[bg-lifecycle] teardownPersistentQuery (${reason})`, { sessionId: this.config.session?.id });
+    const queryToClose = this.persistentQuery;
+    const controllerToAbort = this.persistentAbortController;
+    const iteratorToClose = this.persistentIterator;
+    let iteratorClosed: Promise<unknown> | null = null;
     try { this.persistentInput?.end(); } catch { /* already ended */ }
-    try { void this.persistentIterator?.return?.(undefined); } catch { /* best-effort */ }
-    try { this.persistentAbortController?.abort(); } catch { /* best-effort hard backstop */ }
+    try {
+      const closing = iteratorToClose?.return?.(undefined);
+      if (closing) iteratorClosed = Promise.resolve(closing).catch(() => undefined);
+    } catch { /* best-effort */ }
+    try { controllerToAbort?.abort(); } catch { /* best-effort hard backstop */ }
     try { this.activeTurnChannel?.end(); } catch { /* best-effort */ }
+    if (this.currentQuery === queryToClose) this.currentQuery = null;
+    if (this.currentQueryAbortController === controllerToAbort) this.currentQueryAbortController = null;
     this.persistentInput = null;
+    this.persistentQuery = null;
     this.persistentIterator = null;
     this.persistentAbortController = null;
     this.activeTurnChannel = null;
     this.persistentConsumerActive = false;
+
+    if (!iteratorClosed) return Promise.resolve();
+    // Slash commands must not start a second query against the same SDK
+    // session until the old iterator has closed. Bound the wait so a broken
+    // SDK close cannot hang the UI forever; AbortController above remains the
+    // hard-kill backstop.
+    return new Promise<void>((resolve) => {
+      let finished = false;
+      const finish = () => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timer);
+        resolve();
+      };
+      const timer = setTimeout(finish, 2_000);
+      timer.unref?.();
+      void iteratorClosed.then(finish, finish);
+    });
+  }
+
+  private async prepareForSdkSlashCommand(commandName: string): Promise<void> {
+    if (this.keepBackgroundTasksAlive && this.persistentQuery) {
+      await this.teardownPersistentQuery(`slash-command:${commandName}`);
+    }
   }
 
   /**
@@ -567,8 +605,9 @@ export class ClaudeAgent extends BaseAgent {
       // First turn: create the persistent query + consumer.
       this.persistentInput = createPushableInputStream<SDKUserMessage>();
       this.persistentAbortController = this.currentQueryAbortController;
-      this.currentQuery = query({ prompt: this.persistentInput.stream, options });
-      this.persistentIterator = this.currentQuery[Symbol.asyncIterator]();
+      this.persistentQuery = query({ prompt: this.persistentInput.stream, options });
+      this.currentQuery = this.persistentQuery;
+      this.persistentIterator = this.persistentQuery[Symbol.asyncIterator]();
       this.startPersistentConsumer();
     } else {
       // Subsequent turn: keep redirect()/forceAbort() targeting the LIVE query by
@@ -576,6 +615,7 @@ export class ClaudeAgent extends BaseAgent {
       if (this.persistentAbortController) {
         this.currentQueryAbortController = this.persistentAbortController;
       }
+      this.currentQuery = this.persistentQuery;
     }
     const channel = createPushableInputStream<SDKMessage>();
     this.activeTurnChannel = channel;
@@ -621,7 +661,12 @@ export class ClaudeAgent extends BaseAgent {
       } catch (err) {
         this.debug(`[bg-lifecycle] persistent consumer error: ${err instanceof Error ? err.message : String(err)}`);
       } finally {
-        this.teardownPersistentQuery('consumer-exit');
+        // A prior consumer can finish after /compact or clearHistory has already
+        // created a replacement query. Only tear down the query this consumer
+        // actually owns; never clobber a newer generation.
+        if (this.persistentIterator === iterator) {
+          await this.teardownPersistentQuery('consumer-exit');
+        }
       }
     })();
   }
@@ -1016,6 +1061,24 @@ export class ClaudeAgent extends BaseAgent {
     // Only return token if explicitly provided via config
     // Sources handle their own authentication
     return this.config.mcpToken ?? null;
+  }
+
+  /**
+   * Track the complete public turn, including BaseAgent's skill/prerequisite
+   * preparation before chatImpl starts. Persistent query lifetime is
+   * deliberately excluded from this busy state.
+   */
+  override async *chat(
+    message: string,
+    attachments?: FileAttachment[],
+    options?: ChatOptions,
+  ): AsyncGenerator<AgentEvent> {
+    this.activeTurnDepth += 1;
+    try {
+      yield* super.chat(message, attachments, options);
+    } finally {
+      this.activeTurnDepth = Math.max(0, this.activeTurnDepth - 1);
+    }
   }
 
   protected async *chatImpl(
@@ -1644,13 +1707,6 @@ export class ClaudeAgent extends BaseAgent {
         debug(`[ClaudeAgent] Starting fresh SDK session (no resume)`);
       }
 
-      // Create AbortController for this query - allows force-stopping via forceAbort()
-      this.currentQueryAbortController = new AbortController();
-      const optionsWithAbort = {
-        ...options,
-        abortController: this.currentQueryAbortController,
-      };
-
       // Known SDK slash commands that bypass context wrapping.
       // These are sent directly to the SDK without date/session/source context.
       // Currently only 'compact' is supported - add more here as needed.
@@ -1664,6 +1720,22 @@ export class ClaudeAgent extends BaseAgent {
       const isSlashCommand = commandName &&
         SDK_SLASH_COMMANDS.includes(commandName as typeof SDK_SLASH_COMMANDS[number]) &&
         !attachments?.length;
+
+      // Slash commands mutate the SDK session outside the streaming-input
+      // protocol. Tear down the old persistent query before creating the
+      // command query; the next ordinary turn will create a fresh persistent
+      // query resumed from the command's resulting session state.
+      if (isSlashCommand) {
+        await this.prepareForSdkSlashCommand(commandName);
+      }
+
+      // Create AbortController only after any persistent teardown, otherwise
+      // teardown could accidentally clear/abort the new command controller.
+      this.currentQueryAbortController = new AbortController();
+      const optionsWithAbort = {
+        ...options,
+        abortController: this.currentQueryAbortController,
+      };
 
       // For SDK-fork branches: prepend a one-time context hint so the model treats
       // the parent conversation history (already in the SDK's messages via --fork-session)
@@ -2770,6 +2842,7 @@ This is a branched conversation. All prior messages in this conversation are par
   }
 
   clearHistory(): void {
+    void this.teardownPersistentQuery('clear-history');
     // Clear session to start fresh conversation
     this.sessionId = null;
     // Clear pinned state so next chat() will capture fresh values
@@ -2787,7 +2860,7 @@ This is a branched conversation. All prior messages in this conversation are par
    * session layer can re-queue the message.
    */
   override redirect(message: string): boolean {
-    if (!this.currentQuery || !this.currentQueryAbortController) {
+    if (!this.isProcessing() || !this.currentQuery || !this.currentQueryAbortController) {
       // Not actively streaming — fall back to abort + queue
       this.forceAbort(AbortReason.Redirect);
       return false;
@@ -2808,7 +2881,10 @@ This is a branched conversation. All prior messages in this conversation are par
     this.lastAbortReason = reason;
     this.pendingSteerMessage = null; // Clear any undelivered steer
 
-    if (!this.currentQuery) {
+    if (
+      !this.currentQuery ||
+      (this.currentQuery === this.persistentQuery && !this.isProcessing())
+    ) {
       return;
     }
 
@@ -2827,7 +2903,9 @@ This is a branched conversation. All prior messages in this conversation are par
   forceAbort(reason: AbortReason = AbortReason.UserStop): void {
     this.lastAbortReason = reason;
     this.pendingSteerMessage = null; // Clear any undelivered steer
-    if (this.currentQueryAbortController) {
+    if (this.persistentQuery || this.persistentInput || this.persistentIterator) {
+      void this.teardownPersistentQuery(`force-abort:${reason}`);
+    } else if (this.currentQueryAbortController) {
       this.currentQueryAbortController.abort(reason);
       this.currentQueryAbortController = null;
     }
@@ -2945,7 +3023,7 @@ This is a branched conversation. All prior messages in this conversation are par
     this.currentQueryAbortController?.abort();
     // WS2: tear down the persistent streaming-input query (if any) so no
     // subprocess/background sub-agents leak past the agent's lifetime.
-    this.teardownPersistentQuery('destroy');
+    void this.teardownPersistentQuery('destroy');
     this.pendingPermissions.clear();
 
     // Clear pinned system prompt state
@@ -2980,7 +3058,7 @@ This is a branched conversation. All prior messages in this conversation are par
    * Check if currently processing a query.
    */
   isProcessing(): boolean {
-    return this.currentQuery !== null;
+    return this.activeTurnDepth > 0;
   }
 
   /**

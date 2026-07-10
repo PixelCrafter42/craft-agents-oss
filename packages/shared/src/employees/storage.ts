@@ -17,7 +17,7 @@ import {
   rmSync,
   writeFileSync,
 } from 'fs';
-import { basename, join } from 'path';
+import { basename, isAbsolute, join, relative, resolve, sep } from 'path';
 import { randomUUID } from 'crypto';
 import { atomicWriteFileSync, readJsonFileSync } from '../utils/files.ts';
 import { debug } from '../utils/debug.ts';
@@ -35,8 +35,32 @@ export function getWorkspaceEmployeesPath(workspaceRootPath: string): string {
   return join(workspaceRootPath, 'employees');
 }
 
+/**
+ * Employee slugs are storage directory names, not arbitrary paths.
+ * Keep this in sync with generateEmployeeSlug().
+ */
+export function isValidEmployeeSlug(employeeSlug: unknown): employeeSlug is string {
+  return typeof employeeSlug === 'string'
+    && employeeSlug.length <= 64
+    && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(employeeSlug);
+}
+
+export function assertValidEmployeeSlug(employeeSlug: unknown): asserts employeeSlug is string {
+  if (!isValidEmployeeSlug(employeeSlug)) {
+    throw new Error('Invalid employee slug');
+  }
+}
+
 export function getEmployeePath(workspaceRootPath: string, employeeSlug: string): string {
-  return join(getWorkspaceEmployeesPath(workspaceRootPath), employeeSlug);
+  assertValidEmployeeSlug(employeeSlug);
+
+  const employeesRoot = resolve(getWorkspaceEmployeesPath(workspaceRootPath));
+  const employeePath = resolve(employeesRoot, employeeSlug);
+  const relativePath = relative(employeesRoot, employeePath);
+  if (!relativePath || relativePath === '..' || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath)) {
+    throw new Error(`Employee path escapes employees directory: ${employeeSlug}`);
+  }
+  return employeePath;
 }
 
 export function getEmployeeDefinitionPath(workspaceRootPath: string, employeeSlug: string): string {
@@ -62,7 +86,12 @@ export function loadEmployeeConfig(
   if (!existsSync(configPath)) return null;
 
   try {
-    return readJsonFileSync<EmployeeConfig>(configPath);
+    const config = readJsonFileSync<EmployeeConfig>(configPath);
+    if (!isValidEmployeeSlug(config.slug) || config.slug !== employeeSlug) {
+      debug('[loadEmployeeConfig] Config slug does not match its storage directory:', employeeSlug);
+      return null;
+    }
+    return config;
   } catch (error) {
     debug('[loadEmployeeConfig] Failed to read employee config:', employeeSlug, error);
     return null;
@@ -128,6 +157,7 @@ export function loadWorkspaceEmployees(workspaceRootPath: string): LoadedEmploye
 
   for (const entry of readdirSync(employeesDir, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
+    if (!isValidEmployeeSlug(entry.name)) continue;
     const employee = loadEmployee(workspaceRootPath, entry.name);
     if (employee) employees.push(employee);
   }

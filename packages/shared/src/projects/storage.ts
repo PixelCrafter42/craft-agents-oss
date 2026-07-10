@@ -18,7 +18,7 @@ import {
   unlinkSync,
   readFileSync,
 } from 'fs';
-import { basename, extname, join } from 'path';
+import { basename, extname, isAbsolute, join, relative, resolve, sep } from 'path';
 import { randomUUID } from 'crypto';
 import { atomicWriteFileSync, readJsonFileSync, getMimeType } from '../utils/files.ts';
 import { debug } from '../utils/debug.ts';
@@ -43,10 +43,34 @@ export function getWorkspaceProjectsPath(workspaceRootPath: string): string {
 }
 
 /**
+ * Project slugs are storage directory names, not arbitrary paths.
+ * Keep this in sync with generateProjectSlug().
+ */
+export function isValidProjectSlug(projectSlug: unknown): projectSlug is string {
+  return typeof projectSlug === 'string'
+    && projectSlug.length <= 64
+    && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(projectSlug);
+}
+
+export function assertValidProjectSlug(projectSlug: unknown): asserts projectSlug is string {
+  if (!isValidProjectSlug(projectSlug)) {
+    throw new Error('Invalid project slug');
+  }
+}
+
+/**
  * Get path to a project folder within a workspace.
  */
 export function getProjectPath(workspaceRootPath: string, projectSlug: string): string {
-  return join(getWorkspaceProjectsPath(workspaceRootPath), projectSlug);
+  assertValidProjectSlug(projectSlug);
+
+  const projectsRoot = resolve(getWorkspaceProjectsPath(workspaceRootPath));
+  const projectPath = resolve(projectsRoot, projectSlug);
+  const relativePath = relative(projectsRoot, projectPath);
+  if (!relativePath || relativePath === '..' || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath)) {
+    throw new Error(`Project path escapes projects directory: ${projectSlug}`);
+  }
+  return projectPath;
 }
 
 /**
@@ -104,6 +128,10 @@ export function loadProjectConfig(
 
   try {
     const config = readJsonFileSync<ProjectConfig>(configPath);
+    if (!isValidProjectSlug(config.slug) || config.slug !== projectSlug) {
+      debug('[loadProjectConfig] Config slug does not match its storage directory:', projectSlug);
+      return null;
+    }
 
     // Expand portable paths on read so consumers always see absolute paths.
     if (config.workingDirectory) {
@@ -238,6 +266,9 @@ export function loadWorkspaceProjects(workspaceRootPath: string): LoadedProject[
   const entries = readdirSync(projectsDir, { withFileTypes: true });
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
+    // Ignore unrelated or legacy-invalid folders instead of allowing one bad
+    // directory name to make the entire workspace project list unreadable.
+    if (!isValidProjectSlug(entry.name)) continue;
     const project = loadProject(workspaceRootPath, entry.name);
     if (project) projects.push(project);
   }
@@ -360,7 +391,6 @@ export function projectExists(workspaceRootPath: string, projectSlug: string): b
 export function sanitizeAssetFilename(filename: string): string {
   // Strip path separators AND control chars (NUL/newlines/DEL) so a crafted upload name can't
   // escape the assets dir or, once listed, forge new lines in the <project_assets> prompt block.
-  // eslint-disable-next-line no-control-regex
   const base = basename(filename).replace(/[\\/\x00-\x1f\x7f]+/g, '').replace(/^\.+/, '');
   if (!base) return `asset_${randomUUID().slice(0, 8)}`;
   return base.slice(0, 255);

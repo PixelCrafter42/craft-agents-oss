@@ -4,12 +4,26 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  statSync,
 } from 'fs';
 import { join } from 'path';
 import { getWorkspaceSessionsPath } from '../workspaces/storage.ts';
 import { listSessions } from '../sessions/storage.ts';
 import type { SessionMetadata } from '../sessions/types.ts';
 import type { UsagePriceSnapshot, UsageQuery, UsageRecordV1 } from './types.ts';
+
+interface UsageFileCacheEntry {
+  mtimeMs: number;
+  size: number;
+  ids: Set<string>;
+  records: UsageRecordV1[];
+}
+
+// Usage reports may need historical rows to reconcile pre-ledger session
+// metadata. Cache parsed month files and validate them by mtime+size so repeat
+// reports do not synchronously reparse the entire ledger on the server loop.
+const usageFileCache = new Map<string, UsageFileCacheEntry>();
+const MAX_CACHED_USAGE_FILES = 128;
 
 export function getWorkspaceUsagePath(workspaceRootPath: string): string {
   return join(workspaceRootPath, 'usage');
@@ -83,15 +97,38 @@ function normalizeRecord(record: UsageRecordV1): UsageRecordV1 {
     totalTokens,
     costUsd: typeof record.costUsd === 'number' && Number.isFinite(record.costUsd) ? record.costUsd : null,
     costSource: record.costSource,
+    ...(record.usageScope === 'tool' ? { usageScope: 'tool' as const } : {}),
     ...(priceSnapshot ? { priceSnapshot } : {}),
     ...(record.contextWindow ? { contextWindow: normalizeNumber(record.contextWindow) } : {}),
     ...(record.legacyEstimate ? { legacyEstimate: true } : {}),
   };
 }
 
-function readExistingIds(filePath: string): Set<string> {
+function cacheUsageFile(filePath: string, entry: UsageFileCacheEntry): UsageFileCacheEntry {
+  usageFileCache.delete(filePath);
+  usageFileCache.set(filePath, entry);
+  while (usageFileCache.size > MAX_CACHED_USAGE_FILES) {
+    const oldest = usageFileCache.keys().next().value as string | undefined;
+    if (!oldest) break;
+    usageFileCache.delete(oldest);
+  }
+  return entry;
+}
+
+function readUsageFile(filePath: string): UsageFileCacheEntry {
+  if (!existsSync(filePath)) {
+    usageFileCache.delete(filePath);
+    return { mtimeMs: 0, size: 0, ids: new Set(), records: [] };
+  }
+
+  const stat = statSync(filePath);
+  const cached = usageFileCache.get(filePath);
+  if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+    return cacheUsageFile(filePath, cached);
+  }
+
   const ids = new Set<string>();
-  if (!existsSync(filePath)) return ids;
+  const records: UsageRecordV1[] = [];
   const content = readFileSync(filePath, 'utf-8');
   for (const line of content.split('\n')) {
     if (!line.trim()) continue;
@@ -101,8 +138,19 @@ function readExistingIds(filePath: string): Set<string> {
     } catch {
       // Ignore corrupt historical lines; valid lines still count.
     }
+    const record = parseUsageLine(line);
+    if (record) records.push(record);
   }
-  return ids;
+  return cacheUsageFile(filePath, {
+    mtimeMs: stat.mtimeMs,
+    size: stat.size,
+    ids,
+    records,
+  });
+}
+
+function readExistingIds(filePath: string): Set<string> {
+  return new Set(readUsageFile(filePath).ids);
 }
 
 export function appendUsageRecords(workspaceRootPath: string, records: UsageRecordV1[]): number {
@@ -122,15 +170,25 @@ export function appendUsageRecords(workspaceRootPath: string, records: UsageReco
   let appended = 0;
   for (const [filePath, fileRecords] of grouped) {
     const existingIds = readExistingIds(filePath);
+    const appendedRecords: UsageRecordV1[] = [];
     const lines: string[] = [];
     for (const record of fileRecords) {
       if (existingIds.has(record.id)) continue;
       existingIds.add(record.id);
       lines.push(JSON.stringify(record));
+      appendedRecords.push(record);
     }
     if (lines.length > 0) {
       appendFileSync(filePath, lines.join('\n') + '\n');
       appended += lines.length;
+      const stat = statSync(filePath);
+      const priorRecords = usageFileCache.get(filePath)?.records ?? [];
+      cacheUsageFile(filePath, {
+        mtimeMs: stat.mtimeMs,
+        size: stat.size,
+        ids: existingIds,
+        records: [...priorRecords, ...appendedRecords],
+      });
     }
   }
   return appended;
@@ -157,11 +215,7 @@ export function readUsageRecords(workspaceRootPath: string, query: UsageQuery = 
     .sort();
 
   for (const file of files) {
-    const content = readFileSync(join(dir, file), 'utf-8');
-    for (const line of content.split('\n')) {
-      if (!line.trim()) continue;
-      const record = parseUsageLine(line);
-      if (!record) continue;
+    for (const record of readUsageFile(join(dir, file)).records) {
       if (typeof query.from === 'number' && record.timestamp < query.from) continue;
       if (typeof query.to === 'number' && record.timestamp >= query.to) continue;
       records.push(record);
@@ -171,9 +225,41 @@ export function readUsageRecords(workspaceRootPath: string, query: UsageQuery = 
   return records.sort((a, b) => a.timestamp - b.timestamp);
 }
 
-function legacyRecordFromSession(session: SessionMetadata): UsageRecordV1 | null {
+function legacyRecordFromSession(
+  session: SessionMetadata,
+  ledgerRecords: readonly UsageRecordV1[] = [],
+): UsageRecordV1 | null {
   const usage = session.tokenUsage;
   if (!usage || usage.totalTokens <= 0) return null;
+  // Session metadata predates the append-only ledger. Its input/cache figures
+  // represent the latest context, while output and cost are cumulative. Build a
+  // residual baseline instead of dropping the whole legacy estimate as soon as
+  // the first ledger row appears.
+  const turnRecords = ledgerRecords.filter(record => record.usageScope !== 'tool');
+  const latestTimestamp = turnRecords.reduce((latest, record) => Math.max(latest, record.timestamp), 0);
+  const latestTurnRecords = latestTimestamp > 0
+    ? turnRecords.filter(record => record.timestamp === latestTimestamp)
+    : [];
+  const sum = (records: readonly UsageRecordV1[], field: 'inputTokens' | 'outputTokens' | 'cacheReadTokens' | 'cacheCreationTokens'): number =>
+    records.reduce((total, record) => total + record[field], 0);
+  const inputTokens = Math.max(0, usage.inputTokens - sum(latestTurnRecords, 'inputTokens'));
+  const outputTokens = Math.max(0, usage.outputTokens - sum(turnRecords, 'outputTokens'));
+  const cacheReadTokens = Math.max(0, (usage.cacheReadTokens ?? 0) - sum(latestTurnRecords, 'cacheReadTokens'));
+  const cacheCreationTokens = Math.max(0, (usage.cacheCreationTokens ?? 0) - sum(latestTurnRecords, 'cacheCreationTokens'));
+  const totalTokens = inputTokens + outputTokens;
+  // Session metadata only accumulates provider/SDK-reported cost. Locally
+  // estimated ledger cost is additive and was never folded into that legacy
+  // cumulative field, so subtracting it here would erase the estimate.
+  const ledgerCost = turnRecords.reduce(
+    (total, record) => total + (
+      record.costSource === 'sdk' || record.costSource === 'legacy'
+        ? (record.costUsd ?? 0)
+        : 0
+    ),
+    0,
+  );
+  const costUsd = Math.max(0, usage.costUsd - ledgerCost);
+  if (ledgerRecords.length > 0 && totalTokens === 0 && costUsd === 0) return null;
   const timestamp = session.lastMessageAt ?? session.lastUsedAt ?? session.createdAt;
   return {
     version: 1,
@@ -183,26 +269,36 @@ function legacyRecordFromSession(session: SessionMetadata): UsageRecordV1 | null
     ...(session.projectId ? { projectId: session.projectId } : {}),
     ...(session.llmConnection ? { llmConnection: session.llmConnection } : {}),
     model: session.model ?? 'unknown',
-    inputTokens: usage.inputTokens,
-    outputTokens: usage.outputTokens,
-    cacheReadTokens: usage.cacheReadTokens ?? 0,
-    cacheCreationTokens: usage.cacheCreationTokens ?? 0,
-    totalTokens: usage.totalTokens,
-    costUsd: usage.costUsd,
+    inputTokens,
+    outputTokens,
+    cacheReadTokens,
+    cacheCreationTokens,
+    totalTokens,
+    costUsd,
     costSource: 'legacy',
     ...(usage.contextWindow ? { contextWindow: usage.contextWindow } : {}),
     legacyEstimate: true,
   };
 }
 
-export function readLegacyUsageEstimates(workspaceRootPath: string, ledgerSessionIds: Set<string>, query: UsageQuery = {}): UsageRecordV1[] {
+export function readLegacyUsageEstimates(
+  workspaceRootPath: string,
+  ledgerRecords: readonly UsageRecordV1[],
+  query: UsageQuery = {},
+): UsageRecordV1[] {
   const sessionsDir = getWorkspaceSessionsPath(workspaceRootPath);
   if (!existsSync(sessionsDir)) return [];
 
+  const ledgerBySession = new Map<string, UsageRecordV1[]>();
+  for (const record of ledgerRecords) {
+    const records = ledgerBySession.get(record.sessionId) ?? [];
+    records.push(record);
+    ledgerBySession.set(record.sessionId, records);
+  }
+
   const records: UsageRecordV1[] = [];
   for (const session of listSessions(workspaceRootPath)) {
-    if (ledgerSessionIds.has(session.id)) continue;
-    const record = legacyRecordFromSession(session);
+    const record = legacyRecordFromSession(session, ledgerBySession.get(session.id) ?? []);
     if (!record) continue;
     if (typeof query.from === 'number' && record.timestamp < query.from) continue;
     if (typeof query.to === 'number' && record.timestamp >= query.to) continue;

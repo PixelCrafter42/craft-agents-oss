@@ -84,6 +84,7 @@ export {
   normalizeHeaders,
   normalizeQuery,
   normalizeWebhookPayload,
+  redactQuery,
   redactHeaders,
   resolveMappingRule,
   type NormalizeWebhookPayloadInput,

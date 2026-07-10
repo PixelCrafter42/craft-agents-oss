@@ -2165,17 +2165,32 @@ export class BrowserPaneManager implements IBrowserPaneManager {
   }
 
   private finalizeDestroyedInstance(instance: BrowserInstance, source: 'destroy' | 'closed'): void {
-    if (!this.instances.has(instance.id)) {
+    // Claim the instance up front so a synchronous `closed` event (or another
+    // teardown callback) cannot enter cleanup twice.
+    if (!this.instances.delete(instance.id)) {
       return
     }
 
     this.destroyingIds.delete(instance.id)
-    this.closePopupsForParent(instance.id, 'parent_destroy')
-    this.applyAgentControlLock(instance, false)
-    this.updateNativeOverlayState(instance)
-    instance.cdp.detach()
-    this.instances.delete(instance.id)
-    this.removedCallback?.(instance.id)
+
+    // Native teardown should be best-effort. One failing cleanup step must not
+    // keep a dead BrowserWindow registered or prevent the remaining resources
+    // from being released.
+    const runCleanup = (label: string, action: () => void): void => {
+      try {
+        action()
+      } catch (error) {
+        mainLog.warn(
+          `[browser-pane] finalize cleanup failed id=${instance.id} step=${label} error=${error instanceof Error ? error.message : String(error)}`,
+        )
+      }
+    }
+
+    runCleanup('closePopupsForParent', () => this.closePopupsForParent(instance.id, 'parent_destroy'))
+    runCleanup('applyAgentControlLock', () => this.applyAgentControlLock(instance, false))
+    runCleanup('updateNativeOverlayState', () => this.updateNativeOverlayState(instance))
+    runCleanup('cdp.detach', () => instance.cdp.detach())
+    runCleanup('removedCallback', () => this.removedCallback?.(instance.id))
     mainLog.info(`[browser-pane] Destroyed instance: ${instance.id} (${source})`)
   }
 

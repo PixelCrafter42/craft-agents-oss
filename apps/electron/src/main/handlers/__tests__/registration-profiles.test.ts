@@ -82,6 +82,7 @@ function createMockDeps(): HandlerDeps {
       dispose: () => {},
       size: 0,
     } as unknown as HandlerDeps['oauthFlowStore'],
+    messagingRegistry: {} as NonNullable<HandlerDeps['messagingRegistry']>,
   }
 }
 
@@ -106,6 +107,9 @@ async function getExpectedCoreChannels(): Promise<Set<string>> {
     onboarding,
     resources,
     transfer,
+    employees,
+    usage,
+    messaging,
   ] = await Promise.all([
     import('@craft-agent/server-core/handlers/rpc/auth'),
     import('@craft-agent/server-core/handlers/rpc/automations'),
@@ -125,6 +129,9 @@ async function getExpectedCoreChannels(): Promise<Set<string>> {
     import('@craft-agent/server-core/handlers/rpc/onboarding'),
     import('@craft-agent/server-core/handlers/rpc/resources'),
     import('@craft-agent/server-core/handlers/rpc/transfer'),
+    import('@craft-agent/server-core/handlers/rpc/employees'),
+    import('@craft-agent/server-core/handlers/rpc/usage'),
+    import('@craft-agent/server-core/handlers/rpc/messaging'),
   ])
 
   return new Set([
@@ -146,6 +153,9 @@ async function getExpectedCoreChannels(): Promise<Set<string>> {
     ...onboarding.HANDLED_CHANNELS,
     ...resources.HANDLED_CHANNELS,
     ...transfer.HANDLED_CHANNELS,
+    ...employees.HANDLED_CHANNELS,
+    ...usage.HANDLED_CHANNELS,
+    ...messaging.HANDLED_CHANNELS,
   ])
 }
 

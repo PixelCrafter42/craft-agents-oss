@@ -23,6 +23,8 @@ import type { CredentialManager } from '@craft-agent/shared/credentials'
 const DEFAULT_AUTH: WebhookTriggerAuth = { type: 'bearer' }
 const NOTION_SIGNATURE_HEADER = 'x-notion-signature'
 const NOTION_SIGNATURE_PREFIX = 'sha256='
+const NOTION_ENROLLMENT_QUERY_PARAM = 'craft_enrollment'
+const NOTION_ENROLLMENT_TTL_MS = 10 * 60_000
 const MAX_BODY_BYTES = 1024 * 1024
 const DELIVERY_LIMIT = 100
 
@@ -41,6 +43,7 @@ interface AuthResult {
   statusCode?: number
   error?: string
   redactedHeaders?: string[]
+  redactedQueryNames?: string[]
 }
 
 export class DesktopWebhookListener {
@@ -49,6 +52,8 @@ export class DesktopWebhookListener {
   private startedAt: number | undefined
   private lastError: string | undefined
   private deliveries: DesktopWebhookDeliveryRecord[] = []
+  private readonly notionEnrollmentTails = new Map<string, Promise<void>>()
+  private readonly pendingNotionEnrollments = new Map<string, { nonce: string; expiresAt: number }>()
 
   constructor(
     private readonly sessionManager: ISessionManager,
@@ -101,6 +106,7 @@ export class DesktopWebhookListener {
   }
 
   async stop(): Promise<void> {
+    this.pendingNotionEnrollments.clear()
     if (!this.server) return
 
     const server = this.server
@@ -245,8 +251,30 @@ export class DesktopWebhookListener {
     const auth = this.resolveTriggerAuth(lookup.trigger)
     const secret = auth.type === 'none'
       ? null
-      : await this.ensureTriggerSecret(lookup.workspaceId, triggerId)
+      : auth.type === 'notion-signature'
+        ? await this.getTriggerSecret(lookup.workspaceId, triggerId)
+        : await this.ensureTriggerSecret(lookup.workspaceId, triggerId)
+    if (auth.type === 'notion-signature' && !secret) {
+      const enrollment = this.armNotionEnrollment(lookup.workspaceId, triggerId)
+      const enrollmentUrl = new URL(endpointUrl)
+      enrollmentUrl.searchParams.delete('dryRun')
+      enrollmentUrl.searchParams.delete('test')
+      enrollmentUrl.searchParams.set(NOTION_ENROLLMENT_QUERY_PARAM, enrollment.nonce)
+      return {
+        ok: false,
+        endpoint: enrollmentUrl.toString(),
+        response: {
+          enrollmentPending: true,
+          expiresAt: enrollment.expiresAt,
+        },
+        error: 'Use this one-time endpoint in Notion within 10 minutes to complete webhook verification',
+      }
+    }
     this.applyClientAuth(auth, secret, body, endpointUrl, headers)
+    const reportedEndpointUrl = new URL(endpointUrl)
+    if (auth.type === 'query') {
+      reportedEndpointUrl.searchParams.delete(auth.queryParam ?? 'token')
+    }
 
     try {
       const response = await fetch(endpointUrl.toString(), {
@@ -257,14 +285,14 @@ export class DesktopWebhookListener {
       const payload = await this.readFetchJson(response)
       return {
         ok: response.ok && !(payload && typeof payload === 'object' && 'ok' in payload && payload.ok === false),
-        endpoint: endpointUrl.toString(),
+        endpoint: reportedEndpointUrl.toString(),
         statusCode: response.status,
         response: payload,
       }
     } catch (error) {
       return {
         ok: false,
-        endpoint: endpointUrl.toString(),
+        endpoint: reportedEndpointUrl.toString(),
         error: error instanceof Error ? error.message : String(error),
       }
     }
@@ -362,7 +390,43 @@ export class DesktopWebhookListener {
     const rawBody = await readRequestBody(req, MAX_BODY_BYTES)
     const body = parseRequestBody(rawBody, req.headers['content-type'])
     const verificationToken = extractVerificationToken(body)
-    const authResult = await this.verifyAuth(lookup, req.headers, requestUrl, rawBody, verificationToken)
+    const triggerAuth = this.resolveTriggerAuth(lookup.trigger)
+
+    // Notion's verification_token is a one-time secret enrollment message,
+    // never a webhook event. Serialize enrollment per trigger so concurrent
+    // requests cannot both observe an empty credential and overwrite it.
+    if (verificationToken && triggerAuth.type === 'notion-signature') {
+      const enrollment = await this.enrollNotionVerificationToken(
+        lookup,
+        verificationToken,
+        requestUrl.searchParams.get(NOTION_ENROLLMENT_QUERY_PARAM),
+        !dryRun && !test,
+      )
+      const statusCode = enrollment.statusCode ?? (enrollment.ok ? 200 : 401)
+      this.recordDelivery({
+        id: randomUUID(),
+        ts: Date.now(),
+        method: req.method ?? 'POST',
+        path,
+        workspaceId: lookup.workspaceId,
+        triggerId,
+        statusCode,
+        ok: enrollment.ok,
+        dryRun,
+        auth: enrollment.auth,
+        error: enrollment.error,
+      })
+      this.writeJson(
+        res,
+        statusCode,
+        enrollment.ok
+          ? { ok: true, enrolled: true }
+          : { ok: false, error: enrollment.error ?? 'Notion verification token enrollment failed' },
+      )
+      return
+    }
+
+    const authResult = await this.verifyAuth(lookup, req.headers, requestUrl, rawBody)
     if (!authResult.ok) {
       this.recordDelivery({
         id: randomUUID(),
@@ -381,12 +445,6 @@ export class DesktopWebhookListener {
       return
     }
 
-    if (verificationToken && !dryRun && !test) {
-      await this.credentialManager.set(
-        { type: 'webhook_secret', workspaceId: lookup.workspaceId, name: triggerId },
-        { value: verificationToken },
-      )
-    }
     const query = queryToRecord(requestUrl)
     const rawBodySha256 = createHash('sha256').update(rawBody).digest('hex')
     const effectiveTrigger = this.getEffectiveTriggerForTest(lookup.trigger, test)
@@ -404,6 +462,7 @@ export class DesktopWebhookListener {
       test,
       deliveryId: req.headers['x-craft-delivery-id'] as string | undefined,
       redactHeaderNames: authResult.redactedHeaders,
+      redactQueryNames: authResult.redactedQueryNames,
     })
 
     const receiveResult = await this.sessionManager.receiveAutomationWebhook({
@@ -427,7 +486,6 @@ export class DesktopWebhookListener {
       auth: authResult.auth,
       matcherValue: receiveResult.matcherValue,
       matchedCount: receiveResult.matchedAutomations.length,
-      verificationToken,
       normalizedEvent,
       error: receiveResult.error,
     })
@@ -470,7 +528,6 @@ export class DesktopWebhookListener {
     headers: IncomingHttpHeaders,
     requestUrl: URL,
     rawBody: Buffer,
-    verificationToken?: string,
   ): Promise<AuthResult> {
     const auth = this.resolveTriggerAuth(lookup.trigger)
     if (auth.type === 'none') {
@@ -508,7 +565,7 @@ export class DesktopWebhookListener {
         const param = auth.queryParam ?? 'token'
         const value = requestUrl.searchParams.get(param) ?? ''
         return compareSecret(value, secret.value)
-          ? { ok: true, auth: 'passed' }
+          ? { ok: true, auth: 'passed', redactedQueryNames: [param] }
           : { ok: false, auth: 'failed', statusCode: 401, error: `Invalid ${param} query token` }
       }
       case 'hmac': {
@@ -524,9 +581,6 @@ export class DesktopWebhookListener {
           : { ok: false, auth: 'failed', statusCode: 401, error: `Invalid ${auth.headerName} signature` }
       }
       case 'notion-signature': {
-        if (verificationToken) {
-          return { ok: true, auth: 'passed', redactedHeaders: [NOTION_SIGNATURE_HEADER] }
-        }
         const secret = await this.requireTriggerSecret(
           lookup.workspaceId,
           lookup.triggerId,
@@ -537,11 +591,99 @@ export class DesktopWebhookListener {
         const digest = createHmac('sha256', secret.value).update(rawBody).digest('hex')
         const expected = `${NOTION_SIGNATURE_PREFIX}${digest}`
         return compareSecret(signature, expected) || compareSecret(signature, digest)
-          ? { ok: true, auth: 'passed', redactedHeaders: [NOTION_SIGNATURE_HEADER] }
+          ? {
+              ok: true,
+              auth: 'passed',
+              redactedHeaders: [NOTION_SIGNATURE_HEADER],
+              redactedQueryNames: [NOTION_ENROLLMENT_QUERY_PARAM],
+            }
           : { ok: false, auth: 'failed', statusCode: 401, error: `Invalid ${NOTION_SIGNATURE_HEADER} signature` }
       }
       default:
         return { ok: false, auth: 'failed', statusCode: 400, error: 'Unsupported webhook auth mode' }
+    }
+  }
+
+  private async enrollNotionVerificationToken(
+    lookup: TriggerLookupResult,
+    verificationToken: string,
+    enrollmentNonce: string | null,
+    allowed: boolean,
+  ): Promise<AuthResult> {
+    if (!allowed) {
+      return {
+        ok: false,
+        auth: 'failed',
+        statusCode: 400,
+        error: 'Notion verification token enrollment is not available for test or dry-run requests',
+      }
+    }
+
+    const lockKey = `${lookup.workspaceId}\0${lookup.triggerId}`
+    return this.withNotionEnrollmentLock(lockKey, async () => {
+      const pending = this.pendingNotionEnrollments.get(lockKey)
+      if (!pending || pending.expiresAt <= Date.now()) {
+        this.pendingNotionEnrollments.delete(lockKey)
+        return {
+          ok: false,
+          auth: 'failed',
+          statusCode: 401,
+          error: 'Notion verification enrollment is not armed or has expired',
+        }
+      }
+      if (!enrollmentNonce || !compareSecret(enrollmentNonce, pending.nonce)) {
+        return {
+          ok: false,
+          auth: 'failed',
+          statusCode: 401,
+          error: 'Invalid Notion verification enrollment nonce',
+        }
+      }
+
+      const existing = await this.getTriggerSecret(lookup.workspaceId, lookup.triggerId)
+      if (existing) {
+        this.pendingNotionEnrollments.delete(lockKey)
+        return {
+          ok: false,
+          auth: 'failed',
+          statusCode: 409,
+          error: 'Notion verification token is already configured',
+        }
+      }
+
+      await this.credentialManager.set(
+        { type: 'webhook_secret', workspaceId: lookup.workspaceId, name: lookup.triggerId },
+        { value: verificationToken },
+      )
+      this.pendingNotionEnrollments.delete(lockKey)
+      return { ok: true, auth: 'passed' }
+    })
+  }
+
+  private armNotionEnrollment(workspaceId: string, triggerId: string): { nonce: string; expiresAt: number } {
+    const enrollment = {
+      nonce: randomBytes(32).toString('base64url'),
+      expiresAt: Date.now() + NOTION_ENROLLMENT_TTL_MS,
+    }
+    this.pendingNotionEnrollments.set(`${workspaceId}\0${triggerId}`, enrollment)
+    return enrollment
+  }
+
+  private async withNotionEnrollmentLock<T>(key: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.notionEnrollmentTails.get(key) ?? Promise.resolve()
+    let release!: () => void
+    const lock = new Promise<void>((resolve) => { release = resolve })
+    const tail = previous.then(() => lock, () => lock)
+    this.notionEnrollmentTails.set(key, tail)
+
+    await previous.catch(() => {})
+    try {
+      return await operation()
+    } finally {
+      release()
+      if (this.notionEnrollmentTails.get(key) === tail) {
+        this.notionEnrollmentTails.delete(key)
+      }
     }
   }
 

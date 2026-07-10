@@ -1,4 +1,5 @@
 export type UsageCostSource = 'sdk' | 'estimated' | 'unknown' | 'legacy';
+export type UsageScope = 'turn' | 'tool';
 
 export interface UsagePriceSnapshot {
   inputUsdPerMillion: number;
@@ -24,6 +25,8 @@ export interface UsageRecordV1 {
   totalTokens: number;
   costUsd: number | null;
   costSource: UsageCostSource;
+  /** Distinguishes the main agent turn from independently billed tool/API calls. */
+  usageScope?: UsageScope;
   priceSnapshot?: UsagePriceSnapshot;
   contextWindow?: number;
   legacyEstimate?: boolean;
