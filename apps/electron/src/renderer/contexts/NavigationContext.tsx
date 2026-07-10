@@ -1212,6 +1212,11 @@ export function NavigationProvider({
       return
     }
 
+    if (navigationState.viewMode === 'employee') {
+      navigate(routes.view.employeeSessions(sessionId))
+      return
+    }
+
     const filter = navigationState.filter
     switch (filter.kind) {
       case 'allSessions':

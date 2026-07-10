@@ -878,10 +878,10 @@ export interface SessionsNavigationState {
   rightSidebar?: RightSidebarPanel
   /**
    * Presentation mode for the sessions navigator. `'board'` renders the Kanban
-   * board (all sessions, grouped into To Do / In Progress / Done columns) in the
-   * content area instead of the list + chat. Absent/`'list'` is the default.
+   * board, while `'employee'` keeps the list + chat layout and groups all
+   * sessions by their assigned employee. Absent/`'list'` is the default.
    */
-  viewMode?: 'list' | 'board'
+  viewMode?: 'list' | 'board' | 'employee'
 }
 
 /**

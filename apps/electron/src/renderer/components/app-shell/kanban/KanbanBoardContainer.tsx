@@ -583,6 +583,7 @@ export function KanbanBoardContainer() {
             value="board"
             onChange={view => {
               if (view === 'list') navigate(routes.view.allSessions())
+              if (view === 'employee') navigate(routes.view.employeeSessions())
             }}
           />
         </div>

@@ -199,6 +199,10 @@ export const routes = {
 
     /** Kanban board view (sessions navigator, board view mode, all sessions) */
     board: () => 'board' as const,
+
+    /** Employee-grouped sessions view (sessions navigator, all sessions) */
+    employeeSessions: (sessionId?: string) =>
+      sessionId ? `employeeSessions/session/${sessionId}` as const : 'employeeSessions' as const,
   },
 } as const
 

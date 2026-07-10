@@ -1,8 +1,8 @@
-import { LayoutGrid, List } from 'lucide-react'
+import { LayoutGrid, List, UsersRound } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { cn } from '@/lib/utils'
 
-export type BoardListValue = 'list' | 'board'
+export type BoardListValue = 'list' | 'board' | 'employee'
 
 interface BoardListToggleProps {
   value: BoardListValue
@@ -11,9 +11,9 @@ interface BoardListToggleProps {
 }
 
 /**
- * List ⇄ Board view switch. Rendered both in the sessions navigator header (list
- * mode) and in the board's own header (board mode), since the navigator is hidden
- * while the board is open and would otherwise have nowhere to host the switch.
+ * Sessions presentation switch. Rendered both in the sessions navigator header
+ * and in the board's own header, since the navigator is hidden while the board
+ * is open and would otherwise have nowhere to host the switch.
  */
 export function BoardListToggle({ value, onChange, className }: BoardListToggleProps) {
   const { t } = useTranslation()
@@ -30,6 +30,12 @@ export function BoardListToggle({ value, onChange, className }: BoardListToggleP
         icon={LayoutGrid}
         label={t('kanban.board')}
         onClick={() => onChange('board')}
+      />
+      <ToggleButton
+        active={value === 'employee'}
+        icon={UsersRound}
+        label={t('kanban.employees')}
+        onClick={() => onChange('employee')}
       />
     </div>
   )
@@ -53,7 +59,7 @@ function ToggleButton({
       aria-pressed={active}
       className={cn(
         'inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium transition-colors',
-        active ? 'bg-card text-foreground shadow-sm' : 'text-foreground/50 hover:text-foreground/80'
+        active ? 'bg-card text-foreground shadow-xs' : 'text-foreground/50 hover:text-foreground/80'
       )}
     >
       <Icon className="h-3.5 w-3.5" strokeWidth={2} />

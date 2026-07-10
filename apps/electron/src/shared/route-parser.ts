@@ -46,8 +46,8 @@ export interface ParsedCompoundRoute {
   sourceFilter?: SourceFilter
   /** Automation filter (only for automations navigator) */
   automationFilter?: AutomationFilter
-  /** Sessions presentation mode (only for sessions navigator). 'board' = Kanban view. */
-  viewMode?: 'list' | 'board'
+  /** Sessions presentation mode (only for sessions navigator). */
+  viewMode?: 'list' | 'board' | 'employee'
   /** Details page info (null for empty state) */
   details: {
     type: string
@@ -63,7 +63,7 @@ export interface ParsedCompoundRoute {
  * Known prefixes that indicate a compound route
  */
 const COMPOUND_ROUTE_PREFIXES = [
-  'allSessions', 'flagged', 'archived', 'state', 'label', 'view', 'board', 'sources', 'skills', 'automations', 'projects', 'employees', 'settings'
+  'allSessions', 'flagged', 'archived', 'state', 'label', 'view', 'board', 'employeeSessions', 'sources', 'skills', 'automations', 'projects', 'employees', 'settings'
 ]
 
 /**
@@ -108,6 +108,20 @@ export function parseCompoundRoute(route: string): ParsedCompoundRoute | null {
       sessionFilter: { kind: 'allSessions' },
       viewMode: 'board',
       details: null,
+    }
+  }
+
+  // Employee view — all sessions grouped by their assigned employee. Unlike
+  // the full-width board, it can carry a selected session in the detail pane.
+  if (first === 'employeeSessions') {
+    const details = segments[1] === 'session' && segments[2]
+      ? { type: 'session', id: segments[2] }
+      : null
+    return {
+      navigator: 'sessions',
+      sessionFilter: { kind: 'allSessions' },
+      viewMode: 'employee',
+      details,
     }
   }
 
@@ -347,6 +361,11 @@ export function buildCompoundRoute(parsed: ParsedCompoundRoute): string {
   // Sessions navigator
   // Board is a standalone view of all sessions; emit its own prefix.
   if (parsed.viewMode === 'board') return 'board'
+  if (parsed.viewMode === 'employee') {
+    return parsed.details
+      ? `employeeSessions/session/${parsed.details.id}`
+      : 'employeeSessions'
+  }
 
   let base: string
   const filter = parsed.sessionFilter
@@ -649,6 +668,7 @@ function convertCompoundToNavigationState(compound: ParsedCompoundRoute): Naviga
     return {
       navigator: 'sessions',
       filter,
+      viewMode: compound.viewMode,
       details: { type: 'session', sessionId: compound.details.id },
     }
   }

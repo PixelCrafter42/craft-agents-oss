@@ -30,6 +30,7 @@ import {
   ListFilter,
   MailOpen,
   Search,
+  UserRound,
   X,
 } from 'lucide-react'
 
@@ -320,6 +321,12 @@ export function CompactSessionListFilter({
                 label={t('sidebar.groupByUnread')}
                 radioSelected={chatGroupingMode === 'unread'}
                 onTap={() => setChatGroupingMode('unread')}
+              />
+              <FilterRow
+                icon={<UserRound className="h-4 w-4" />}
+                label={t('sidebar.groupByEmployee')}
+                radioSelected={chatGroupingMode === 'employee'}
+                onTap={() => setChatGroupingMode('employee')}
               />
             </Section>
           )}
