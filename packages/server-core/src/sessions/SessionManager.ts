@@ -73,6 +73,7 @@ import {
   type SessionHeader,
   pickSessionFields,
 } from '@craft-agent/shared/sessions'
+import { appendUsageRecords, estimateUsageCost, type UsageRecordV1 } from '@craft-agent/shared/usage'
 import { loadWorkspaceSources, loadAllSources, getSourcesBySlugs, isSourceUsable, type LoadedSource, type McpServerConfig, getSourcesNeedingAuth, getSourceCredentialManager, getSourceServerBuilder, type SourceWithCredential, isApiOAuthProvider, hasRenewEndpoint, SERVER_BUILD_ERRORS, TokenRefreshManager, createTokenGetter, markSourceAuthenticated, createSourceCookieCredentialValue } from '@craft-agent/shared/sources'
 import { ConfigWatcher, type ConfigWatcherCallbacks } from '@craft-agent/shared/config'
 import { getValidClaudeOAuthToken } from '@craft-agent/shared/auth'
@@ -84,6 +85,7 @@ import { getCredentialManager } from '@craft-agent/shared/credentials'
 import { CraftMcpClient, McpClientPool, McpPoolServer } from '@craft-agent/shared/mcp'
 import { type Session, type SessionEvent, type FileAttachment, type SendMessageOptions, type UnreadSummary, type RemoteSessionTransferPayload, type ImportRemoteSessionTransferResult, RPC_CHANNELS, generateMessageId } from '@craft-agent/shared/protocol'
 import { messageToStored, storedToMessage, type Message, type StoredAttachment, type ToolDisplayMeta, type TokenUsage } from '@craft-agent/core/types'
+import type { AgentEventUsage } from '@craft-agent/core/types'
 import { formatPathsToRelative, formatToolInputPaths, perf, encodeIconToDataUrlAsync, getEmojiIcon, resetSummarizationClient, resolveToolIcon, readFileAttachment, selectSpreadMessages, normalizePath } from '@craft-agent/shared/utils'
 import { loadAllSkills, loadSkillBySlug, invalidateSkillsCache, type LoadedSkill } from '@craft-agent/shared/skills'
 import { loadEmployeeById, loadWorkspaceEmployees } from '@craft-agent/shared/employees'
@@ -8265,6 +8267,128 @@ Please continue the conversation naturally from where we left off.
     }
   }
 
+  private buildUsageRecordId(managed: ManagedSession, usage: AgentEventUsage, model: string, index: number): string {
+    const base = usage.usageId || `${Date.now()}`
+    return [
+      'usage',
+      managed.id,
+      base,
+      model.replace(/[^a-zA-Z0-9._:-]/g, '_'),
+      String(index),
+    ].join(':')
+  }
+
+  private providerForUsage(managed: ManagedSession): string | undefined {
+    const connection = managed.llmConnection ? getLlmConnection(managed.llmConnection) : undefined
+    return connection?.providerType
+  }
+
+  private usageCostFields(
+    provider: string | undefined,
+    model: string,
+    usage: {
+      inputTokens: number
+      outputTokens: number
+      cacheReadTokens: number
+      cacheCreationTokens: number
+      costUsd?: number
+    },
+  ): Pick<UsageRecordV1, 'costUsd' | 'costSource' | 'priceSnapshot'> {
+    if (typeof usage.costUsd === 'number' && Number.isFinite(usage.costUsd)) {
+      return { costUsd: usage.costUsd, costSource: 'sdk' }
+    }
+
+    const estimate = estimateUsageCost({
+      provider,
+      model,
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+      cacheReadTokens: usage.cacheReadTokens,
+      cacheCreationTokens: usage.cacheCreationTokens,
+    })
+    if (!estimate) return { costUsd: null, costSource: 'unknown' }
+    return {
+      costUsd: estimate.costUsd,
+      costSource: 'estimated',
+      priceSnapshot: estimate.priceSnapshot,
+    }
+  }
+
+  private recordUsageEvent(managed: ManagedSession, usage: AgentEventUsage): void {
+    const timestamp = Date.now()
+    const provider = this.providerForUsage(managed)
+    const common = {
+      timestamp,
+      sessionId: managed.id,
+      ...(managed.projectId ? { projectId: managed.projectId } : {}),
+      ...(managed.llmConnection ? { llmConnection: managed.llmConnection } : {}),
+      ...(provider ? { provider } : {}),
+    }
+
+    const records: UsageRecordV1[] = []
+    const modelEntries = usage.modelUsages ? Object.entries(usage.modelUsages) : []
+    if (modelEntries.length > 0) {
+      modelEntries.forEach(([model, modelUsage], index) => {
+        const inputTokens = modelUsage.inputTokens ?? 0
+        const outputTokens = modelUsage.outputTokens ?? 0
+        const cacheReadTokens = modelUsage.cacheReadTokens ?? 0
+        const cacheCreationTokens = modelUsage.cacheCreationTokens ?? 0
+        const costFields = this.usageCostFields(provider, model, {
+          inputTokens,
+          outputTokens,
+          cacheReadTokens,
+          cacheCreationTokens,
+          ...(typeof modelUsage.costUsd === 'number' ? { costUsd: modelUsage.costUsd } : {}),
+        })
+        records.push({
+          version: 1,
+          id: this.buildUsageRecordId(managed, usage, model, index),
+          ...common,
+          model,
+          inputTokens,
+          outputTokens,
+          cacheReadTokens,
+          cacheCreationTokens,
+          totalTokens: modelUsage.totalTokens ?? (inputTokens + outputTokens),
+          ...costFields,
+          ...(modelUsage.contextWindow ? { contextWindow: modelUsage.contextWindow } : {}),
+        })
+      })
+    } else {
+      const model = managed.agent?.getModel() || managed.model || 'unknown'
+      const inputTokens = usage.inputTokens ?? 0
+      const outputTokens = usage.outputTokens ?? 0
+      const cacheReadTokens = usage.cacheReadTokens ?? 0
+      const cacheCreationTokens = usage.cacheCreationTokens ?? 0
+      const costFields = this.usageCostFields(provider, model, {
+        inputTokens,
+        outputTokens,
+        cacheReadTokens,
+        cacheCreationTokens,
+        ...(typeof usage.costUsd === 'number' ? { costUsd: usage.costUsd } : {}),
+      })
+      records.push({
+        version: 1,
+        id: this.buildUsageRecordId(managed, usage, model, 0),
+        ...common,
+        model,
+        inputTokens,
+        outputTokens,
+        cacheReadTokens,
+        cacheCreationTokens,
+        totalTokens: usage.totalTokens ?? (inputTokens + outputTokens),
+        ...costFields,
+        ...(usage.contextWindow ? { contextWindow: usage.contextWindow } : {}),
+      })
+    }
+
+    try {
+      appendUsageRecords(managed.workspace.rootPath, records)
+    } catch (error) {
+      sessionLog.warn(`Failed to append usage ledger record for ${managed.id}: ${error instanceof Error ? error.message : error}`)
+    }
+  }
+
   private async processEvent(managed: ManagedSession, event: AgentEvent): Promise<void> {
     const sessionId = managed.id
     const workspaceId = managed.workspace.id
@@ -9009,6 +9133,7 @@ Please continue the conversation naturally from where we left off.
         // Complete event from CraftAgent - accumulate usage from this turn
         // Actual 'complete' sent to renderer comes from the finally block in sendMessage
         if (event.usage) {
+          this.recordUsageEvent(managed, event.usage)
           // Initialize tokenUsage if not set
           if (!managed.tokenUsage) {
             managed.tokenUsage = {

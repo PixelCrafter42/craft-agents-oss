@@ -67,6 +67,15 @@ export type { LoadedSkill, SkillMetadata };
 import type { ExportResourcesOptions, ExportResult, ResourceImportMode, ResourceBundle, ResourceImportResult } from '@craft-agent/shared/resources';
 export type { ExportResourcesOptions, ExportResult, ResourceImportMode, ResourceBundle, ResourceImportResult };
 
+// Usage ledger types
+export type {
+  UsageQuery,
+  UsageReport,
+  UsageTotals,
+  UsageGroup,
+  UsageDayGroup,
+} from '@craft-agent/shared/usage';
+
 // LLM connection types
 import type { LlmConnection, LlmConnectionWithStatus, LlmAuthType, LlmProviderType, LlmModelFallbackSettings, NetworkProxySettings } from '@craft-agent/shared/config';
 export type { LlmConnection, LlmConnectionWithStatus, LlmAuthType, LlmProviderType, LlmModelFallbackSettings, NetworkProxySettings };
@@ -235,6 +244,7 @@ export interface ElectronAPI {
   cancelProcessing(sessionId: string, silent?: boolean): Promise<void>
   killShell(sessionId: string, shellId: string): Promise<{ success: boolean; error?: string }>
   getTaskOutput(taskId: string): Promise<string | null>
+  getUsageReport(workspaceId: string, query?: import('@craft-agent/shared/usage').UsageQuery): Promise<import('@craft-agent/shared/usage').UsageReport>
 
   // Tasks (Conductor)
   validateTask(workspaceId: string, yaml: string): Promise<TaskValidationResultDto>

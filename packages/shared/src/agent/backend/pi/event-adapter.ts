@@ -46,6 +46,15 @@ const OVERFLOW_FALLBACK_TIMEOUT_MS = 5_000;
  */
 type PiEvent = PiAgentEvent | AgentSessionEvent;
 
+type PiUsage = {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  totalTokens: number;
+  cost?: { total?: number };
+};
+
 /**
  * Maps Pi SDK events to Craft AgentEvents for UI compatibility.
  *
@@ -85,7 +94,8 @@ export class PiEventAdapter extends BaseEventAdapter {
   private miniModel: string | undefined;
 
   // Track last usage for emitting with complete event
-  private lastUsage: { input: number; output: number; cacheRead: number; cacheWrite: number; totalTokens: number; cost: { total: number } } | undefined;
+  private lastUsage: PiUsage | undefined;
+  private lastUsageId: string | undefined;
 
   // ============================================================
   // Overflow-recovery state machine
@@ -265,14 +275,17 @@ export class PiEventAdapter extends BaseEventAdapter {
         }
         if (this.lastUsage) {
           const inputTokens = this.lastUsage.input + (this.lastUsage.cacheRead || 0);
+          const costUsd = this.lastUsage.cost?.total;
           yield {
             type: 'complete',
             usage: {
+              usageId: this.lastUsageId,
               inputTokens,
               outputTokens: this.lastUsage.output,
+              totalTokens: this.lastUsage.totalTokens,
               cacheReadTokens: this.lastUsage.cacheRead,
               cacheCreationTokens: this.lastUsage.cacheWrite,
-              costUsd: this.lastUsage.cost.total,
+              ...(typeof costUsd === 'number' ? { costUsd } : {}),
               contextWindow: this.contextWindow,
             },
           };
@@ -288,6 +301,8 @@ export class PiEventAdapter extends BaseEventAdapter {
       case 'turn_start':
         // Pi SDK turn_start has no ID, so generate one for event correlation
         this.currentTurnId = `pi-turn-${this.turnIndex}`;
+        this.lastUsage = undefined;
+        this.lastUsageId = undefined;
         break;
 
       case 'turn_end':
@@ -328,7 +343,7 @@ export class PiEventAdapter extends BaseEventAdapter {
       case 'message_end': {
         // Pi SDK emits message_end for ALL messages (user, assistant, toolResult).
         // Only process assistant messages — skip user prompts and tool results.
-        const msg = event.message as { role?: string; stopReason?: string; errorMessage?: string; usage?: { input: number; output: number; cacheRead: number; cacheWrite: number; totalTokens: number; cost: { total: number } }; id?: string } | undefined;
+        const msg = event.message as { role?: string; stopReason?: string; errorMessage?: string; usage?: PiUsage; id?: string } | undefined;
         // SDK message id, set by pi-agent-server when forwarding the event.
         // SessionManager uses this to correlate the follow-up `pi_turn_anchor`
         // event to the Craft assistant message created here (#782).
@@ -385,6 +400,7 @@ export class PiEventAdapter extends BaseEventAdapter {
         // Emit usage_update if the assistant message includes token usage
         if (msg.usage && typeof msg.usage.input === 'number') {
           this.lastUsage = msg.usage;
+          this.lastUsageId = sdkMessageId;
           const inputTokens = msg.usage.input + (msg.usage.cacheRead || 0);
           yield {
             type: 'usage_update',

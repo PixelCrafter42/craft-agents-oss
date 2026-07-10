@@ -325,6 +325,120 @@ async function cmdSources(client: CliRpcClient, args: CliArgs): Promise<void> {
   out(result, args.json)
 }
 
+function parseDateStart(value: string): number {
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})$/)
+  if (!match) {
+    const parsed = Date.parse(value)
+    if (Number.isNaN(parsed)) throw new Error(`Invalid date: ${value}`)
+    return parsed
+  }
+  const [, y, m, d] = match
+  return new Date(Number(y), Number(m) - 1, Number(d)).getTime()
+}
+
+function addDays(ms: number, days: number): number {
+  const d = new Date(ms)
+  d.setDate(d.getDate() + days)
+  return d.getTime()
+}
+
+function parseUsageQuery(rest: string[]): { from: number; to: number; timezone: string; includeLegacy: boolean } {
+  let days = 30
+  let today = false
+  let from: number | undefined
+  let to: number | undefined
+  let includeLegacy = true
+  let timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+
+  for (let i = 0; i < rest.length; i++) {
+    const arg = rest[i]
+    switch (arg) {
+      case '--today':
+        today = true
+        break
+      case '--days': {
+        const parsed = parseInt(rest[++i] ?? '', 10)
+        if (!Number.isFinite(parsed) || parsed < 1) throw new Error('--days requires a positive integer')
+        days = parsed
+        break
+      }
+      case '--from':
+        from = parseDateStart(rest[++i] ?? '')
+        break
+      case '--to':
+        to = addDays(parseDateStart(rest[++i] ?? ''), 1)
+        break
+      case '--timezone':
+        timezone = rest[++i] ?? timezone
+        break
+      case '--no-legacy':
+        includeLegacy = false
+        break
+    }
+  }
+
+  if (today) {
+    const start = new Date()
+    start.setHours(0, 0, 0, 0)
+    from = start.getTime()
+    to = addDays(from, 1)
+  } else if (from === undefined || to === undefined) {
+    to = Date.now()
+    from = to - days * 24 * 60 * 60 * 1000
+  }
+
+  return { from, to, timezone, includeLegacy }
+}
+
+function formatMoney(value: number): string {
+  return `$${value.toFixed(value >= 1 ? 2 : 4)}`
+}
+
+function formatTokens(value: number): string {
+  if (value < 1000) return String(value)
+  if (value < 1_000_000) return `${(value / 1000).toFixed(1)}K`
+  return `${(value / 1_000_000).toFixed(1)}M`
+}
+
+async function cmdUsage(client: CliRpcClient, args: CliArgs): Promise<void> {
+  await client.connect()
+  const workspaceId = await resolveWorkspace(client, args.workspace)
+  if (!workspaceId) {
+    err('No workspace available. Use --workspace <id>')
+    process.exit(1)
+  }
+
+  const query = parseUsageQuery(args.rest)
+  const report = await client.invoke('usage:get', workspaceId, query) as any
+  if (args.json) {
+    out(report, true)
+    return
+  }
+
+  out(`Usage ${new Date(report.from).toLocaleString()} → ${new Date(report.to).toLocaleString()} (${report.timezone})`, false)
+  out(`Total: ${formatTokens(report.totals.totalTokens)} tokens, ${formatMoney(report.totals.costUsd)} API-equivalent`, false)
+  if (report.totals.unknownCostCount > 0) {
+    out(`${report.totals.unknownCostCount} record(s) have unknown pricing`, false)
+  }
+  if (report.totals.legacyEstimateCount > 0) {
+    out(`${report.totals.legacyEstimateCount} legacy estimate record(s) included`, false)
+  }
+
+  if (report.byModel?.length) {
+    out('\nBy model:', false)
+    for (const item of report.byModel.slice(0, 10)) {
+      out(`  ${item.label}  ${formatTokens(item.totals.totalTokens)}  ${formatMoney(item.totals.costUsd)}`, false)
+    }
+  }
+
+  if (report.byDay?.length) {
+    out('\nBy day:', false)
+    for (const item of report.byDay) {
+      out(`  ${item.date}  ${formatTokens(item.totals.totalTokens)}  ${formatMoney(item.totals.costUsd)}`, false)
+    }
+  }
+}
+
 async function cmdSessionCreate(client: CliRpcClient, args: CliArgs): Promise<void> {
   await client.connect()
   const workspaceId = await resolveWorkspace(client, args.workspace)
@@ -1923,6 +2037,8 @@ Commands:
   versions               Show server runtime versions
   workspaces             List workspaces
   sessions               List sessions in workspace
+  usage                  Show token and API-equivalent cost usage
+                         --today | --days <n> | --from <YYYY-MM-DD> --to <YYYY-MM-DD>
   connections            List LLM connections
   sources                List configured sources
   session create         Create a session (--name, --mode)
@@ -1946,6 +2062,8 @@ Examples:
   echo "Analyze this code" | craft-cli run
   craft-cli ping
   craft-cli sessions
+  craft-cli usage --today
+  craft-cli usage --days 7 --json
   craft-cli send abc-123 "What files are in the current directory?"
   echo "Summarize this" | craft-cli send abc-123
   craft-cli --validate-server
@@ -2018,6 +2136,9 @@ export async function main(argv: string[] = process.argv): Promise<void> {
         break
       case 'sessions':
         await cmdSessions(client, args)
+        break
+      case 'usage':
+        await cmdUsage(client, args)
         break
       case 'connections':
         await cmdConnections(client, args)

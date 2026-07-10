@@ -16,13 +16,13 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { Button } from '@/components/ui/button'
 import { HeaderMenu } from '@/components/ui/HeaderMenu'
 import { routes } from '@/lib/navigate'
-import { X, MoreHorizontal, Pencil, Trash2, Star, ChevronDown, ChevronRight, CheckCircle2, AlertTriangle, RefreshCcw, Settings2, MessageSquareMore, Zap, Clock, Check, ArrowUp, ArrowDown, Plus } from 'lucide-react'
+import { X, MoreHorizontal, Pencil, Trash2, Star, ChevronDown, ChevronRight, CheckCircle2, AlertTriangle, RefreshCcw, Settings2, MessageSquareMore, Zap, Clock, Check, ArrowUp, ArrowDown, Plus, BarChart3 } from 'lucide-react'
 import type { CredentialHealthStatus, CredentialHealthIssue } from '../../../shared/types'
 import { Spinner, FullscreenOverlayBase, Tooltip, TooltipTrigger, TooltipContent } from '@craft-agent/ui'
 import { useSetAtom } from 'jotai'
 import { fullscreenOverlayOpenAtom } from '@/atoms/overlay'
 import { motion, AnimatePresence } from 'motion/react'
-import type { LlmConnectionWithStatus, LlmModelFallbackSettings, ThinkingLevel, WorkspaceSettings, Workspace } from '../../../shared/types'
+import type { LlmConnectionWithStatus, LlmModelFallbackSettings, ThinkingLevel, UsageGroup, UsageReport, UsageTotals, WorkspaceSettings, Workspace } from '../../../shared/types'
 import { DEFAULT_THINKING_LEVEL, THINKING_LEVELS } from '@craft-agent/shared/agent/thinking-levels'
 import type { DetailsPageMeta } from '@/lib/navigation-registry'
 import {
@@ -47,6 +47,7 @@ import {
   SettingsRow,
   SettingsMenuSelect,
   SettingsMenuSelectRow,
+  SettingsSegmentedControl,
   SettingsToggle,
 } from '@/components/settings'
 import { useOnboarding } from '@/hooks/useOnboarding'
@@ -68,6 +69,235 @@ function formatTokenCount(n: number): string {
   if (n < 1_000_000) return `${(n / 1000).toFixed(1)}K`
   return `${(n / 1_000_000).toFixed(1)}M`
 }
+
+function emptyUsageTotals(): UsageTotals {
+  return {
+    count: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    totalTokens: 0,
+    costUsd: 0,
+    unknownCostCount: 0,
+    legacyEstimateCount: 0,
+  }
+}
+
+function addUsageTotals(target: UsageTotals, source: UsageTotals): UsageTotals {
+  return {
+    count: target.count + source.count,
+    inputTokens: target.inputTokens + source.inputTokens,
+    outputTokens: target.outputTokens + source.outputTokens,
+    cacheReadTokens: target.cacheReadTokens + source.cacheReadTokens,
+    cacheCreationTokens: target.cacheCreationTokens + source.cacheCreationTokens,
+    totalTokens: target.totalTokens + source.totalTokens,
+    costUsd: target.costUsd + source.costUsd,
+    unknownCostCount: target.unknownCostCount + source.unknownCostCount,
+    legacyEstimateCount: target.legacyEstimateCount + source.legacyEstimateCount,
+  }
+}
+
+function usageDayKey(timestamp: number, timezone: string): string {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date(timestamp))
+  const year = parts.find(p => p.type === 'year')?.value ?? '1970'
+  const month = parts.find(p => p.type === 'month')?.value ?? '01'
+  const day = parts.find(p => p.type === 'day')?.value ?? '01'
+  return `${year}-${month}-${day}`
+}
+
+function formatUsageMoney(value: number): string {
+  return `$${value.toFixed(value >= 1 ? 2 : 4)}`
+}
+
+function UsageMetric({ label, totals }: { label: string; totals: UsageTotals }) {
+  return (
+    <div className="min-w-0">
+      <div className="text-xs text-muted-foreground">{label}</div>
+      <div className="mt-1 text-lg font-semibold tabular-nums">{formatUsageMoney(totals.costUsd)}</div>
+      <div className="text-xs text-muted-foreground tabular-nums">{formatTokenCount(totals.totalTokens)} tokens</div>
+    </div>
+  )
+}
+
+function UsageGroupRows({ items, emptyLabel }: { items: UsageGroup[]; emptyLabel: string }) {
+  if (items.length === 0) {
+    return <div className="py-3 text-sm text-muted-foreground">{emptyLabel}</div>
+  }
+
+  return (
+    <div className="divide-y divide-border/50">
+      {items.map(item => (
+        <div key={item.key} className="flex items-center justify-between gap-3 py-2 text-sm">
+          <div className="min-w-0">
+            <div className="truncate font-medium">
+              {item.label}
+              {item.legacyEstimate && <span className="ml-1 text-xs font-normal text-muted-foreground">legacy</span>}
+            </div>
+            <div className="text-xs text-muted-foreground tabular-nums">{formatTokenCount(item.totals.totalTokens)} tokens</div>
+          </div>
+          <div className="shrink-0 text-sm tabular-nums">{formatUsageMoney(item.totals.costUsd)}</div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function UsageStatsSection({ workspaceId }: { workspaceId: string | null }) {
+  const [report, setReport] = useState<UsageReport | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [refreshKey, setRefreshKey] = useState(0)
+
+  const timezone = useMemo(() => Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC', [])
+
+  useEffect(() => {
+    if (!workspaceId || !window.electronAPI?.getUsageReport) {
+      setReport(null)
+      return
+    }
+
+    let cancelled = false
+    const load = async () => {
+      setLoading(true)
+      setError(null)
+      try {
+        const to = Date.now()
+        const from = to - 30 * 24 * 60 * 60 * 1000
+        const next = await window.electronAPI.getUsageReport(workspaceId, { from, to, timezone })
+        if (!cancelled) setReport(next)
+      } catch (err) {
+        if (!cancelled) setError(err instanceof Error ? err.message : String(err))
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+
+    void load()
+    return () => {
+      cancelled = true
+    }
+  }, [workspaceId, timezone, refreshKey])
+
+  const todayTotals = useMemo(() => {
+    if (!report) return emptyUsageTotals()
+    const today = usageDayKey(Date.now(), report.timezone)
+    return report.byDay.find(day => day.date === today)?.totals ?? emptyUsageTotals()
+  }, [report])
+
+  const sevenDayTotals = useMemo(() => {
+    if (!report) return emptyUsageTotals()
+    const cutoff = usageDayKey(Date.now() - 6 * 24 * 60 * 60 * 1000, report.timezone)
+    return report.byDay
+      .filter(day => day.date >= cutoff)
+      .reduce((totals, day) => addUsageTotals(totals, day.totals), emptyUsageTotals())
+  }, [report])
+
+  const recentDays = report?.byDay.slice(-14) ?? []
+  const maxDayCost = Math.max(0.000001, ...recentDays.map(day => day.totals.costUsd))
+  const unknownCount = report?.totals.unknownCostCount ?? 0
+  const legacyCount = report?.totals.legacyEstimateCount ?? 0
+
+  return (
+    <SettingsSection
+      title="Usage"
+      description="API-equivalent USD estimate for this workspace"
+      action={
+        <Button
+          size="icon"
+          variant="ghost"
+          className="h-7 w-7"
+          onClick={() => setRefreshKey(key => key + 1)}
+          disabled={loading || !workspaceId}
+          aria-label="Refresh usage"
+        >
+          <RefreshCcw className={cn('size-3.5', loading && 'animate-spin')} />
+        </Button>
+      }
+    >
+      <SettingsCard divided={false}>
+        <SettingsCardContent className="space-y-5">
+          {error ? (
+            <div className="flex items-center gap-2 text-sm text-destructive">
+              <AlertTriangle className="size-4" />
+              <span className="min-w-0 truncate">{error}</span>
+            </div>
+          ) : !report && loading ? (
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Spinner className="size-4" />
+              <span>Loading usage</span>
+            </div>
+          ) : (
+            <>
+              <div className="grid grid-cols-3 gap-4">
+                <UsageMetric label="Today" totals={todayTotals} />
+                <UsageMetric label="7d" totals={sevenDayTotals} />
+                <UsageMetric label="30d" totals={report?.totals ?? emptyUsageTotals()} />
+              </div>
+
+              {(unknownCount > 0 || legacyCount > 0) && (
+                <div className="rounded-lg bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+                  {unknownCount > 0 && <span>{unknownCount} record{unknownCount === 1 ? '' : 's'} with unknown pricing. </span>}
+                  {legacyCount > 0 && <span>{legacyCount} legacy estimate{legacyCount === 1 ? '' : 's'} included.</span>}
+                </div>
+              )}
+
+              <div className="grid gap-5 md:grid-cols-2">
+                <div>
+                  <div className="mb-2 flex items-center gap-2 text-xs font-medium text-muted-foreground">
+                    <BarChart3 className="size-3.5" />
+                    By model
+                  </div>
+                  <UsageGroupRows items={report?.byModel.slice(0, 6) ?? []} emptyLabel="No usage yet" />
+                </div>
+
+                <div>
+                  <div className="mb-2 text-xs font-medium text-muted-foreground">Daily trend</div>
+                  {recentDays.length === 0 ? (
+                    <div className="py-3 text-sm text-muted-foreground">No usage yet</div>
+                  ) : (
+                    <div className="space-y-2">
+                      {recentDays.map(day => (
+                        <div key={day.date} className="grid grid-cols-[5rem_1fr_4rem] items-center gap-2 text-xs">
+                          <span className="tabular-nums text-muted-foreground">{day.date.slice(5)}</span>
+                          <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+                            <div
+                              className="h-full rounded-full bg-foreground/60"
+                              style={{ width: `${Math.max(2, Math.min(100, (day.totals.costUsd / maxDayCost) * 100))}%` }}
+                            />
+                          </div>
+                          <span className="text-right tabular-nums">{formatUsageMoney(day.totals.costUsd)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="grid gap-5 md:grid-cols-2">
+                <div>
+                  <div className="mb-2 text-xs font-medium text-muted-foreground">Top sessions</div>
+                  <UsageGroupRows items={report?.bySession.slice(0, 5) ?? []} emptyLabel="No sessions yet" />
+                </div>
+                <div>
+                  <div className="mb-2 text-xs font-medium text-muted-foreground">Projects</div>
+                  <UsageGroupRows items={report?.byProject.slice(0, 5) ?? []} emptyLabel="No projects yet" />
+                </div>
+              </div>
+            </>
+          )}
+        </SettingsCardContent>
+      </SettingsCard>
+    </SettingsSection>
+  )
+}
+
+type AiSettingsTab = 'models' | 'connections' | 'usage' | 'performance'
 
 /**
  * Derive model dropdown options from a connection's models array,
@@ -801,6 +1031,7 @@ function getApiKeyMethodForConnection(conn: LlmConnectionWithStatus): ApiSetupMe
 export default function AiSettingsPage() {
   const { t } = useTranslation()
   const { llmConnections, refreshLlmConnections, activeWorkspaceId } = useAppShellContext()
+  const [activeTab, setActiveTab] = useState<AiSettingsTab>('models')
 
   // API Setup overlay state
   const [showApiSetup, setShowApiSetup] = useState(false)
@@ -828,6 +1059,12 @@ export default function AiSettingsPage() {
   const [rtkRechecking, setRtkRechecking] = useState(false)
   const [rtkGain, setRtkGain] = useState<{ totalCommands: number; totalInput: number; totalOutput: number; totalSaved: number; avgSavingsPct: number; totalTimeMs: number; avgTimeMs: number } | null>(null)
   const [fallbackSettings, setFallbackSettings] = useState<LlmModelFallbackSettings>(EMPTY_FALLBACK_SETTINGS)
+  const aiSettingsTabs = useMemo(() => [
+    { value: 'models' as const, label: 'Models', icon: <Settings2 className="size-4" /> },
+    { value: 'connections' as const, label: 'Connections', icon: <MessageSquareMore className="size-4" /> },
+    { value: 'usage' as const, label: 'Usage', icon: <BarChart3 className="size-4" /> },
+    { value: 'performance' as const, label: 'Performance', icon: <Zap className="size-4" /> },
+  ], [])
 
   // Validation state per connection
   const [validationStates, setValidationStates] = useState<Record<string, {
@@ -1250,9 +1487,43 @@ export default function AiSettingsPage() {
               onReauthenticate={handleReauthenticate}
             />
 
+            <div className="mb-7 overflow-x-auto pb-0.5">
+              <div className="inline-flex rounded-xl bg-muted/40 p-1">
+                <SettingsSegmentedControl
+                  value={activeTab}
+                  onValueChange={setActiveTab}
+                  options={aiSettingsTabs}
+                  size="sm"
+                  className="min-w-max"
+                />
+              </div>
+            </div>
+
             <div className="space-y-8">
+              {activeTab === 'usage' && <UsageStatsSection workspaceId={activeWorkspaceId} />}
+
+              {activeTab === 'models' && llmConnections.length === 0 && (
+                <SettingsSection title={t("settings.ai.defaultSection")} description={t("settings.ai.defaultSectionDesc")}>
+                  <SettingsCard divided={false}>
+                    <SettingsCardContent className="flex items-center justify-between gap-4">
+                      <div className="min-w-0">
+                        <div className="text-sm font-medium">{t("settings.ai.noConnections")}</div>
+                        <div className="text-xs text-muted-foreground">Add a connection before choosing model defaults.</div>
+                      </div>
+                      <Button
+                        size="sm"
+                        onClick={() => setActiveTab('connections')}
+                        className="shrink-0 bg-background shadow-minimal text-foreground hover:bg-foreground/5 rounded-lg"
+                      >
+                        {t("settings.ai.addConnection")}
+                      </Button>
+                    </SettingsCardContent>
+                  </SettingsCard>
+                </SettingsSection>
+              )}
+
               {/* Default Settings - only show if connections exist */}
-              {llmConnections.length > 0 && (
+              {activeTab === 'models' && llmConnections.length > 0 && (
               <SettingsSection title={t("settings.ai.defaultSection")} description={t("settings.ai.defaultSectionDesc")}>
                 <SettingsCard>
                   <SettingsMenuSelectRow
@@ -1293,7 +1564,7 @@ export default function AiSettingsPage() {
               </SettingsSection>
               )}
 
-              {llmConnections.length > 0 && (
+              {activeTab === 'models' && llmConnections.length > 0 && (
                 <FallbackModelsSettings
                   llmConnections={llmConnections}
                   settings={fallbackSettings}
@@ -1302,7 +1573,7 @@ export default function AiSettingsPage() {
               )}
 
               {/* Workspace Overrides - only show if connections exist */}
-              {workspaces.length > 0 && llmConnections.length > 0 && (
+              {activeTab === 'models' && workspaces.length > 0 && llmConnections.length > 0 && (
                 <SettingsSection title={t("settings.ai.workspaceOverrides")} description={t("settings.ai.workspaceOverridesDesc")}>
                   <div className="space-y-2">
                     {workspaces.map((workspace) => (
@@ -1318,6 +1589,7 @@ export default function AiSettingsPage() {
               )}
 
               {/* Connections Management */}
+              {activeTab === 'connections' && (
               <SettingsSection title={t("settings.ai.connections")} description={t("settings.ai.connectionsDesc")}>
                 <SettingsCard>
                   {llmConnections.length === 0 ? (
@@ -1359,8 +1631,10 @@ export default function AiSettingsPage() {
                   </button>
                 </div>
               </SettingsSection>
+              )}
 
               {/* Performance */}
+              {activeTab === 'performance' && (
               <SettingsSection title={t("settings.ai.performance")} description={t("settings.ai.performanceDesc")}>
                 <SettingsCard>
                   <SettingsToggle
@@ -1435,6 +1709,7 @@ export default function AiSettingsPage() {
                   )}
                 </SettingsCard>
               </SettingsSection>
+              )}
 
               {/* API Setup Fullscreen Overlay */}
               <FullscreenOverlayBase

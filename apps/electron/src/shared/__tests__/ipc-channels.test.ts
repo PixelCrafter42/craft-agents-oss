@@ -333,6 +333,7 @@ const EXPECTED_CHANNELS: string[] = [
   'update:getDismissed',
   'update:getInfo',
   'update:install',
+  'usage:get',
   'views:list',
   'views:save',
   'webhooks:checkListener',

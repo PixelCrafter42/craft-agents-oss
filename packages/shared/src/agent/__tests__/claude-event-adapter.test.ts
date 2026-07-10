@@ -389,8 +389,55 @@ describe('ClaudeEventAdapter', () => {
       const completeEvent = events.find(e => e.type === 'complete') as any;
       // Should use lastAssistantUsage (800+400+100=1300), not cumulative (5000+2000+500=7500)
       expect(completeEvent.usage.inputTokens).toBe(1300);
+      expect(completeEvent.usage.totalTokens).toBe(2300);
       expect(completeEvent.usage.cacheReadTokens).toBe(400);
       expect(completeEvent.usage.cacheCreationTokens).toBe(100);
+    });
+
+    it('should include per-model usage when modelUsage is present', async () => {
+      const events = await adapter.adapt({
+        type: 'result',
+        subtype: 'success',
+        uuid: 'result-1',
+        usage: {
+          input_tokens: 1000,
+          output_tokens: 200,
+          cache_read_input_tokens: 50,
+          cache_creation_input_tokens: 25,
+        },
+        total_cost_usd: 0.50,
+        modelUsage: {
+          'claude-sonnet': {
+            inputTokens: 800,
+            outputTokens: 100,
+            cacheReadInputTokens: 40,
+            cacheCreationInputTokens: 20,
+            costUSD: 0.30,
+            contextWindow: 200000,
+          },
+          'claude-haiku': {
+            inputTokens: 200,
+            outputTokens: 100,
+            cacheReadInputTokens: 10,
+            cacheCreationInputTokens: 5,
+            costUSD: 0.20,
+            contextWindow: 200000,
+          },
+        },
+        session_id: 'sess-1',
+      } as any);
+
+      const completeEvent = events.find(e => e.type === 'complete') as any;
+      expect(completeEvent.usage.usageId).toBe('result-1');
+      expect(completeEvent.usage.modelUsages['claude-sonnet']).toMatchObject({
+        inputTokens: 800,
+        outputTokens: 100,
+        cacheReadTokens: 40,
+        cacheCreationTokens: 20,
+        totalTokens: 960,
+        costUsd: 0.30,
+      });
+      expect(completeEvent.usage.modelUsages['claude-haiku'].costUsd).toBe(0.20);
     });
   });
 

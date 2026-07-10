@@ -48,6 +48,69 @@ describe('PiEventAdapter', () => {
       expect(events).toHaveLength(1);
       expect(events[0]).toMatchObject({ type: 'complete' });
     });
+
+    it('should attach usageId from assistant message usage to complete', () => {
+      collect(adapter.adaptEvent({ type: 'turn_start' } as any));
+      collect(adapter.adaptEvent({
+        type: 'message_end',
+        sdkMessageId: 'pi-msg-1',
+        message: {
+          role: 'assistant',
+          stopReason: 'stop',
+          content: 'Done',
+          usage: {
+            input: 100,
+            output: 25,
+            cacheRead: 10,
+            cacheWrite: 5,
+            totalTokens: 140,
+            cost: { total: 0.02 },
+          },
+        },
+      } as any));
+
+      const events = collect(adapter.adaptEvent({ type: 'agent_end' } as any));
+      expect(events[0].usage).toMatchObject({
+        usageId: 'pi-msg-1',
+        inputTokens: 110,
+        outputTokens: 25,
+        totalTokens: 140,
+        cacheReadTokens: 10,
+        cacheCreationTokens: 5,
+        costUsd: 0.02,
+      });
+    });
+
+    it('should allow usage without SDK cost', () => {
+      collect(adapter.adaptEvent({ type: 'turn_start' } as any));
+      collect(adapter.adaptEvent({
+        type: 'message_end',
+        sdkMessageId: 'pi-msg-no-cost',
+        message: {
+          role: 'assistant',
+          stopReason: 'stop',
+          content: 'Done',
+          usage: {
+            input: 100,
+            output: 25,
+            cacheRead: 10,
+            cacheWrite: 5,
+            totalTokens: 140,
+          },
+        },
+      } as any));
+
+      const events = collect(adapter.adaptEvent({ type: 'agent_end' } as any));
+      expect(events[0].usage).toMatchObject({
+        usageId: 'pi-msg-no-cost',
+        inputTokens: 110,
+        outputTokens: 25,
+        totalTokens: 140,
+        cacheReadTokens: 10,
+        cacheCreationTokens: 5,
+      });
+      expect(events[0].usage?.costUsd).toBeUndefined();
+    });
   });
 
   // ============================================================

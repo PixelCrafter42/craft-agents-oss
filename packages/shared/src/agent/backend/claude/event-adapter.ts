@@ -492,13 +492,41 @@ export class ClaudeEventAdapter extends BaseEventAdapter {
       inputTokens = msg.usage.input_tokens + cacheRead + cacheCreation;
     }
 
+    const modelUsages = Object.entries((msg.modelUsage || {}) as Record<string, any>).reduce<Record<string, {
+      inputTokens: number;
+      outputTokens: number;
+      cacheReadTokens?: number;
+      cacheCreationTokens?: number;
+      totalTokens?: number;
+      costUsd?: number;
+      contextWindow?: number;
+    }>>((acc, [model, modelUsage]) => {
+      const modelInput = modelUsage.inputTokens ?? 0;
+      const modelOutput = modelUsage.outputTokens ?? 0;
+      const modelCacheRead = modelUsage.cacheReadInputTokens ?? 0;
+      const modelCacheCreation = modelUsage.cacheCreationInputTokens ?? 0;
+      acc[model] = {
+        inputTokens: modelInput,
+        outputTokens: modelOutput,
+        cacheReadTokens: modelCacheRead,
+        cacheCreationTokens: modelCacheCreation,
+        totalTokens: modelInput + modelOutput + modelCacheRead + modelCacheCreation,
+        costUsd: modelUsage.costUSD,
+        contextWindow: modelUsage.contextWindow,
+      };
+      return acc;
+    }, {});
+
     const usage = {
+      usageId: msg.uuid ?? msg.session_id,
       inputTokens,
       outputTokens: msg.usage.output_tokens,
+      totalTokens: inputTokens + msg.usage.output_tokens,
       cacheReadTokens: cacheRead,
       cacheCreationTokens: cacheCreation,
       costUsd: msg.total_cost_usd,
       contextWindow: primaryModelUsage?.contextWindow,
+      ...(Object.keys(modelUsages).length > 0 ? { modelUsages } : {}),
     };
 
     if (msg.subtype === 'success') {

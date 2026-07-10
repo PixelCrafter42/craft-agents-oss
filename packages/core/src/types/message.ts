@@ -534,12 +534,27 @@ export interface PermissionRequest {
  * Note: This is a subset of TokenUsage - totalTokens/contextTokens are computed by consumers
  */
 export interface AgentEventUsage {
+  /** Stable provider/SDK message id for ledger dedupe when available. */
+  usageId?: string;
   inputTokens: number;
   outputTokens: number;
+  totalTokens?: number;
   cacheReadTokens?: number;
   cacheCreationTokens?: number;
   costUsd?: number;
   /** Model's context window size in tokens (from SDK modelUsage) */
+  contextWindow?: number;
+  /** Optional per-model usage breakdown for providers that expose it. */
+  modelUsages?: Record<string, AgentEventModelUsage>;
+}
+
+export interface AgentEventModelUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens?: number;
+  cacheCreationTokens?: number;
+  totalTokens?: number;
+  costUsd?: number;
   contextWindow?: number;
 }
 
