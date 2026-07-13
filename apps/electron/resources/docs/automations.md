@@ -666,6 +666,50 @@ exact chat:
 
 The target platform must be enabled and connected in Settings -> Messaging.
 
+### Finding a messaging-bound session dynamically
+
+Use the read-only `list_messaging_sessions` agent tool when an automation must
+hand work to an existing session based on its messaging platform. It queries the
+workspace binding index directly, so the automation does not need to fetch every
+session and call `list_messaging_channels` one at a time.
+
+```text
+1. Call list_messaging_sessions with platform "telegram" and search "Ops".
+2. If exactly one session matches, call send_agent_message with that session ID.
+3. If multiple sessions match, report the candidates instead of guessing.
+```
+
+Each result groups the matching bindings under one session and includes
+`bindingId`, `channelId`, `channelName`, and Telegram `threadId` when present.
+Only enabled, persisted two-way bindings are returned; output-only
+`messagingTarget` routes are not included. A stored binding does not guarantee
+that its platform adapter is currently online, and `send_agent_message`
+acknowledges delivery to the target Craft session rather than delivery to the
+external chat app.
+
+Automation-created sessions default to `permissionMode: "safe"`, while
+`send_agent_message` is a side-effecting tool. An unattended automation that is
+explicitly authorized to perform this handoff must use an appropriate permission
+mode, for example:
+
+```json
+{
+  "cron": "0 9 * * *",
+  "permissionMode": "allow-all",
+  "actions": [
+    {
+      "type": "prompt",
+      "prompt": "Find the single Telegram-bound session whose name or channel contains 'Ops', then send it today's alert. If zero or multiple sessions match, do not guess."
+    }
+  ]
+}
+```
+
+Use `messagingTarget` instead when the goal is only to deliver the new
+automation session's output to an external chat. Use
+`list_messaging_sessions` followed by `send_agent_message` when the existing
+session must receive the prompt and process it with its own conversation context.
+
 ### Configuring this by conversation
 
 If you create automations by asking the agent to edit this workspace's

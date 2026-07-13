@@ -26,6 +26,10 @@ import type {
 } from '@craft-agent/shared/protocol'
 import type { SessionBundle, DispatchMode } from '@craft-agent/shared/sessions'
 import type { EventSink } from '../transport'
+import type { MessagingBindingInfo } from './messaging-registry-interface'
+
+/** Live workspace-scoped provider used by session tools to discover messaging bindings. */
+export type MessagingBindingLookup = (workspaceId: string) => MessagingBindingInfo[]
 
 export interface ISessionManager {
   // ---------------------------------------------------------------------------
@@ -294,6 +298,13 @@ export interface ISessionManager {
       messagingTarget?: AutomationMessagingTarget
     }) => Promise<void>,
   ): void
+
+  /**
+   * Install a live messaging-binding lookup. SessionManager exposes it through
+   * every agent's session-tool context, including sessions that are not
+   * themselves bound to a messaging channel.
+   */
+  setMessagingBindingLookup?(fn: MessagingBindingLookup): void
 }
 
 /**

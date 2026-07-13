@@ -103,6 +103,10 @@ interface WorkspaceState {
 
 export class MessagingGatewayRegistry implements IMessagingGatewayRegistry {
   private readonly workspaces = new Map<string, WorkspaceState>()
+  /** Workspaces whose gateway lifecycle initialization completed (or was disabled). */
+  private readonly initializedWorkspaces = new Set<string>()
+  /** Deduplicates concurrent initialization attempts for the same workspace. */
+  private readonly initializingWorkspaces = new Map<string, Promise<void>>()
   private readonly pairing = new PairingCodeManager()
   private readonly log: MessagingLogger
 
@@ -152,6 +156,13 @@ export class MessagingGatewayRegistry implements IMessagingGatewayRegistry {
         }
       }
     })
+
+    // Install a live provider rather than copying bindings into individual
+    // session callbacks. This makes discovery available to unbound automation
+    // sessions and ensures every call observes the latest binding store.
+    opts.sessionManager.setMessagingBindingLookup?.((workspaceId) =>
+      this.getBindings(workspaceId),
+    )
   }
 
   // -------------------------------------------------------------------------
@@ -159,11 +170,29 @@ export class MessagingGatewayRegistry implements IMessagingGatewayRegistry {
   // -------------------------------------------------------------------------
 
   async initializeWorkspace(workspaceId: string): Promise<void> {
-    if (this.workspaces.has(workspaceId)) return
+    if (this.initializedWorkspaces.has(workspaceId)) return
 
+    const existing = this.initializingWorkspaces.get(workspaceId)
+    if (existing) return existing
+
+    const initialization = this.initializeWorkspaceOnce(workspaceId)
+    this.initializingWorkspaces.set(workspaceId, initialization)
+    try {
+      await initialization
+    } finally {
+      if (this.initializingWorkspaces.get(workspaceId) === initialization) {
+        this.initializingWorkspaces.delete(workspaceId)
+      }
+    }
+  }
+
+  private async initializeWorkspaceOnce(workspaceId: string): Promise<void> {
     const state = this.bootstrapWorkspace(workspaceId)
     const config = state.configStore.get()
-    if (!config.enabled) return
+    if (!config.enabled) {
+      this.initializedWorkspaces.add(workspaceId)
+      return
+    }
 
     await state.gateway.start()
     this.log.info('gateway started for workspace', {
@@ -264,6 +293,8 @@ export class MessagingGatewayRegistry implements IMessagingGatewayRegistry {
         })
       }
     }
+
+    this.initializedWorkspaces.add(workspaceId)
   }
 
   async removeWorkspace(workspaceId: string): Promise<void> {
@@ -272,12 +303,16 @@ export class MessagingGatewayRegistry implements IMessagingGatewayRegistry {
     await state.gateway.stop()
     this.pairing.clearWorkspace(workspaceId)
     this.workspaces.delete(workspaceId)
+    this.initializedWorkspaces.delete(workspaceId)
+    this.initializingWorkspaces.delete(workspaceId)
   }
 
   async stopAll(): Promise<void> {
     const stops = Array.from(this.workspaces.values()).map((s) => s.gateway.stop().catch(() => {}))
     await Promise.all(stops)
     this.workspaces.clear()
+    this.initializedWorkspaces.clear()
+    this.initializingWorkspaces.clear()
   }
 
   get size(): number {
@@ -388,8 +423,11 @@ export class MessagingGatewayRegistry implements IMessagingGatewayRegistry {
   // -------------------------------------------------------------------------
 
   getBindings(workspaceId: string): MessagingBindingInfo[] {
-    const state = this.workspaces.get(workspaceId)
-    if (!state) return []
+    // Binding discovery may run before adapter initialization (for example an
+    // early automation turn). Bootstrap only the persisted store here; the
+    // separate initializedWorkspaces guard ensures initializeWorkspace still
+    // starts/connects the gateway later.
+    const state = this.workspaces.get(workspaceId) ?? this.bootstrapWorkspace(workspaceId)
     return state.gateway.getBindingStore().getAll().map(toBindingInfo)
   }
 

@@ -57,10 +57,23 @@ describe('session tool filtering helpers', () => {
     expect(allowed.has('call_llm')).toBe(true);
     expect(allowed.has('browser_tool')).toBe(true);
     expect(allowed.has('script_sandbox')).toBe(true);
+    expect(allowed.has('list_messaging_sessions')).toBe(true);
 
     expect(blocked.has('source_oauth_trigger')).toBe(true);
     expect(blocked.has('source_credential_prompt')).toBe(true);
     expect(blocked.has('spawn_session')).toBe(true);
+  });
+
+  it('registers list_messaging_sessions as a read-only platform-filtered tool', () => {
+    const def = SESSION_TOOL_DEFS.find((candidate) => candidate.name === 'list_messaging_sessions');
+
+    expect(def).toBeDefined();
+    expect(def?.executionMode).toBe('registry');
+    expect(def?.safeMode).toBe('allow');
+    expect(def?.readOnly).toBe(true);
+    expect(def?.inputSchema.safeParse({ platform: 'telegram' }).success).toBe(true);
+    expect(def?.inputSchema.safeParse({ platform: 'weixin' }).success).toBe(true);
+    expect(def?.inputSchema.safeParse({ platform: 'signal' }).success).toBe(false);
   });
 
   it('safe-mode helpers support MCP prefixing', () => {

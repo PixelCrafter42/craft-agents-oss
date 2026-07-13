@@ -63,6 +63,8 @@ export interface SessionScopedToolCallbacks {
   getSessionInfoFn?: (sessionId?: string) => import('@craft-agent/session-tools-core').SessionInfo | null;
   /** List sessions in the workspace with pagination. */
   listSessionsFn?: (options?: import('@craft-agent/session-tools-core').ListSessionsOptions) => import('@craft-agent/session-tools-core').ListSessionsResult;
+  /** List sessions in the workspace with enabled, persisted messaging bindings. */
+  listMessagingSessionsFn?: (options?: import('@craft-agent/session-tools-core').ListMessagingSessionsOptions) => import('@craft-agent/session-tools-core').ListMessagingSessionsResult;
   /** List background tasks (running + terminal) for a session from the main-process registry. */
   listBackgroundTasksFn?: (sessionId?: string) => import('@craft-agent/session-tools-core').BackgroundTaskInfo[];
   /** Resolve label display names to IDs. */

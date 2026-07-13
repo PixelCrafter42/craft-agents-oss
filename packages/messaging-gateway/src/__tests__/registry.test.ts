@@ -145,6 +145,60 @@ function makeRegistry(): Harness {
   return { registry, workspaceId: 'ws-test' }
 }
 
+describe('MessagingGatewayRegistry binding lookup provider', () => {
+  it('serves live bindings before initialization without preventing later gateway startup', async () => {
+    let lookup: ((workspaceId: string) => Array<{ id: string; sessionId: string }>) | undefined
+    const sessionManager = {
+      setAutomationBinder: () => {},
+      setMessagingBindingLookup: (fn: typeof lookup) => { lookup = fn },
+    } as unknown as ISessionManager
+    const registry = new MessagingGatewayRegistry({
+      sessionManager,
+      credentialManager: makeStubCredentialManager(),
+      getMessagingDir: (workspaceId: string) => join(dir, 'workspaces', workspaceId, 'messaging'),
+      whatsapp: { workerEntry: '/dev/null' },
+    })
+    const workspaceId = 'ws-early-lookup'
+
+    // The lookup bootstraps the persisted store before initializeWorkspace.
+    expect(lookup?.(workspaceId)).toEqual([])
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const state = (registry as any).workspaces.get(workspaceId)
+    state.gateway.getBindingStore().bind(
+      workspaceId,
+      'telegram-session',
+      'telegram',
+      'chat-1',
+      'Telegram chat',
+    )
+    expect(lookup?.(workspaceId)).toEqual([
+      expect.objectContaining({ sessionId: 'telegram-session', id: expect.any(String) }),
+    ])
+
+    await registry.updateConfig(workspaceId, {
+      enabled: true,
+      platforms: {},
+    })
+    let starts = 0
+    let releaseStart!: () => void
+    state.gateway.start = async () => {
+      starts += 1
+      await new Promise<void>((resolve) => { releaseStart = resolve })
+    }
+
+    const first = registry.initializeWorkspace(workspaceId)
+    const concurrent = registry.initializeWorkspace(workspaceId)
+    await Promise.resolve()
+    expect(starts).toBe(1)
+    releaseStart()
+    await Promise.all([first, concurrent])
+    await registry.initializeWorkspace(workspaceId)
+
+    expect(starts).toBe(1)
+  })
+})
+
 /**
  * Pair a supergroup at the workspace level by writing the config directly.
  * `bindWorkspaceSupergroup` requires a real adapter and an API call; for

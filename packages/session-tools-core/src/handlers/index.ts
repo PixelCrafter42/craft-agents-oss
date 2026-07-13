@@ -80,5 +80,15 @@ export { handleListBackgroundTasks } from './list-background-tasks.ts';
 export type { ListBackgroundTasksArgs } from './list-background-tasks.ts';
 
 // Messaging Gateway
+export {
+  handleListMessagingSessions,
+  handleListMessagingChannels,
+  handleUnbindMessagingChannel,
+} from './messaging.ts';
+export type {
+  ListMessagingSessionsArgs,
+  ListMessagingChannelsArgs,
+  UnbindMessagingChannelArgs,
+} from './messaging.ts';
 export { handleSendMessagingFile } from './send-messaging-file.ts';
 export type { SendMessagingFileArgs } from './send-messaging-file.ts';

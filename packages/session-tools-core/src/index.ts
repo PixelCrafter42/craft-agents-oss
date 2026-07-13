@@ -137,7 +137,12 @@ export type {
   SendAgentMessageResult,
   ResolvedLabelsResult,
   ResolvedStatusResult,
+  MessagingPlatform,
   MessagingFilePlatform,
+  ListMessagingSessionsOptions,
+  MessagingSessionBindingInfo,
+  MessagingSessionListItem,
+  ListMessagingSessionsResult,
   SendMessagingFileRequest,
   SendMessagingFileResult,
 } from './context.ts';
@@ -176,6 +181,9 @@ export {
   // Codex Image Generation
   handleCodexGenerateImage,
   // Messaging Gateway
+  handleListMessagingSessions,
+  handleListMessagingChannels,
+  handleUnbindMessagingChannel,
   handleSendMessagingFile,
 } from './handlers/index.ts';
 
@@ -197,6 +205,9 @@ export type {
   SendDeveloperFeedbackArgs,
   CodexGenerateImageArgs,
   CodexImageOutputFormat,
+  ListMessagingSessionsArgs,
+  ListMessagingChannelsArgs,
+  UnbindMessagingChannelArgs,
   SendMessagingFileArgs,
 } from './handlers/index.ts';
 
@@ -216,6 +227,7 @@ export {
   ScriptSandboxSchema,
   RenderTemplateSchema,
   CodexGenerateImageSchema,
+  ListMessagingSessionsSchema,
   SendMessagingFileSchema,
   // Browser tool schema
   BrowserToolSchema,

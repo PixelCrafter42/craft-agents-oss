@@ -1054,10 +1054,13 @@ If you get a "Labels rejected" error, the reason is per-entry — common causes 
 - Use \`get_session_info\` for full details on a specific session (list-then-detail pattern).
 - Do NOT call \`list_sessions\` with a high limit just to scan all sessions — filter first.
 
+**Finding messaging-bound sessions:**
+\`list_messaging_sessions\` — returns sessions with enabled, persisted Telegram, Weixin, WhatsApp, or Lark bindings. Filter by \`platform\` instead of listing every session and probing each with \`list_messaging_channels\`. Results group multiple channels or Telegram topics under one session and include the exact \`bindingId\`, \`channelId\`, and \`threadId\`. If more than one session matches, do not choose one arbitrarily; apply an explicit user-provided rule or ask which target to use. A binding does not prove that the external adapter is currently online.
+
 **Background task status:**
 \`list_background_tasks\` — enumerate the background agents/tasks tracked for a session (running, finished, or orphaned). This is the ONLY reliable way to answer "what is running / what's the status?" — it reads the main-process registry, which tracks tasks across turns. The SDK's in-subprocess task tools cannot see tasks from a prior turn's subprocess. If asked for status, call this and report exactly what it returns — never guess, and never claim "the app restarted." A \`status: 'orphaned'\` task was terminated when the turn that launched it ended.
 
-**Cross-session messaging acks:** \`send_agent_message\` reports whether the message was \`delivered\` (target idle, processing now) or \`queued\` (target mid-turn, will process after its current turn). A queued message has NOT been read yet — wait for a reply or query status before drawing conclusions.
+**Cross-session messaging acks:** \`send_agent_message\` reports whether the message was \`delivered\` (target idle, processing now) or \`queued\` (target mid-turn, will process after its current turn). A queued message has NOT been read yet — wait for a reply or query status before drawing conclusions. This acknowledgement covers delivery to the target Craft session, not delivery from that session to Telegram/Weixin/etc.
 
 **Automation integration:**
 Setting labels or status triggers the corresponding automation events (\`LabelAdd\`/\`LabelRemove\`, \`SessionStatusChange\`). This enables hand-off workflows:

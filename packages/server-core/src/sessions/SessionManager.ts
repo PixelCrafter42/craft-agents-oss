@@ -1,6 +1,6 @@
 import type { EventSink, RpcServer } from '@craft-agent/server-core/transport'
 import { CLIENT_BROWSER_INVOKE } from '@craft-agent/server-core/transport'
-import type { ISessionManager, IBrowserPaneManager, ExecutePromptAutomationInput } from '@craft-agent/server-core/handlers'
+import type { ISessionManager, IBrowserPaneManager, ExecutePromptAutomationInput, MessagingBindingLookup } from '@craft-agent/server-core/handlers'
 import { RemoteBrowserPaneManager } from './RemoteBrowserPaneManager'
 import { validateFilePath, getWorkspaceAllowedDirs, sanitizeFilename } from '@craft-agent/server-core/handlers'
 import { createScopedLogger, CONSOLE_LOGGER, type PlatformServices, type Logger } from '@craft-agent/server-core/runtime'
@@ -8,7 +8,7 @@ import { basename, dirname, join } from 'path'
 import { existsSync } from 'fs'
 import { readFile, writeFile, mkdir } from 'fs/promises'
 import { randomUUID } from 'node:crypto'
-import { type AgentEvent, setPermissionMode, hydratePreviousPermissionMode, getPermissionModeDiagnostics, type PermissionMode, unregisterSessionScopedToolCallbacks, mergeSessionScopedToolCallbacks, AbortReason, type AuthRequest, type AuthResult, type CredentialAuthRequest, type BrowserPaneFns, generateConversationSummary, parseError, type AgentError, resolveKeepBackgroundTasksAlive } from '@craft-agent/shared/agent'
+import { type AgentEvent, setPermissionMode, hydratePreviousPermissionMode, getPermissionModeDiagnostics, type PermissionMode, unregisterSessionScopedToolCallbacks, mergeSessionScopedToolCallbacks, AbortReason, type AuthRequest, type AuthResult, type CredentialAuthRequest, type BrowserPaneFns, type SessionScopedToolCallbacks, generateConversationSummary, parseError, type AgentError, resolveKeepBackgroundTasksAlive } from '@craft-agent/shared/agent'
 import {
   resolveSessionConnection,
   createBackendFromConnection,
@@ -175,6 +175,12 @@ export const AGENT_FLAGS = {
 const MAX_ADMIN_REMEMBER_MINUTES = 60
 const MAX_ANNOTATIONS_PER_MESSAGE = 200
 const MAX_ANNOTATION_JSON_BYTES = 32 * 1024
+
+type ListMessagingSessionsFn = NonNullable<SessionScopedToolCallbacks['listMessagingSessionsFn']>
+type ListMessagingSessionsOptions = Parameters<ListMessagingSessionsFn>[0]
+type ListMessagingSessionsResult = ReturnType<ListMessagingSessionsFn>
+type MessagingPlatform = NonNullable<NonNullable<ListMessagingSessionsOptions>['platform']>
+const MESSAGING_PLATFORMS = new Set<MessagingPlatform>(['telegram', 'whatsapp', 'weixin', 'lark'])
 
 // Window during which fs.watch metadata-revert events from our own atomic write
 // are ignored, so the watcher does not roll back the in-memory mutation we
@@ -1283,6 +1289,9 @@ export class SessionManager implements ISessionManager {
     messagingTarget?: AutomationMessagingTarget
   }) => Promise<void>
 
+  /** Live workspace-scoped binding lookup installed by messaging-gateway. */
+  private messagingBindingLookup?: MessagingBindingLookup
+
   /**
    * Centralized setter for session processing state.
    * Automatically notifies the power manager on transitions (true→false, false→true)
@@ -1318,6 +1327,91 @@ export class SessionManager implements ISessionManager {
     }) => Promise<void>,
   ): void {
     this.automationBinder = fn
+  }
+
+  /** Install the live binding provider used by list_messaging_sessions. */
+  setMessagingBindingLookup(fn: MessagingBindingLookup): void {
+    this.messagingBindingLookup = fn
+  }
+
+  private listMessagingSessions(
+    workspaceId: string,
+    options?: ListMessagingSessionsOptions,
+  ): ListMessagingSessionsResult {
+    const rawLimit = Number.isFinite(options?.limit) ? Math.trunc(options!.limit!) : 20
+    const rawOffset = Number.isFinite(options?.offset) ? Math.trunc(options!.offset!) : 0
+    const limit = Math.max(1, Math.min(rawLimit, 100))
+    const offset = Math.max(0, rawOffset)
+    const requestedPlatform = options?.platform
+    const search = options?.search?.trim().toLowerCase()
+
+    const sessionsById = new Map(
+      this.getSessions(workspaceId).map((session) => [session.id, session]),
+    )
+    type ResultItem = ListMessagingSessionsResult['sessions'][number]
+    type GroupedItem = ResultItem & { lastBoundAt: number }
+    const grouped = new Map<string, GroupedItem>()
+
+    for (const binding of this.messagingBindingLookup?.(workspaceId) ?? []) {
+      // Defense in depth: providers are workspace-scoped, but never trust a
+      // mismatched row or a stale binding whose session has been deleted.
+      if (binding.workspaceId !== workspaceId || !binding.enabled) continue
+      if (!MESSAGING_PLATFORMS.has(binding.platform as MessagingPlatform)) continue
+      if (requestedPlatform && binding.platform !== requestedPlatform) continue
+
+      const session = sessionsById.get(binding.sessionId)
+      if (!session) continue
+
+      let item = grouped.get(session.id)
+      if (!item) {
+        item = {
+          id: session.id,
+          name: session.name ?? session.id,
+          labels: [...(session.labels ?? [])],
+          status: session.sessionStatus ?? 'todo',
+          createdAt: session.createdAt ?? 0,
+          updatedAt: session.lastMessageAt,
+          bindings: [],
+          lastBoundAt: 0,
+        }
+        grouped.set(session.id, item)
+      }
+
+      item.bindings.push({
+        bindingId: binding.id,
+        platform: binding.platform as MessagingPlatform,
+        channelId: binding.channelId,
+        threadId: binding.threadId,
+        channelName: binding.channelName,
+        boundAt: binding.createdAt,
+      })
+      item.lastBoundAt = Math.max(item.lastBoundAt, binding.createdAt)
+    }
+
+    let sessions = Array.from(grouped.values())
+    if (search) {
+      sessions = sessions.filter((session) =>
+        session.name.toLowerCase().includes(search)
+        || session.bindings.some((binding) =>
+          binding.channelName?.toLowerCase().includes(search) === true
+          || binding.channelId.toLowerCase().includes(search),
+        ),
+      )
+    }
+
+    for (const session of sessions) {
+      session.bindings.sort((a, b) => b.boundAt - a.boundAt || a.bindingId.localeCompare(b.bindingId))
+    }
+    sessions.sort((a, b) =>
+      (b.updatedAt ?? b.createdAt) - (a.updatedAt ?? a.createdAt)
+      || b.lastBoundAt - a.lastBoundAt
+      || a.name.localeCompare(b.name)
+      || a.id.localeCompare(b.id),
+    )
+
+    const total = sessions.length
+    const page = sessions.slice(offset, offset + limit).map(({ lastBoundAt: _lastBoundAt, ...session }) => session)
+    return { total, returned: page.length, sessions: page }
   }
 
   private automationSessionExistsInWorkspace(workspaceRootPath: string, sessionId: string): boolean {
@@ -4619,6 +4713,11 @@ export class SessionManager implements ISessionManager {
             })),
           }
         },
+        // Always install this closure, even if the messaging registry has not
+        // attached its provider yet. The lookup is resolved at call time, so
+        // unbound automation sessions and late provider initialization work.
+        listMessagingSessionsFn: (options) =>
+          this.listMessagingSessions(managed.workspace.id, options),
         listBackgroundTasksFn: (sessionId?: string) => {
           const targetId = sessionId ?? managed.id
           const now = Date.now()

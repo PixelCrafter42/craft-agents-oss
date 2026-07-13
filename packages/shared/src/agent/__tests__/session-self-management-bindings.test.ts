@@ -64,6 +64,7 @@ describe('Pi session self-management regression (#511)', () => {
     expect(ctx.setSessionStatus).toBeUndefined();
     expect(ctx.getSessionInfo).toBeUndefined();
     expect(ctx.listSessions).toBeUndefined();
+    expect(ctx.listMessagingSessions).toBeUndefined();
     expect(ctx.resolveLabels).toBeUndefined();
     expect(ctx.resolveStatus).toBeUndefined();
     expect(ctx.sendMessagingFile).toBeUndefined();
@@ -82,6 +83,7 @@ describe('Pi session self-management regression (#511)', () => {
       setSessionStatusFn: (sid, status) => { setStatusCalled.push([sid, status]); },
       getSessionInfoFn: (sid) => makeSessionInfo({ id: sid ?? sessionId }),
       listSessionsFn: () => ({ total: 1, returned: 1, sessions: [] }),
+      listMessagingSessionsFn: () => ({ total: 0, returned: 0, sessions: [] }),
       resolveLabelsFn: (labels) => ({ resolved: labels, unknown: [], available: labels }),
       resolveStatusFn: (status) => ({ resolved: status, available: ['active', 'done'] }),
       sendMessagingFileFn: async (request) => ({
@@ -92,11 +94,12 @@ describe('Pi session self-management regression (#511)', () => {
       }),
     });
 
-    // All 7 properties should now be defined
+    // All registered properties should now be defined
     expect(ctx.setSessionLabels).toBeDefined();
     expect(ctx.setSessionStatus).toBeDefined();
     expect(ctx.getSessionInfo).toBeDefined();
     expect(ctx.listSessions).toBeDefined();
+    expect(ctx.listMessagingSessions).toBeDefined();
     expect(ctx.resolveLabels).toBeDefined();
     expect(ctx.resolveStatus).toBeDefined();
     expect(ctx.sendMessagingFile).toBeDefined();
@@ -114,6 +117,9 @@ describe('Pi session self-management regression (#511)', () => {
 
     const list = ctx.listSessions!();
     expect(list.total).toBe(1);
+
+    const messagingList = ctx.listMessagingSessions!({ platform: 'telegram' });
+    expect(messagingList.total).toBe(0);
 
     const resolved = ctx.resolveLabels!(['bug']);
     expect(resolved.resolved).toEqual(['bug']);
@@ -137,7 +143,7 @@ describe('attachSessionSelfManagementBindings', () => {
     unregisterSessionScopedToolCallbacks(sessionId);
   });
 
-  it('absent callback → property is undefined for all 6 fields', () => {
+  it('absent callback → property is undefined for all bound fields', () => {
     const ctx = createBaseContext(sessionId);
     attachSessionSelfManagementBindings(ctx, sessionId);
 
@@ -146,6 +152,7 @@ describe('attachSessionSelfManagementBindings', () => {
     expect(ctx.setSessionStatus).toBeUndefined();
     expect(ctx.getSessionInfo).toBeUndefined();
     expect(ctx.listSessions).toBeUndefined();
+    expect(ctx.listMessagingSessions).toBeUndefined();
     expect(ctx.resolveLabels).toBeUndefined();
     expect(ctx.resolveStatus).toBeUndefined();
     expect(ctx.sendMessagingFile).toBeUndefined();
@@ -165,6 +172,36 @@ describe('attachSessionSelfManagementBindings', () => {
 
     // Should now be defined without recreating ctx
     expect(ctx.setSessionLabels).toBeDefined();
+  });
+
+  it('an unbound requester sees a late workspace-level messaging lookup', () => {
+    const ctx = createBaseContext(sessionId);
+    attachSessionSelfManagementBindings(ctx, sessionId);
+
+    expect(ctx.listMessagingSessions).toBeUndefined();
+
+    mergeSessionScopedToolCallbacks(sessionId, {
+      listMessagingSessionsFn: (options) => ({
+        total: 1,
+        returned: 1,
+        sessions: [{
+          id: 'telegram-target',
+          name: 'Telegram target',
+          labels: [],
+          status: 'todo',
+          createdAt: 1,
+          bindings: [{
+            bindingId: 'binding-1',
+            platform: options?.platform ?? 'telegram',
+            channelId: 'chat-1',
+            boundAt: 2,
+          }],
+        }],
+      }),
+    });
+
+    const result = ctx.listMessagingSessions!({ platform: 'telegram' });
+    expect(result.sessions[0]?.id).toBe('telegram-target');
   });
 
   it('callback replacement is visible without recreating the context', () => {
@@ -274,12 +311,13 @@ describe('Claude/Pi session self-management parity', () => {
     unregisterSessionScopedToolCallbacks(sessionId);
   });
 
-  it('both paths expose the same 6 bound properties when callbacks are registered', () => {
+  it('both paths expose the same bound properties when callbacks are registered', () => {
     const SELF_MGMT_PROPERTIES = [
       'setSessionLabels',
       'setSessionStatus',
       'getSessionInfo',
       'listSessions',
+      'listMessagingSessions',
       'resolveLabels',
       'resolveStatus',
     ] as const;
@@ -289,6 +327,7 @@ describe('Claude/Pi session self-management parity', () => {
       setSessionStatusFn: () => {},
       getSessionInfoFn: () => makeSessionInfo({ id: sessionId }),
       listSessionsFn: () => ({ total: 0, returned: 0, sessions: [] }),
+      listMessagingSessionsFn: () => ({ total: 0, returned: 0, sessions: [] }),
       resolveLabelsFn: (l) => ({ resolved: l, unknown: [], available: l }),
       resolveStatusFn: (s) => ({ resolved: s, available: [] }),
     });
@@ -334,5 +373,10 @@ describe('Claude/Pi session self-management parity', () => {
     const listResult = await listHandler(ctx, {});
     expect(listResult.isError).toBe(true);
     expect(listResult.content[0]!.text).toContain('not available in this context');
+
+    const messagingListHandler = SESSION_TOOL_REGISTRY.get('list_messaging_sessions')!.handler!;
+    const messagingListResult = await messagingListHandler(ctx, {});
+    expect(messagingListResult.isError).toBe(true);
+    expect(messagingListResult.content[0]!.text).toContain('not available in this context');
   });
 });

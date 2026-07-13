@@ -1,14 +1,43 @@
 /**
- * Messaging session tools — list bindings and unbind channels.
+ * Messaging session tools — discover bound sessions, inspect bindings, and
+ * unbind channels.
  *
  * NOTE: Binding is done via pairing codes (chat-side or UI-side),
  * not via arbitrary channelId from the agent. This prevents the agent
  * from binding sessions to channels it shouldn't have access to.
  */
 
-import type { SessionToolContext } from '../context.ts';
+import type { ListMessagingSessionsOptions, SessionToolContext } from '../context.ts';
 import type { ToolResult } from '../types.ts';
 import { successResponse, errorResponse } from '../response.ts';
+
+// ---------------------------------------------------------------------------
+// list_messaging_sessions
+// ---------------------------------------------------------------------------
+
+export type ListMessagingSessionsArgs = ListMessagingSessionsOptions;
+
+export async function handleListMessagingSessions(
+  ctx: SessionToolContext,
+  args: ListMessagingSessionsArgs,
+): Promise<ToolResult> {
+  if (!ctx.listMessagingSessions) {
+    return errorResponse('list_messaging_sessions is not available in this context.');
+  }
+
+  try {
+    const result = ctx.listMessagingSessions({
+      platform: args.platform,
+      search: args.search,
+      limit: args.limit,
+      offset: args.offset,
+    });
+    return successResponse(JSON.stringify(result, null, 2));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    return errorResponse(`Failed to list messaging sessions: ${message}`);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // list_messaging_channels

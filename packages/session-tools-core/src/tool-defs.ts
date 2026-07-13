@@ -42,7 +42,11 @@ import { handleListSessions } from './handlers/list-sessions.ts';
 import { handleListBackgroundTasks } from './handlers/list-background-tasks.ts';
 import { handleSendAgentMessage } from './handlers/send-agent-message.ts';
 import { handleSendMessagingFile } from './handlers/send-messaging-file.ts';
-import { handleListMessagingChannels, handleUnbindMessagingChannel } from './handlers/messaging.ts';
+import {
+  handleListMessagingChannels,
+  handleListMessagingSessions,
+  handleUnbindMessagingChannel,
+} from './handlers/messaging.ts';
 
 // ============================================================
 // Canonical Zod Schemas
@@ -245,6 +249,17 @@ export const SendMessagingFileSchema = z.object({
 
 export const ListMessagingChannelsSchema = z.object({
   sessionId: z.string().optional().describe('Session ID to list bindings for. Defaults to current session.'),
+});
+
+export const ListMessagingSessionsSchema = z.object({
+  platform: z.enum(['telegram', 'whatsapp', 'weixin', 'lark']).optional()
+    .describe('Filter by messaging platform. Omit to list sessions bound to any supported platform.'),
+  search: z.string().optional()
+    .describe('Case-insensitive substring match on session name, channel name, or channel ID.'),
+  limit: z.number().int().min(1).max(100).optional()
+    .describe('Max unique sessions to return (default 20, max 100).'),
+  offset: z.number().int().min(0).optional()
+    .describe('Skip the first N matching sessions for pagination.'),
 });
 
 export const UnbindMessagingChannelSchema = z.object({
@@ -525,9 +540,15 @@ Never guess or claim "the app restarted" — report exactly what this tool retur
   send_agent_message: `Send a message to another session. The message is delivered with your session ID so the target can reply back.
 
 Use this to coordinate with spawned sessions, send follow-up instructions, or relay information between sessions.
-Use list_sessions to find session IDs, or use the sessionId returned by spawn_session.
+Use list_sessions to find sessions by metadata, list_messaging_sessions to find sessions by Telegram/Weixin/WhatsApp/Lark binding, or use the sessionId returned by spawn_session.
 
 The target session receives your message with a sender envelope containing your session ID, so it can use send_agent_message to reply.`,
+
+  list_messaging_sessions: `List sessions in the current workspace that have enabled, persisted Telegram, WhatsApp, Weixin, or Lark bindings.
+
+Use this instead of fetching every session and probing each one with list_messaging_channels. Filter by platform to quickly find a session bound to a specific messaging app. Results are grouped by session and include matching binding IDs, channel IDs/names, and Telegram topic IDs.
+
+Only enabled, persisted two-way bindings are returned; output-only automation messagingTarget routes are not included. A binding can exist while its platform adapter is temporarily offline. send_agent_message only confirms delivery to the target session, not to the external app, so wait for an explicit reply or confirmation when external delivery matters. If multiple sessions match, do not silently guess which one to message — use an explicit selection rule or ask the user.`,
 
   list_messaging_channels: `List messaging channels (Telegram, WhatsApp, WeChat, Lark) bound to a session.
 Shows which external chat apps are connected and can send/receive messages.`,
@@ -613,6 +634,7 @@ export const SESSION_TOOL_DEFS: SessionToolDef[] = [
   // Inter-session messaging
   { name: 'send_agent_message', description: TOOL_DESCRIPTIONS.send_agent_message, inputSchema: SendAgentMessageSchema, executionMode: 'registry', safeMode: 'block', handler: handleSendAgentMessage },
   // Messaging gateway tools
+  { name: 'list_messaging_sessions', description: TOOL_DESCRIPTIONS.list_messaging_sessions, inputSchema: ListMessagingSessionsSchema, executionMode: 'registry', safeMode: 'allow', readOnly: true, handler: handleListMessagingSessions },
   { name: 'list_messaging_channels', description: TOOL_DESCRIPTIONS.list_messaging_channels, inputSchema: ListMessagingChannelsSchema, executionMode: 'registry', safeMode: 'allow', readOnly: true, handler: handleListMessagingChannels },
   { name: 'send_messaging_file', description: TOOL_DESCRIPTIONS.send_messaging_file, inputSchema: SendMessagingFileSchema, executionMode: 'registry', safeMode: 'block', handler: handleSendMessagingFile },
   { name: 'unbind_messaging_channel', description: TOOL_DESCRIPTIONS.unbind_messaging_channel, inputSchema: UnbindMessagingChannelSchema, executionMode: 'registry', safeMode: 'block', handler: handleUnbindMessagingChannel },

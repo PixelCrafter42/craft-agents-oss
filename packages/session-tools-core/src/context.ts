@@ -369,6 +369,13 @@ export interface SessionToolContext {
   listSessions?(options?: ListSessionsOptions): ListSessionsResult;
 
   /**
+   * List sessions in the workspace that have enabled, persisted messaging bindings.
+   * Unlike listSessions + getMessagingBindings, this is backed by the
+   * workspace messaging index so callers can filter by platform in one query.
+   */
+  listMessagingSessions?(options?: ListMessagingSessionsOptions): ListMessagingSessionsResult;
+
+  /**
    * List background tasks (running + recently-terminal) for a session from the
    * main-process registry. Defaults to the current session if no ID given.
    * Injected by backend (SessionManager). Returns [] in backends that don't
@@ -451,7 +458,53 @@ export interface SessionToolContext {
   dataPath?: string;
 }
 
-export type MessagingFilePlatform = 'telegram' | 'weixin' | 'lark' | 'whatsapp';
+/** Messaging platforms supported by the workspace gateway. */
+export type MessagingPlatform = 'telegram' | 'weixin' | 'lark' | 'whatsapp';
+
+/** @deprecated Use MessagingPlatform. Kept for send-file API compatibility. */
+export type MessagingFilePlatform = MessagingPlatform;
+
+/** Options for listing sessions with enabled, persisted messaging bindings. */
+export interface ListMessagingSessionsOptions {
+  /** Filter to one messaging platform. Omit to return all platforms. */
+  platform?: MessagingPlatform;
+  /** Case-insensitive substring match on session name, channel name, or channel id. */
+  search?: string;
+  /** Maximum unique sessions to return. Defaults to 20, max 100. */
+  limit?: number;
+  /** Number of matching sessions to skip. */
+  offset?: number;
+}
+
+/** One enabled, persisted messaging binding attached to a session. */
+export interface MessagingSessionBindingInfo {
+  bindingId: string;
+  platform: MessagingPlatform;
+  channelId: string;
+  /** Telegram forum topic id; undefined for DMs and non-Telegram platforms. */
+  threadId?: number;
+  channelName?: string;
+  /** Unix-ms timestamp when the binding was created. */
+  boundAt: number;
+}
+
+/** Compact session metadata plus the enabled bindings matched by the query. */
+export interface MessagingSessionListItem {
+  id: string;
+  name: string;
+  labels: string[];
+  status: string;
+  createdAt: number;
+  updatedAt?: number;
+  bindings: MessagingSessionBindingInfo[];
+}
+
+/** Paginated result from list_messaging_sessions. */
+export interface ListMessagingSessionsResult {
+  total: number;
+  returned: number;
+  sessions: MessagingSessionListItem[];
+}
 
 export interface SendMessagingFileRequest {
   path: string;
