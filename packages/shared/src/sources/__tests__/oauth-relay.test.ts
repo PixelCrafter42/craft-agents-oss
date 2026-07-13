@@ -1,8 +1,10 @@
-import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 
 import { OAUTH_RELAY_CALLBACK_URL, decodeOAuthRelayState, isOAuthRelayState } from '../../auth/oauth-relay.ts';
 import { SourceCredentialManager } from '../credential-manager.ts';
 import type { LoadedSource, FolderSourceConfig } from '../types.ts';
+
+const originalFetch = globalThis.fetch;
 
 function createApiSource(overrides: Partial<FolderSourceConfig> = {}): LoadedSource {
   return {
@@ -68,6 +70,10 @@ describe('SourceCredentialManager.prepareOAuth relay wrapping', () => {
       }
       return Promise.resolve(new Response('Not Found', { status: 404 }));
     }) as unknown as typeof fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
   });
 
   it('uses the stable relay redirect URI for WebUI Google flows', async () => {

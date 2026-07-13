@@ -100,7 +100,7 @@ import { extractLabelId, resolveSessionLabels, findTaskItemLabelId } from '@craf
 import { ensureLabelsExist, ensureTaskItemLabel } from '@craft-agent/shared/labels/crud'
 import { loadStatusConfig } from '@craft-agent/shared/statuses/storage'
 import { AutomationSystem, createPromptHistoryEntry, appendAutomationHistoryEntry, matcherMatches, getReusableAutomationSessionId, setReusableAutomationSessionId, clearReusableAutomationSessionId, type AutomationSystemMetadataSnapshot, type AutomationMessagingTarget, type AutomationWebhookReceiveInput, type AutomationWebhookReceiveResult } from '@craft-agent/shared/automations'
-import { buildBackendRuntimeSignature, buildRestartRequiredSignature, filterAttachmentsForModelInput } from './runtime-config'
+import { buildBackendRuntimeSignature, buildBackendRuntimeUpdate, buildRestartRequiredSignature, filterAttachmentsForModelInput } from './runtime-config'
 import { buildModelFallbackSequence, isModelFallbackEligibleError, modelFallbackKey, type ResolvedModelFallbackCandidate } from './model-fallback'
 
 // Import from server-core domain utilities
@@ -3444,28 +3444,12 @@ export class SessionManager implements ISessionManager {
     let refreshed = false
     if (managed.agent?.updateRuntimeConfig) {
       try {
-        refreshed = await managed.agent.updateRuntimeConfig({
-          model: backendContext.resolvedModel,
-          providerType: connection?.providerType,
+        refreshed = await managed.agent.updateRuntimeConfig(buildBackendRuntimeUpdate({
+          connection,
+          provider: backendContext.provider,
           authType: backendContext.authType,
-          runtime: connection ? {
-            baseUrl: connection.baseUrl,
-            piAuthProvider: connection.piAuthProvider,
-            customEndpoint: connection.customEndpoint,
-            customModels: connection.models?.map(model => {
-              if (typeof model === 'string') return model
-              const supportsImages = typeof model.supportsImages === 'boolean' ? model.supportsImages : undefined
-              if (model.contextWindow || supportsImages !== undefined) {
-                return {
-                  id: model.id,
-                  ...(model.contextWindow ? { contextWindow: model.contextWindow } : {}),
-                  ...(supportsImages !== undefined ? { supportsImages } : {}),
-                }
-              }
-              return model.id
-            }),
-          } : undefined,
-        })
+          resolvedModel: backendContext.resolvedModel,
+        }))
       } catch (error) {
         sessionLog.warn(`Runtime config in-place refresh failed for ${managed.id}: ${error instanceof Error ? error.message : error}`)
       }
@@ -6344,6 +6328,14 @@ export class SessionManager implements ISessionManager {
         ...(options?.hidden ? { hidden: true } : {}),
       }
       managed.messages.push(userMessage)
+
+      if (steered) {
+        this.ensureModelFallbackState(managed, userMessage.id, false)
+        managed.lastSentMessage = message
+        managed.lastSentAttachments = attachments
+        managed.lastSentStoredAttachments = displayStoredAttachments
+        managed.lastSentOptions = options
+      }
 
       // Emit to UI — 'accepted' iff a steer succeeded; 'queued' otherwise
       // (covers both queue-direct and queue-after-abort paths).

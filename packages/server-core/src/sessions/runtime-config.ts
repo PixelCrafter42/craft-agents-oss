@@ -1,4 +1,4 @@
-import type { AgentProvider, LlmAuthType } from '@craft-agent/shared/agent/backend'
+import type { AgentProvider, BackendRuntimeUpdate, LlmAuthType } from '@craft-agent/shared/agent/backend'
 import { isCompatProvider, modelSupportsImages, type LlmConnection } from '@craft-agent/shared/config'
 import type { FileAttachment } from '@craft-agent/shared/protocol'
 
@@ -31,6 +31,41 @@ function normalizeCustomModels(connection: LlmConnection): Array<Record<string, 
       })
     })
     .sort((a, b) => String(a.id).localeCompare(String(b.id)))
+}
+
+function buildRuntimeCustomModels(connection: LlmConnection): NonNullable<NonNullable<BackendRuntimeUpdate['runtime']>['customModels']> | undefined {
+  return connection.models?.map(model => {
+    if (typeof model === 'string') return model
+    const supportsImages = typeof model.supportsImages === 'boolean' ? model.supportsImages : undefined
+    if (model.contextWindow || supportsImages !== undefined) {
+      return {
+        id: model.id,
+        ...(model.contextWindow ? { contextWindow: model.contextWindow } : {}),
+        ...(supportsImages !== undefined ? { supportsImages } : {}),
+      }
+    }
+    return model.id
+  })
+}
+
+/**
+ * Build the in-place backend update from the same resolved connection context
+ * used for runtime drift signatures. Keeping this pure makes the IPC payload
+ * testable without reading or mutating the user's global connection config.
+ */
+export function buildBackendRuntimeUpdate(input: BackendRuntimeSignatureInput): BackendRuntimeUpdate {
+  const { connection, authType, resolvedModel } = input
+  return {
+    model: resolvedModel,
+    providerType: connection?.providerType,
+    authType,
+    runtime: connection ? {
+      baseUrl: connection.baseUrl,
+      piAuthProvider: connection.piAuthProvider,
+      customEndpoint: connection.customEndpoint,
+      customModels: buildRuntimeCustomModels(connection),
+    } : undefined,
+  }
 }
 
 /**

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test'
 import type { LlmConnection } from '@craft-agent/shared/config'
 import type { FileAttachment } from '@craft-agent/shared/protocol'
-import { buildBackendRuntimeSignature, filterAttachmentsForModelInput } from './runtime-config'
+import { buildBackendRuntimeSignature, buildBackendRuntimeUpdate, filterAttachmentsForModelInput } from './runtime-config'
 
 const baseCompat: LlmConnection = {
   slug: 'local',
@@ -56,6 +56,42 @@ describe('buildBackendRuntimeSignature', () => {
 
   it('ignores non-runtime metadata such as lastUsedAt', () => {
     expect(sig({ ...baseCompat, lastUsedAt: 1 })).toBe(sig({ ...baseCompat, lastUsedAt: 2 }))
+  })
+})
+
+describe('buildBackendRuntimeUpdate', () => {
+  it('preserves explicit per-model image support in the runtime IPC payload', () => {
+    const update = buildBackendRuntimeUpdate({
+      connection: {
+        ...baseCompat,
+        models: [
+          { id: 'vision-model', contextWindow: 262_144, supportsImages: true } as never,
+          { id: 'text-only-model', supportsImages: false } as never,
+          { id: 'plain-model' } as never,
+          'string-model',
+        ],
+      },
+      provider: 'pi',
+      authType: 'api_key',
+      resolvedModel: 'vision-model',
+    })
+
+    expect(update).toEqual({
+      model: 'vision-model',
+      providerType: 'pi_compat',
+      authType: 'api_key',
+      runtime: {
+        baseUrl: 'http://127.0.0.1:1234/v1',
+        piAuthProvider: 'openai',
+        customEndpoint: { api: 'openai-completions', supportsImages: true },
+        customModels: [
+          { id: 'vision-model', contextWindow: 262_144, supportsImages: true },
+          { id: 'text-only-model', supportsImages: false },
+          'plain-model',
+          'string-model',
+        ],
+      },
+    })
   })
 })
 

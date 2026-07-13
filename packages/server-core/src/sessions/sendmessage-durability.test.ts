@@ -109,4 +109,52 @@ describe('sendMessage durability', () => {
     expect(ackedMessageId).not.toBeNull()
     expect(onDiskAtAck).toBe(true)
   })
+
+  it('tracks a steered mid-stream message as the fallback retry target', async () => {
+    const sessionId = 'durability-steered-fallback'
+    const managed = buildSession(sessionId)
+    managed.isProcessing = true
+    managed.messages.push(
+      { id: 'prev-user', role: 'user', content: 'previous message', timestamp: 1 } as never,
+      { id: 'prev-tool', role: 'tool', content: 'side effect already happened', timestamp: 2 } as never,
+    )
+    managed.modelFallbackState = {
+      attemptedKeys: new Set<string>(),
+      userMessageId: 'prev-user',
+      inProgress: false,
+    }
+    managed.lastSentMessage = 'previous message'
+
+    const redirectedMessages: string[] = []
+    managed.agent = {
+      redirect(message: string) {
+        redirectedMessages.push(message)
+        return true
+      },
+    } as never
+
+    const ackedMessageIds: string[] = []
+    await sm.sendMessage(
+      sessionId,
+      'steered message',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      (messageId) => {
+        ackedMessageIds.push(messageId)
+      },
+    )
+
+    expect(redirectedMessages).toEqual(['steered message'])
+    expect(ackedMessageIds).toHaveLength(1)
+    expect(managed.messageQueue).toHaveLength(0)
+    expect(managed.lastSentMessage).toBe('steered message')
+    const ackedMessageId = ackedMessageIds[0]
+    expect(managed.modelFallbackState?.userMessageId).toBe(ackedMessageId)
+    expect((sm as unknown as {
+      hasModelOutputAfterUser: typeof SessionManager.prototype['hasModelOutputAfterUser']
+    }).hasModelOutputAfterUser(managed, ackedMessageId!)).toBe(false)
+  })
 })

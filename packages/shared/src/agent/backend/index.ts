@@ -32,6 +32,7 @@ export type {
   AgentProvider,
   CoreBackendConfig,
   BackendConfig,
+  BackendRuntimeUpdate,
   BackendHostRuntimeContext,
   PermissionCallback,
   PlanCallback,
