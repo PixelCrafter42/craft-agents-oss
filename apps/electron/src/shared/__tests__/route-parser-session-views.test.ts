@@ -15,15 +15,15 @@ describe('route-parser: employee sessions view', () => {
     })
   })
 
-  it('round-trips a selected session without losing employee view mode', () => {
-    const state = parseRouteToNavigationState('employeeSessions/session/session-1')
+  it('round-trips as a full-width view without session details', () => {
+    const state = parseRouteToNavigationState('employeeSessions')
 
     expect(state).toEqual({
       navigator: 'sessions',
       filter: { kind: 'allSessions' },
       viewMode: 'employee',
-      details: { type: 'session', sessionId: 'session-1' },
+      details: null,
     })
-    expect(buildRouteFromNavigationState(state!)).toBe('employeeSessions/session/session-1')
+    expect(buildRouteFromNavigationState(state!)).toBe('employeeSessions')
   })
 })

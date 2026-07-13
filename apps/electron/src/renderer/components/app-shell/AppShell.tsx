@@ -638,10 +638,11 @@ function AppShellContent({
 
   const sessionFilter = sessionsContext?.filter ?? null
 
-  // Board view replaces the session-list navigator with the full-width Kanban panel,
-  // so the navigator (and its resize handle) collapse to zero width while it's active.
+  // Canvas-style session views replace the navigator with a full-width board,
+  // so the navigator (and its resize handle) collapse to zero width while active.
   const isBoardView = isSessionsNavigation(navState) && navState.viewMode === 'board'
   const isEmployeeView = isSessionsNavigation(navState) && navState.viewMode === 'employee'
+  const isSessionCanvasView = isBoardView || isEmployeeView
 
   // Derive source filter from navigation state (only when in sources navigator)
   const sourceFilter: SourceFilter | null = isSourcesNavigation(navState) ? navState.filter ?? null : null
@@ -903,16 +904,6 @@ function AppShellContent({
       }
     })
   }, [sessionFilterKey])
-
-  const effectiveChatGroupingMode: ChatGroupingMode = isEmployeeView ? 'employee' : chatGroupingMode
-  const setEffectiveChatGroupingMode = useCallback((mode: ChatGroupingMode) => {
-    if (mode === 'employee') {
-      navigate(routes.view.employeeSessions())
-      return
-    }
-    setChatGroupingMode(mode)
-    if (isEmployeeView) navigate(routes.view.allSessions())
-  }, [isEmployeeView, setChatGroupingMode])
 
   // Ref for ChatDisplay navigation (exposed via forwardRef)
   const chatDisplayRef = React.useRef<ChatDisplayHandle>(null)
@@ -2916,7 +2907,7 @@ function AppShellContent({
               actions={
                 <>
                   {/* Session view switch (sessions mode, desktop widths only).
-                      In board view the navigator is collapsed, so the board hosts its own copy. */}
+                      Canvas views collapse the navigator and host their own copy. */}
                   {!isAutoCompact && isSessionsNavigation(navState) && (
                     <BoardListToggle
                       value={navState.viewMode === 'employee' ? 'employee' : 'list'}
@@ -2947,8 +2938,8 @@ function AppShellContent({
                         effectiveSessionStatuses={effectiveSessionStatuses}
                         displayLabelConfigs={displayLabelConfigs}
                         labelConfigs={labelConfigs}
-                        chatGroupingMode={effectiveChatGroupingMode}
-                        setChatGroupingMode={setEffectiveChatGroupingMode}
+                        chatGroupingMode={chatGroupingMode}
+                        setChatGroupingMode={setChatGroupingMode}
                         isStateSubView={isStateSubView}
                         onOpenSearch={() => setSearchActive(true)}
                       />
@@ -3487,33 +3478,28 @@ function AppShellContent({
                                     <span className="flex-1">{t("sidebar.group")}</span>
                                   </StyledDropdownMenuSubTrigger>
                                   <StyledDropdownMenuSubContent minWidth="min-w-[140px]">
-                                    <StyledDropdownMenuItem onClick={() => setEffectiveChatGroupingMode('date')}>
+                                    <StyledDropdownMenuItem onClick={() => setChatGroupingMode('date')}>
                                       <Calendar className="h-3.5 w-3.5" />
                                       <span className="flex-1">{t("sidebar.groupByDate")}</span>
-                                      {effectiveChatGroupingMode === 'date' && <Check className="h-3 w-3 text-muted-foreground" />}
+                                      {chatGroupingMode === 'date' && <Check className="h-3 w-3 text-muted-foreground" />}
                                     </StyledDropdownMenuItem>
-                                    <StyledDropdownMenuItem onClick={() => setEffectiveChatGroupingMode('status')}>
+                                    <StyledDropdownMenuItem onClick={() => setChatGroupingMode('status')}>
                                       <Inbox className="h-3.5 w-3.5" />
                                       <span className="flex-1">{t("sidebar.groupByStatus")}</span>
-                                      {effectiveChatGroupingMode === 'status' && <Check className="h-3 w-3 text-muted-foreground" />}
+                                      {chatGroupingMode === 'status' && <Check className="h-3 w-3 text-muted-foreground" />}
                                     </StyledDropdownMenuItem>
-                                    <StyledDropdownMenuItem onClick={() => setEffectiveChatGroupingMode('unread')}>
+                                    <StyledDropdownMenuItem onClick={() => setChatGroupingMode('unread')}>
                                       <MailOpen className="h-3.5 w-3.5" />
                                       <span className="flex-1">{t("sidebar.groupByUnread")}</span>
-                                      {effectiveChatGroupingMode === 'unread' && <Check className="h-3 w-3 text-muted-foreground" />}
+                                      {chatGroupingMode === 'unread' && <Check className="h-3 w-3 text-muted-foreground" />}
                                     </StyledDropdownMenuItem>
                                     {projectMenuOptions.length > 0 && (
-                                      <StyledDropdownMenuItem onClick={() => setEffectiveChatGroupingMode('project')}>
+                                      <StyledDropdownMenuItem onClick={() => setChatGroupingMode('project')}>
                                         <FolderKanban className="h-3.5 w-3.5" />
                                         <span className="flex-1">{t("sidebar.groupByProject")}</span>
-                                        {effectiveChatGroupingMode === 'project' && <Check className="h-3 w-3 text-muted-foreground" />}
+                                        {chatGroupingMode === 'project' && <Check className="h-3 w-3 text-muted-foreground" />}
                                       </StyledDropdownMenuItem>
                                     )}
-                                    <StyledDropdownMenuItem onClick={() => setEffectiveChatGroupingMode('employee')}>
-                                      <UserRound className="h-3.5 w-3.5" />
-                                      <span className="flex-1">{t("sidebar.groupByEmployee")}</span>
-                                      {effectiveChatGroupingMode === 'employee' && <Check className="h-3 w-3 text-muted-foreground" />}
-                                    </StyledDropdownMenuItem>
                                   </StyledDropdownMenuSubContent>
                                 </DropdownMenuSub>
                               </>
@@ -3898,7 +3884,7 @@ function AppShellContent({
                   onSetProjectId={handleSessionProjectChange}
                   employees={employeeMenuOptions}
                   onSetEmployeeId={handleSessionEmployeeChange}
-                  groupingMode={effectiveChatGroupingMode}
+                  groupingMode={chatGroupingMode}
                   workspaceId={activeWorkspaceId ?? undefined}
                   statusFilter={listFilter}
                   labelFilterMap={labelFilter}
@@ -3919,7 +3905,7 @@ function AppShellContent({
             )}
             </div>
           }
-          navigatorWidth={isAutoCompact ? sessionListWidth : (effectiveSidebarAndNavigatorHidden || isBoardView ? 0 : sessionListWidth)}
+          navigatorWidth={isAutoCompact ? sessionListWidth : (effectiveSidebarAndNavigatorHidden || isSessionCanvasView ? 0 : sessionListWidth)}
           isSidebarAndNavigatorHidden={effectiveSidebarAndNavigatorHidden}
           isRightSidebarVisible={false}
           isCompact={isAutoCompact}
@@ -3959,8 +3945,8 @@ function AppShellContent({
         </div>
         )}
 
-        {/* Session List Resize Handle (absolute, hidden in focused mode and board view) */}
-        {!effectiveSidebarAndNavigatorHidden && !isBoardView && (
+        {/* Session List Resize Handle (absolute, hidden in focused mode and canvas views) */}
+        {!effectiveSidebarAndNavigatorHidden && !isSessionCanvasView && (
         <div
           ref={sessionListHandleRef}
           onMouseDown={(e) => { e.preventDefault(); setIsResizing('session-list') }}

@@ -57,6 +57,10 @@ interface TaskTileProps {
   treatment: ProjectColorTreatment
   /** Whether the subtask list is expanded. */
   expanded: boolean
+  /** Override the column-derived accent (used by alternate board layouts). */
+  accentColor?: string
+  /** Override the standard in-progress-column live treatment. */
+  live?: boolean
   /** Open the task (focused chat window). */
   onClick?: () => void
   /** Open the full-pane editor for this task (edit mode). Enables the right-click "Edit task" item. */
@@ -91,6 +95,8 @@ export function TaskTile({
   onStatusChange,
   treatment,
   expanded,
+  accentColor,
+  live,
   onClick,
   onEdit,
   onToggleSubtasks,
@@ -103,7 +109,7 @@ export function TaskTile({
   const { t } = useTranslation()
   const livePulseEnabled = useAtomValue(kanbanLivePulseAtom)
   const columnColors = useKanbanColumnColors()
-  const accent = columnColors.get(task.column)?.solid ?? 'var(--primary)'
+  const accent = accentColor ?? columnColors.get(task.column)?.solid ?? 'var(--primary)'
 
   const color = project?.color ?? null
   const showStripe = !!color
@@ -118,9 +124,9 @@ export function TaskTile({
     !task.isProcessing &&
     task.subtasks.some(s => s.runState === 'pending' && (task.taskSlug ? true : !!s.sessionId))
 
-  // Live treatment: an in-flight turn on a tile parked in the active column,
-  // gated by the user's live-pulse preference.
-  const isLive = livePulseEnabled && !!task.isProcessing && task.column === 'in-progress'
+  // Live treatment: normally an in-flight turn in the active column; alternate
+  // board layouts can override the condition. The user preference still gates it.
+  const isLive = livePulseEnabled && (live ?? (!!task.isProcessing && task.column === 'in-progress'))
 
   const relativeTime = task.lastMessageAt
     ? formatDistanceToNowStrict(new Date(task.lastMessageAt), {
@@ -149,6 +155,8 @@ export function TaskTile({
       style={
         isLive
           ? {
+              // Dynamic accent glow cannot be represented by a static shadow token.
+              // eslint-disable-next-line craft-styles/no-nonstandard-shadows
               boxShadow: `0 0 0 1px ${accent}, 0 4px 16px -4px color-mix(in srgb, ${accent} 40%, transparent)`,
             }
           : undefined

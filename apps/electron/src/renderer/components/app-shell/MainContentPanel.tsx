@@ -45,6 +45,7 @@ import { AutomationInfoPage } from '../automations/AutomationInfoPage'
 import ProjectInfoPage from '@/pages/ProjectInfoPage'
 import EmployeeInfoPage from '@/pages/EmployeeInfoPage'
 import { KanbanBoardContainer } from './kanban/KanbanBoardContainer'
+import { EmployeeBoardContainer } from './employee-board/EmployeeBoardContainer'
 import type { ExecutionEntry } from '../automations/types'
 import { automationsAtom } from '@/atoms/automations'
 import { SendResourceToWorkspaceDialog, type SendResourceType } from './SendResourceToWorkspaceDialog'
@@ -405,6 +406,14 @@ export function MainContentPanel({
       return wrapWithStoplight(
         <Panel variant="grow" className={className}>
           <KanbanBoardContainer />
+        </Panel>
+      )
+    }
+
+    if (navState.viewMode === 'employee') {
+      return wrapWithStoplight(
+        <Panel variant="grow" className={className}>
+          <EmployeeBoardContainer />
         </Panel>
       )
     }

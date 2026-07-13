@@ -58,9 +58,7 @@ export interface UseSessionSearchOptions {
   /** Collapsed group keys — collapsed items are excluded from pagination and flatItems */
   collapsedGroups?: Set<string>
   /** Grouping mode — needed to compute group keys for collapse-aware pagination */
-  groupingMode?: 'date' | 'status' | 'unread' | 'project' | 'employee'
-  /** Valid employee IDs, used to put stale assignments in the unassigned bucket. */
-  knownEmployeeIds?: Set<string>
+  groupingMode?: 'date' | 'status' | 'unread' | 'project'
   /** Ref to the ScrollArea viewport element — used for scroll-based pagination */
   scrollViewportRef?: React.RefObject<HTMLDivElement>
 }
@@ -128,18 +126,11 @@ function groupSessionsByDate(sessions: SessionMeta[]): DateGroup[] {
 
 function getCollapseGroupKey(
   item: SessionMeta,
-  groupingMode?: 'date' | 'status' | 'unread' | 'project' | 'employee',
-  knownEmployeeIds?: Set<string>,
+  groupingMode?: 'date' | 'status' | 'unread' | 'project',
 ): string {
   if (groupingMode === 'status') return `status-${getSessionStatus(item)}`
   if (groupingMode === 'unread') return item.hasUnread ? 'unread-yes' : 'unread-no'
   if (groupingMode === 'project') return `project-${(item as { projectId?: string }).projectId ?? '__none__'}`
-  if (groupingMode === 'employee') {
-    const employeeId = item.employeeId
-    return employeeId && (!knownEmployeeIds || knownEmployeeIds.has(employeeId))
-      ? `employee-${employeeId}`
-      : 'employee-__none__'
-  }
   return startOfDay(new Date(item.lastMessageAt || 0)).toISOString()
 }
 
@@ -153,8 +144,7 @@ export function computeCollapsedPagination(
   items: SessionMeta[],
   displayLimit: number,
   collapsedGroups?: Set<string>,
-  groupingMode?: 'date' | 'status' | 'unread' | 'project' | 'employee',
-  knownEmployeeIds?: Set<string>,
+  groupingMode?: 'date' | 'status' | 'unread' | 'project',
 ): CollapsedPaginationResult {
   // Fast path: no collapse state → original slice
   if (!collapsedGroups || collapsedGroups.size === 0) {
@@ -165,7 +155,7 @@ export function computeCollapsedPagination(
     }
   }
 
-  const groupKeysInView = new Set(items.map(item => getCollapseGroupKey(item, groupingMode, knownEmployeeIds)))
+  const groupKeysInView = new Set(items.map(item => getCollapseGroupKey(item, groupingMode)))
 
   // Safety guard: don't allow collapse state to hide the entire list when only one
   // group exists in the current filtered view (there would be no meaningful collapse UX).
@@ -193,7 +183,7 @@ export function computeCollapsedPagination(
   const collapsedCounts = new Map<string, number>()
 
   for (const item of items) {
-    const groupKey = getCollapseGroupKey(item, groupingMode, knownEmployeeIds)
+    const groupKey = getCollapseGroupKey(item, groupingMode)
 
     if (effectiveCollapsedKeys.has(groupKey)) {
       collapsedCounts.set(groupKey, (collapsedCounts.get(groupKey) || 0) + 1)
@@ -345,7 +335,6 @@ export function useSessionSearch({
   labelConfigs,
   collapsedGroups,
   groupingMode,
-  knownEmployeeIds,
   scrollViewportRef,
 }: UseSessionSearchOptions): UseSessionSearchResult {
 
@@ -554,9 +543,8 @@ export function useSessionSearch({
       displayLimit,
       collapsedGroups,
       groupingMode,
-      knownEmployeeIds,
     )
-  }, [searchFilteredItems, displayLimit, collapsedGroups, groupingMode, knownEmployeeIds])
+  }, [searchFilteredItems, displayLimit, collapsedGroups, groupingMode])
 
   const loadMore = useCallback(() => {
     setDisplayLimit(prev => Math.min(prev + BATCH_SIZE, searchFilteredItems.length))

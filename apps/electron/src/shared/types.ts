@@ -878,8 +878,8 @@ export interface SessionsNavigationState {
   rightSidebar?: RightSidebarPanel
   /**
    * Presentation mode for the sessions navigator. `'board'` renders the Kanban
-   * board, while `'employee'` keeps the list + chat layout and groups all
-   * sessions by their assigned employee. Absent/`'list'` is the default.
+   * board, while `'employee'` renders a full-width swimlane board grouped by
+   * assigned employee. Absent/`'list'` is the default.
    */
   viewMode?: 'list' | 'board' | 'employee'
 }

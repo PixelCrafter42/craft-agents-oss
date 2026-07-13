@@ -111,17 +111,13 @@ export function parseCompoundRoute(route: string): ParsedCompoundRoute | null {
     }
   }
 
-  // Employee view — all sessions grouped by their assigned employee. Unlike
-  // the full-width board, it can carry a selected session in the detail pane.
+  // Employee view — a full-width board grouped by assigned employee.
   if (first === 'employeeSessions') {
-    const details = segments[1] === 'session' && segments[2]
-      ? { type: 'session', id: segments[2] }
-      : null
     return {
       navigator: 'sessions',
       sessionFilter: { kind: 'allSessions' },
       viewMode: 'employee',
-      details,
+      details: null,
     }
   }
 
@@ -362,9 +358,7 @@ export function buildCompoundRoute(parsed: ParsedCompoundRoute): string {
   // Board is a standalone view of all sessions; emit its own prefix.
   if (parsed.viewMode === 'board') return 'board'
   if (parsed.viewMode === 'employee') {
-    return parsed.details
-      ? `employeeSessions/session/${parsed.details.id}`
-      : 'employeeSessions'
+    return 'employeeSessions'
   }
 
   let base: string

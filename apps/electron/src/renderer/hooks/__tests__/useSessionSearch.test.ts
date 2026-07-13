@@ -67,24 +67,6 @@ describe('computeCollapsedPagination', () => {
     expect(result.collapsedGroupsMeta).toEqual([])
   })
 
-  it('collapses employee groups and treats stale assignments as unassigned', () => {
-    const sessions = [
-      makeSession('alice', { employeeId: 'employee-alice' }),
-      makeSession('stale', { employeeId: 'deleted-employee' }),
-      makeSession('unassigned'),
-    ]
-
-    const result = computeCollapsedPagination(
-      sessions,
-      50,
-      new Set(['employee-__none__']),
-      'employee',
-      new Set(['employee-alice']),
-    )
-
-    expect(result.paginatedItems.map(session => session.id)).toEqual(['alice'])
-    expect(result.collapsedGroupsMeta).toEqual([{ key: 'employee-__none__', count: 2 }])
-  })
 })
 
 describe('sessionMatchesCurrentFilter entity filters', () => {

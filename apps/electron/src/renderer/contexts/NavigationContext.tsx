@@ -636,11 +636,11 @@ export function NavigationProvider({
       }
 
       // Sessions: auto-select last/first session.
-      // Board view has no per-session detail, so skip auto-selection — otherwise
-      // navigating to the board would immediately resolve into a chat route.
+      // Full-width board views have no per-session detail, so skip auto-selection.
       if (
         isSessionsNavigation(nextState) &&
         nextState.viewMode !== 'board' &&
+        nextState.viewMode !== 'employee' &&
         !nextState.details &&
         !options?.skipAutoSelect
       ) {
@@ -1209,11 +1209,6 @@ export function NavigationProvider({
   const navigateToSession = useCallback((sessionId: string) => {
     if (!isSessionsNavigation(navigationState)) {
       navigate(routes.view.allSessions(sessionId))
-      return
-    }
-
-    if (navigationState.viewMode === 'employee') {
-      navigate(routes.view.employeeSessions(sessionId))
       return
     }
 

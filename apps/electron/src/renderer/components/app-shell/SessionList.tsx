@@ -37,7 +37,7 @@ export interface SessionListRow {
 }
 
 /** Grouping mode for chat list */
-export type ChatGroupingMode = 'date' | 'status' | 'unread' | 'project' | 'employee'
+export type ChatGroupingMode = 'date' | 'status' | 'unread' | 'project'
 
 interface SessionListProps {
   items: SessionMeta[]
@@ -179,7 +179,6 @@ export function SessionList({
 
   // Pre-flatten label tree once for efficient ID lookups in each SessionItem
   const flatLabels = useMemo(() => flattenLabels(labels), [labels])
-  const knownEmployeeIds = useMemo(() => new Set((employees ?? []).map(employee => employee.id)), [employees])
 
   // Get current filter from navigation state (for preserving context in tab routes)
   const currentFilter = isSessionsNavigation(navState) ? navState.filter : undefined
@@ -277,7 +276,6 @@ export function SessionList({
     labelConfigs: labels,
     collapsedGroups,
     groupingMode,
-    knownEmployeeIds,
     scrollViewportRef,
   })
 
@@ -465,62 +463,6 @@ export function SessionList({
       }
     }
 
-    if (groupingMode === 'employee') {
-      const employeeOrder = new Map<string, number>()
-      const employeeNameById = new Map<string, string>()
-      ;(employees ?? []).forEach((employee, index) => {
-        employeeOrder.set(employee.id, index)
-        employeeNameById.set(employee.id, employee.name)
-      })
-
-      const groupsByKey = new Map<string, { rows: SessionListRow[], employeeId: string | null }>()
-      for (const row of rows) {
-        const rawEmployeeId = row.item.employeeId
-        const employeeId = rawEmployeeId && employeeNameById.has(rawEmployeeId) ? rawEmployeeId : null
-        const key = employeeId ? `employee-${employeeId}` : 'employee-__none__'
-        if (!groupsByKey.has(key)) groupsByKey.set(key, { rows: [], employeeId })
-        groupsByKey.get(key)!.rows.push(row)
-      }
-
-      for (const meta of collapsedGroupsMeta) {
-        if (!groupsByKey.has(meta.key)) {
-          const idPart = meta.key.replace('employee-', '')
-          groupsByKey.set(meta.key, {
-            rows: [],
-            employeeId: idPart === '__none__' ? null : idPart,
-          })
-        }
-      }
-
-      const orderedGroups: EntityListGroup<SessionListRow>[] = []
-      for (const [key, { rows: groupRows, employeeId }] of groupsByKey) {
-        groupRows.sort((a, b) => (b.item.lastMessageAt || 0) - (a.item.lastMessageAt || 0))
-        const collapsedMeta = collapsedGroupsMeta.find(meta => meta.key === key)
-        orderedGroups.push({
-          key,
-          label: employeeId
-            ? (employeeNameById.get(employeeId) ?? t('sidebar.noEmployee'))
-            : t('sidebar.noEmployee'),
-          items: groupRows,
-          collapsible: true,
-          ...(collapsedMeta ? { collapsedCount: collapsedMeta.count } : {}),
-        })
-      }
-      orderedGroups.sort((a, b) => {
-        if (a.key === 'employee-__none__') return 1
-        if (b.key === 'employee-__none__') return -1
-        return (employeeOrder.get(a.key.replace('employee-', '')) ?? 999)
-          - (employeeOrder.get(b.key.replace('employee-', '')) ?? 999)
-      })
-
-      if (orderedGroups.length === 1) orderedGroups[0].collapsible = false
-
-      return {
-        rows: orderedGroups.flatMap(group => group.items),
-        groups: orderedGroups,
-      }
-    }
-
     // Default: group by date
     const groupsByKey = new Map<string, EntityListGroup<SessionListRow>>()
     const groupDates = new Map<string, Date>()
@@ -572,7 +514,7 @@ export function SessionList({
       rows,
       groups: orderedGroups,
     }
-  }, [isSearchMode, matchingFilterItems, otherResultItems, flatItems, groupingMode, sessionStatuses, projects, employees, collapsedGroupsMeta, t])
+  }, [isSearchMode, matchingFilterItems, otherResultItems, flatItems, groupingMode, sessionStatuses, projects, collapsedGroupsMeta, t])
 
   const flatRows = rowData.rows
 
@@ -590,21 +532,13 @@ export function SessionList({
         return pid && knownProjectIds.has(pid) ? `project-${pid}` : 'project-__none__'
       }))
       setCollapsedGroups(allKeys)
-    } else if (groupingMode === 'employee') {
-      const allKeys = new Set(items.map(item => {
-        const employeeId = item.employeeId
-        return employeeId && knownEmployeeIds.has(employeeId)
-          ? `employee-${employeeId}`
-          : 'employee-__none__'
-      }))
-      setCollapsedGroups(allKeys)
     } else {
       const allKeys = new Set(items.map(item =>
         startOfDay(new Date(item.lastMessageAt || 0)).toISOString()
       ))
       setCollapsedGroups(allKeys)
     }
-  }, [items, groupingMode, projects, knownEmployeeIds])
+  }, [items, groupingMode, projects])
   const expandAllGroups = useCallback(() => {
     setCollapsedGroups(new Set())
   }, [])
