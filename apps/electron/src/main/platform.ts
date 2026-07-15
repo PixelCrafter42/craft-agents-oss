@@ -55,6 +55,20 @@ export function createElectronPlatform(opts: ElectronPlatformOptions): PlatformS
               width: Math.round(sw * scale),
               height: Math.round(sh * scale),
             })
+          } else if (fit === 'cover') {
+            const { width: sw, height: sh } = result.getSize()
+            const scale = Math.max(tw / sw, th / sh)
+            result = result.resize({
+              width: Math.max(tw, Math.ceil(sw * scale)),
+              height: Math.max(th, Math.ceil(sh * scale)),
+            })
+            const resized = result.getSize()
+            result = result.crop({
+              x: Math.max(0, Math.floor((resized.width - tw) / 2)),
+              y: Math.max(0, Math.floor((resized.height - th) / 2)),
+              width: Math.min(tw, resized.width),
+              height: Math.min(th, resized.height),
+            })
           } else {
             result = result.resize({ width: tw, height: th })
           }

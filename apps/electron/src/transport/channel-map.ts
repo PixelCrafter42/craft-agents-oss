@@ -417,6 +417,8 @@ export const CHANNEL_MAP = {
   createEmployee: invoke(RPC_CHANNELS.employees.CREATE),
   updateEmployee: invoke(RPC_CHANNELS.employees.UPDATE),
   deleteEmployee: invoke(RPC_CHANNELS.employees.DELETE),
+  updateEmployeeAvatar: invoke(RPC_CHANNELS.employees.UPDATE_AVATAR),
+  deleteEmployeeAvatar: invoke(RPC_CHANNELS.employees.DELETE_AVATAR),
   updateEmployeeDefinition: invoke(RPC_CHANNELS.employees.UPDATE_DEFINITION),
   updateEmployeeMemory: invoke(RPC_CHANNELS.employees.UPDATE_MEMORY),
   onEmployeesChanged: listener(RPC_CHANNELS.employees.CHANGED),

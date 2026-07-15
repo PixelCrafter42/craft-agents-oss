@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { Eye, EyeOff, Inbox, UserRound, UserRoundX } from 'lucide-react'
+import { Eye, EyeOff, Inbox, UserRoundX } from 'lucide-react'
 import { useAtomValue, useSetAtom } from 'jotai'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -23,6 +23,7 @@ import { getSessionTitle } from '@/utils/session'
 import { useProjectColorTreatment } from '@/hooks/useProjectColorTreatment'
 import type { SessionStatus } from '@/config/session-status-config'
 import type { ProjectColorTreatment } from '@/utils/project-colors'
+import { EmployeeAvatar } from '@/components/employees/EmployeeAvatar'
 import { DEFAULT_MODEL } from '@config/models'
 import { routes } from '@/lib/navigate'
 import { BoardListToggle } from '../kanban/BoardListToggle'
@@ -291,7 +292,9 @@ function EmployeeColumn({
           className="inline-flex min-w-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold text-white"
           style={{ backgroundColor: column.color }}
         >
-          {isUnassigned ? <UserRoundX className="h-3.5 w-3.5 shrink-0" /> : <UserRound className="h-3.5 w-3.5 shrink-0" />}
+          {isUnassigned
+            ? <UserRoundX className="h-3.5 w-3.5 shrink-0" />
+            : <EmployeeAvatar employee={column} size="sm" className="ring-1 ring-white/30" fallbackClassName="bg-white/15 text-white" />}
           <span className="truncate">{column.name}</span>
           <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-white/25 px-1 text-[10px] tabular-nums">
             {column.sessions.length}

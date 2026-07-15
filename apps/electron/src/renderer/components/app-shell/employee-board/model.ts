@@ -6,6 +6,7 @@ export interface EmployeeBoardEmployee {
   id: string
   name: string
   color?: string
+  avatarDataUrl?: string
 }
 
 export function resolveEmployeeColumnId(

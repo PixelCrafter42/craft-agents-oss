@@ -432,6 +432,8 @@ export const RPC_CHANNELS = {
     CREATE: 'employees:create',
     UPDATE: 'employees:update',
     DELETE: 'employees:delete',
+    UPDATE_AVATAR: 'employees:updateAvatar',
+    DELETE_AVATAR: 'employees:deleteAvatar',
     UPDATE_DEFINITION: 'employees:updateDefinition',
     UPDATE_MEMORY: 'employees:updateMemory',
     CHANGED: 'employees:changed',

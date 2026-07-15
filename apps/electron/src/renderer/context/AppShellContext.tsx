@@ -58,7 +58,7 @@ export interface AppShellContextType {
   /** All skills for this workspace - provided by AppShell component (for @mentions) */
   skills?: LoadedSkill[]
   /** Workspace employees for display and session binding menus */
-  employees?: Array<{ id: string; slug: string; name: string; color?: string }>
+  employees?: Array<{ id: string; slug: string; name: string; color?: string; avatarDataUrl?: string }>
   /** Working directory of the active session — needed for project-level skill resolution */
   activeSessionWorkingDirectory?: string
   /** All label configs (tree) for label menu and badge display */

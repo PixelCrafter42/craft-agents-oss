@@ -9,7 +9,7 @@ import * as React from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useAtomValue } from 'jotai'
-import { FolderOpen, MessageSquare, Plus, Save, Trash2, UserRound, X } from 'lucide-react'
+import { FolderOpen, ImagePlus, MessageSquare, Plus, Save, Trash2, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { useActiveWorkspace, useAppShellContext } from '@/context/AppShellContext'
 import { navigate, routes } from '@/lib/navigate'
@@ -31,6 +31,7 @@ import { SkillSelectorPopover } from '@/components/ui/SkillSelectorPopover'
 import { SourceSelectorPopover } from '@/components/ui/SourceSelectorPopover'
 import { SkillAvatar } from '@/components/ui/skill-avatar'
 import { SourceAvatar } from '@/components/ui/source-avatar'
+import { EmployeeAvatar } from '@/components/employees/EmployeeAvatar'
 import { cn } from '@/lib/utils'
 import type { LoadedEmployee } from '@craft-agent/shared/employees/types'
 import type { LoadedSkill, LoadedSource } from '../../shared/types'
@@ -57,6 +58,7 @@ export default function EmployeeInfoPage({ employeeSlug }: EmployeeInfoPageProps
   const [savingSettings, setSavingSettings] = useState(false)
   const [savingDefinition, setSavingDefinition] = useState(false)
   const [savingMemory, setSavingMemory] = useState(false)
+  const [savingAvatar, setSavingAvatar] = useState(false)
 
   const [editName, setEditName] = useState('')
   const [editDescription, setEditDescription] = useState('')
@@ -68,6 +70,7 @@ export default function EmployeeInfoPage({ employeeSlug }: EmployeeInfoPageProps
 
   const skillButtonRef = useRef<HTMLButtonElement | null>(null)
   const sourceButtonRef = useRef<HTMLButtonElement | null>(null)
+  const avatarInputRef = useRef<HTMLInputElement | null>(null)
   const [skillsOpen, setSkillsOpen] = useState(false)
   const [sourcesOpen, setSourcesOpen] = useState(false)
 
@@ -197,6 +200,45 @@ export default function EmployeeInfoPage({ employeeSlug }: EmployeeInfoPageProps
     }
   }, [workspaceId, employee, editMemory, t, loadEmployee])
 
+  const handleAvatarChange = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (!file || !workspaceId || !employee) return
+    if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type) || file.size > 5 * 1024 * 1024) {
+      toast.error(t('employeeInfo.avatarInvalid'))
+      event.target.value = ''
+      return
+    }
+
+    setSavingAvatar(true)
+    try {
+      const base64 = await readFileAsBase64(file)
+      await window.electronAPI.updateEmployeeAvatar(workspaceId, employee.config.slug, base64)
+      toast.success(t('employeeInfo.avatarUpdated'))
+      await loadEmployee()
+    } catch (err) {
+      console.error('[EmployeeInfoPage] Avatar update failed:', err)
+      toast.error(t('employeeInfo.saveFailed', '保存失败'))
+    } finally {
+      setSavingAvatar(false)
+      event.target.value = ''
+    }
+  }, [employee, loadEmployee, t, workspaceId])
+
+  const handleAvatarRemove = useCallback(async () => {
+    if (!workspaceId || !employee) return
+    setSavingAvatar(true)
+    try {
+      await window.electronAPI.deleteEmployeeAvatar(workspaceId, employee.config.slug)
+      toast.success(t('employeeInfo.avatarUpdated'))
+      await loadEmployee()
+    } catch (err) {
+      console.error('[EmployeeInfoPage] Avatar removal failed:', err)
+      toast.error(t('employeeInfo.saveFailed', '保存失败'))
+    } finally {
+      setSavingAvatar(false)
+    }
+  }, [employee, loadEmployee, t, workspaceId])
+
   const handleStartSession = useCallback(async () => {
     if (!workspaceId || !employee) return
     try {
@@ -237,7 +279,7 @@ export default function EmployeeInfoPage({ employeeSlug }: EmployeeInfoPageProps
       {employee && (
         <Info_Page.Content>
           <Info_Page.Hero
-            avatar={<UserRound className="h-6 w-6 text-foreground/60" />}
+            avatar={<EmployeeAvatar employee={employee} size="md" />}
             title={employee.config.name}
             tagline={employee.config.description ?? t('employeeInfo.taglineFallback', '员工身份、默认上下文和长期工作记忆')}
           />
@@ -298,6 +340,52 @@ export default function EmployeeInfoPage({ employeeSlug }: EmployeeInfoPageProps
           {tab === 'settings' && (
             <Info_Section title={t('employeeInfo.tabSettings', '设置')}>
               <div className="space-y-4 px-4 py-3">
+                <div>
+                  <div className="mb-1 text-xs font-medium text-foreground/70">
+                    {t('employeeInfo.avatar')}
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <EmployeeAvatar
+                      employee={employee}
+                      size="lg"
+                      className="ring-1 ring-border/50"
+                    />
+                    <div className="min-w-0 space-y-1.5">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          disabled={savingAvatar}
+                          onClick={() => avatarInputRef.current?.click()}
+                        >
+                          <ImagePlus className="mr-1 h-3.5 w-3.5" />
+                          {t('employeeInfo.avatarChange')}
+                        </Button>
+                        {employee.avatarDataUrl && (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            disabled={savingAvatar}
+                            onClick={handleAvatarRemove}
+                          >
+                            <Trash2 className="mr-1 h-3.5 w-3.5" />
+                            {t('employeeInfo.avatarRemove')}
+                          </Button>
+                        )}
+                      </div>
+                      <p className="text-xs text-foreground/50">{t('employeeInfo.avatarHint')}</p>
+                    </div>
+                    <input
+                      ref={avatarInputRef}
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp"
+                      className="hidden"
+                      onChange={handleAvatarChange}
+                    />
+                  </div>
+                </div>
                 <Field label={t('employeeInfo.name', '名称')}>
                   <Input value={editName} onChange={(e) => setEditName(e.target.value)} />
                 </Field>
@@ -463,6 +551,27 @@ export default function EmployeeInfoPage({ employeeSlug }: EmployeeInfoPageProps
       )}
     </Info_Page>
   )
+}
+
+function readFileAsBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onerror = () => reject(reader.error ?? new Error('Failed to read avatar'))
+    reader.onload = () => {
+      const result = reader.result
+      if (typeof result !== 'string') {
+        reject(new Error('Failed to read avatar'))
+        return
+      }
+      const separator = result.indexOf(',')
+      if (separator < 0) {
+        reject(new Error('Invalid avatar data URL'))
+        return
+      }
+      resolve(result.slice(separator + 1))
+    }
+    reader.readAsDataURL(file)
+  })
 }
 
 function TabButton({

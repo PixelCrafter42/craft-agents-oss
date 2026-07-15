@@ -39,6 +39,8 @@ export interface LoadedEmployee {
   workspaceId: string;
   definition?: string;
   memoryContent?: string;
+  /** Small normalized avatar embedded for local and remote renderer clients. */
+  avatarDataUrl?: string;
 }
 
 export interface EmployeePromptContext {

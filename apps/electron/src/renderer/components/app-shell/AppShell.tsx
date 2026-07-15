@@ -1042,7 +1042,13 @@ function AppShellContent({
   )
   const { employees } = useEmployees(activeWorkspaceId)
   const employeeMenuOptions = useMemo(
-    () => employees.map(e => ({ id: e.config.id, slug: e.config.slug, name: e.config.name, color: e.config.color })),
+    () => employees.map(e => ({
+      id: e.config.id,
+      slug: e.config.slug,
+      name: e.config.name,
+      color: e.config.color,
+      avatarDataUrl: e.avatarDataUrl,
+    })),
     [employees],
   )
   const handleSessionProjectChange = useCallback(async (sessionId: string, projectId: string | null) => {

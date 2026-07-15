@@ -44,6 +44,7 @@ import type { SessionMeta } from '@/atoms/sessions'
 import { getSessionStatus, hasUnreadMeta, hasMessagesMeta } from '@/utils/session'
 import { MessagingSessionMenuItem } from '@/components/messaging/MessagingSessionMenuItem'
 import { useSessionMenuActions } from '@/hooks/useSessionMenuActions'
+import { EmployeeAvatar } from '@/components/employees/EmployeeAvatar'
 
 export interface SessionMenuProjectOption {
   id: string
@@ -55,6 +56,8 @@ export interface SessionMenuEmployeeOption {
   id: string
   slug: string
   name: string
+  color?: string
+  avatarDataUrl?: string
 }
 
 export interface SessionMenuProps {
@@ -262,8 +265,11 @@ export function SessionMenu({
               const isBound = item.employeeId === employee.id
               return (
                 <MenuItem key={employee.id} onClick={() => onSetEmployeeId(employee.id)}>
-                  {isBound && <Check className="h-3.5 w-3.5" />}
-                  <span className={isBound ? 'flex-1' : 'flex-1 ml-[18px]'}>{employee.name}</span>
+                  <span className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center">
+                    {isBound && <Check className="h-3.5 w-3.5" />}
+                  </span>
+                  <EmployeeAvatar employee={employee} size="xs" />
+                  <span className="flex-1">{employee.name}</span>
                 </MenuItem>
               )
             })}

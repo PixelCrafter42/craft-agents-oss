@@ -20,6 +20,7 @@ import {
   StyledContextMenuContent,
 } from '@/components/ui/styled-context-menu'
 import type { LoadedEmployee } from '@craft-agent/shared/employees/types'
+import { EmployeeAvatar } from '@/components/employees/EmployeeAvatar'
 
 export interface EmployeesListPanelProps {
   employees: LoadedEmployee[]
@@ -123,7 +124,7 @@ function EmployeeRow({ employee, isSelected, isFirst, onClick, onDelete, onJumpT
             onMouseDown={(e: React.MouseEvent) => {
               if (e.button === 0) onClick()
             }}
-            icon={<UserRound className="h-3.5 w-3.5 text-foreground/60" />}
+            icon={<EmployeeAvatar employee={employee} size="xs" />}
             title={config.name}
             subtitle={subtitle}
           />

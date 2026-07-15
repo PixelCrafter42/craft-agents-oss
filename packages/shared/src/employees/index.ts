@@ -14,11 +14,14 @@ export type {
 export {
   EMPLOYEE_DEFINITION_FILENAME,
   EMPLOYEE_MEMORY_FILENAME,
+  EMPLOYEE_AVATAR_FILENAME,
+  MAX_EMPLOYEE_AVATAR_BYTES,
   ensureEmployeesDir,
   getWorkspaceEmployeesPath,
   getEmployeePath,
   getEmployeeDefinitionPath,
   getEmployeeMemoryPath,
+  getEmployeeAvatarPath,
   isValidEmployeeSlug,
   assertValidEmployeeSlug,
   loadEmployeeConfig,
@@ -33,6 +36,8 @@ export {
   updateEmployee,
   updateEmployeeDefinition,
   updateEmployeeMemory,
+  updateEmployeeAvatar,
+  deleteEmployeeAvatar,
   deleteEmployee,
   employeeExists,
 } from './storage.ts';

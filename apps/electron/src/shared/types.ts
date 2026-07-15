@@ -702,6 +702,8 @@ export interface ElectronAPI {
   createEmployee(workspaceId: string, input: import('@craft-agent/shared/employees/types').CreateEmployeeInput): Promise<import('@craft-agent/shared/employees/types').EmployeeConfig>
   updateEmployee(workspaceId: string, employeeSlug: string, patch: Partial<Omit<import('@craft-agent/shared/employees/types').EmployeeConfig, 'id' | 'slug' | 'createdAt'>>): Promise<import('@craft-agent/shared/employees/types').EmployeeConfig>
   deleteEmployee(workspaceId: string, employeeSlug: string): Promise<void>
+  updateEmployeeAvatar(workspaceId: string, employeeSlug: string, base64: string): Promise<void>
+  deleteEmployeeAvatar(workspaceId: string, employeeSlug: string): Promise<void>
   updateEmployeeDefinition(workspaceId: string, employeeSlug: string, content: string): Promise<void>
   updateEmployeeMemory(workspaceId: string, employeeSlug: string, content: string): Promise<void>
   onEmployeesChanged(callback: (workspaceId: string, employees: unknown) => void): () => void

@@ -14,7 +14,9 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  renameSync,
   rmSync,
+  unlinkSync,
   writeFileSync,
 } from 'fs';
 import { basename, isAbsolute, join, relative, resolve, sep } from 'path';
@@ -30,6 +32,8 @@ import type {
 
 export const EMPLOYEE_DEFINITION_FILENAME = 'EMPLOYEE.md';
 export const EMPLOYEE_MEMORY_FILENAME = 'MEMORY.md';
+export const EMPLOYEE_AVATAR_FILENAME = 'avatar.png';
+export const MAX_EMPLOYEE_AVATAR_BYTES = 512 * 1024;
 
 export function getWorkspaceEmployeesPath(workspaceRootPath: string): string {
   return join(workspaceRootPath, 'employees');
@@ -69,6 +73,10 @@ export function getEmployeeDefinitionPath(workspaceRootPath: string, employeeSlu
 
 export function getEmployeeMemoryPath(workspaceRootPath: string, employeeSlug: string): string {
   return join(getEmployeePath(workspaceRootPath, employeeSlug), EMPLOYEE_MEMORY_FILENAME);
+}
+
+export function getEmployeeAvatarPath(workspaceRootPath: string, employeeSlug: string): string {
+  return join(getEmployeePath(workspaceRootPath, employeeSlug), EMPLOYEE_AVATAR_FILENAME);
 }
 
 export function ensureEmployeesDir(workspaceRootPath: string): void {
@@ -266,6 +274,38 @@ export function updateEmployeeMemory(
   writeFileSync(getEmployeeMemoryPath(workspaceRootPath, employeeSlug), content, 'utf-8');
 }
 
+/** Persist a server-normalized PNG avatar in the employee directory. */
+export function updateEmployeeAvatar(
+  workspaceRootPath: string,
+  employeeSlug: string,
+  content: Uint8Array,
+): void {
+  if (!employeeExists(workspaceRootPath, employeeSlug)) {
+    throw new Error(`Employee not found: ${employeeSlug}`);
+  }
+  if (content.byteLength === 0 || content.byteLength > MAX_EMPLOYEE_AVATAR_BYTES) {
+    throw new Error('Employee avatar must be between 1 byte and 512 KiB');
+  }
+
+  const avatarPath = getEmployeeAvatarPath(workspaceRootPath, employeeSlug);
+  const tempPath = `${avatarPath}.tmp`;
+  try {
+    writeFileSync(tempPath, content);
+    renameSync(tempPath, avatarPath);
+  } catch (error) {
+    try { unlinkSync(tempPath); } catch {}
+    throw error;
+  }
+}
+
+export function deleteEmployeeAvatar(workspaceRootPath: string, employeeSlug: string): void {
+  if (!employeeExists(workspaceRootPath, employeeSlug)) {
+    throw new Error(`Employee not found: ${employeeSlug}`);
+  }
+  const avatarPath = getEmployeeAvatarPath(workspaceRootPath, employeeSlug);
+  if (existsSync(avatarPath)) unlinkSync(avatarPath);
+}
+
 export function deleteEmployee(workspaceRootPath: string, employeeSlug: string): void {
   const dir = getEmployeePath(workspaceRootPath, employeeSlug);
   if (existsSync(dir)) {
@@ -312,7 +352,19 @@ function buildLoadedEmployee(workspaceRootPath: string, config: EmployeeConfig):
     workspaceId: basename(workspaceRootPath),
     definition: loadEmployeeDefinition(workspaceRootPath, config.slug) ?? undefined,
     memoryContent: loadEmployeeMemory(workspaceRootPath, config.slug) ?? undefined,
+    avatarDataUrl: loadEmployeeAvatarDataUrl(workspaceRootPath, config.slug),
   };
+}
+
+function loadEmployeeAvatarDataUrl(workspaceRootPath: string, employeeSlug: string): string | undefined {
+  const avatarPath = getEmployeeAvatarPath(workspaceRootPath, employeeSlug);
+  if (!existsSync(avatarPath)) return undefined;
+  try {
+    return `data:image/png;base64,${readFileSync(avatarPath).toString('base64')}`;
+  } catch (error) {
+    debug('[loadEmployeeAvatarDataUrl] Failed to read employee avatar:', employeeSlug, error);
+    return undefined;
+  }
 }
 
 function normalizeStringList(values: string[] | undefined): string[] | undefined {

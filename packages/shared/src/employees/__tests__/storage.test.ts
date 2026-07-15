@@ -4,12 +4,14 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import {
   createEmployee,
+  deleteEmployeeAvatar,
   deleteEmployee,
   getEmployeePath,
   isValidEmployeeSlug,
   loadEmployeeConfig,
   loadEmployeeById,
   loadWorkspaceEmployees,
+  updateEmployeeAvatar,
   updateEmployeeMemory,
 } from '../storage.ts';
 import {
@@ -90,5 +92,28 @@ describe('employee storage', () => {
     expect(touched).toBe(1);
     expect(loadSession(workspaceRoot, session.id)?.employeeId).toBeUndefined();
     expect(loadEmployeeById(workspaceRoot, employee.id)).toBeNull();
+  });
+
+  it('stores a normalized employee avatar outside config and removes it independently', () => {
+    const employee = createEmployee(workspaceRoot, { name: 'Designer' });
+    const normalizedPng = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+
+    updateEmployeeAvatar(workspaceRoot, employee.slug, normalizedPng);
+
+    expect(loadEmployeeById(workspaceRoot, employee.id)?.avatarDataUrl)
+      .toBe(`data:image/png;base64,${Buffer.from(normalizedPng).toString('base64')}`);
+    expect(loadEmployeeConfig(workspaceRoot, employee.slug)).not.toHaveProperty('avatarDataUrl');
+
+    deleteEmployeeAvatar(workspaceRoot, employee.slug);
+    expect(loadEmployeeById(workspaceRoot, employee.id)?.avatarDataUrl).toBeUndefined();
+  });
+
+  it('rejects empty or unexpectedly large normalized avatars', () => {
+    const employee = createEmployee(workspaceRoot, { name: 'Designer' });
+
+    expect(() => updateEmployeeAvatar(workspaceRoot, employee.slug, new Uint8Array()))
+      .toThrow('between 1 byte and 512 KiB');
+    expect(() => updateEmployeeAvatar(workspaceRoot, employee.slug, new Uint8Array(512 * 1024 + 1)))
+      .toThrow('between 1 byte and 512 KiB');
   });
 });

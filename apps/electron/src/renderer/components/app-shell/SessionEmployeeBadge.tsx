@@ -1,10 +1,11 @@
-import { UserRound } from 'lucide-react'
 import { EntityListBadge } from '@/components/ui/entity-list-badge'
+import { EmployeeAvatar } from '@/components/employees/EmployeeAvatar'
 
 export interface SessionEmployeeBadgeEmployee {
   id: string
   name: string
   color?: string
+  avatarDataUrl?: string
 }
 
 interface SessionEmployeeBadgeProps {
@@ -34,7 +35,7 @@ export function SessionEmployeeBadge({ employee, employeeId, size = 'list' }: Se
         ? 'gap-1 max-w-[180px] h-5 px-1.5'
         : 'gap-1 max-w-[160px]'}
     >
-      <UserRound className="h-3 w-3 shrink-0" />
+      <EmployeeAvatar employee={employee} size="xs" fallbackClassName="bg-transparent text-current" />
       <span className="truncate">{name}</span>
     </EntityListBadge>
   )

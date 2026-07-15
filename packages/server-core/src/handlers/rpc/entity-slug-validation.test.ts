@@ -48,6 +48,8 @@ describe('project and employee RPC slug validation', () => {
     const calls: Array<[string, unknown[]]> = [
       [RPC_CHANNELS.employees.UPDATE, ['missing-workspace', '..', {}]],
       [RPC_CHANNELS.employees.DELETE, ['missing-workspace', '../victim']],
+      [RPC_CHANNELS.employees.UPDATE_AVATAR, ['missing-workspace', '..', 'eA==']],
+      [RPC_CHANNELS.employees.DELETE_AVATAR, ['missing-workspace', '../victim']],
       [RPC_CHANNELS.employees.UPDATE_DEFINITION, ['missing-workspace', '/tmp/victim', 'x']],
       [RPC_CHANNELS.employees.UPDATE_MEMORY, ['missing-workspace', '..', 'x']],
     ]

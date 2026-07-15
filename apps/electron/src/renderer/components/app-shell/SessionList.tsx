@@ -80,7 +80,7 @@ interface SessionListProps {
   /** Callback to bind/unbind a session to a project (null = unbind) */
   onSetProjectId?: (sessionId: string, projectId: string | null) => void
   /** Workspace employees (for the Employees submenu in SessionMenu) */
-  employees?: Array<{ id: string; slug: string; name: string; color?: string }>
+  employees?: Array<{ id: string; slug: string; name: string; color?: string; avatarDataUrl?: string }>
   /** Callback to bind/unbind a session to an employee (null = unbind) */
   onSetEmployeeId?: (sessionId: string, employeeId: string | null) => void
   /** How to group sessions: 'date' (default) or 'status' */
