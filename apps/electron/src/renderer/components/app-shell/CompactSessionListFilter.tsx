@@ -90,6 +90,8 @@ interface CompactSessionListFilterProps {
       | Map<string, FilterMode>
       | ((prev: Map<string, FilterMode>) => Map<string, FilterMode>),
   ) => void
+  unreadOnly: boolean
+  setUnreadOnly: (value: boolean) => void
   projects: Array<{ id: string; name: string; color?: string }>
   employees: Array<{ id: string; name: string; color?: string }>
   pinnedFilters: PinnedFilters
@@ -111,6 +113,8 @@ export function CompactSessionListFilter({
   setProjectFilter,
   employeeFilter,
   setEmployeeFilter,
+  unreadOnly,
+  setUnreadOnly,
   projects,
   employees,
   pinnedFilters,
@@ -138,6 +142,9 @@ export function CompactSessionListFilter({
   const trimmedQuery = query.trim()
   const isSearching = trimmedQuery !== ''
   const normalizedQuery = trimmedQuery.toLocaleLowerCase()
+  const unreadLabel = t('sidebar.groupByUnread')
+  const showUnreadFilter = !isSearching
+    || unreadLabel.toLocaleLowerCase().includes(normalizedQuery)
 
   const results = React.useMemo(() => {
     return {
@@ -157,7 +164,8 @@ export function CompactSessionListFilter({
   }, [isSearching, trimmedQuery, normalizedQuery, effectiveSessionStatuses, flatLabelItems, projects, employees])
 
   const hasUserFilter =
-    listFilter.size > 0
+    unreadOnly
+    || listFilter.size > 0
     || labelFilter.size > 0
     || projectFilter.size > 0
     || employeeFilter.size > 0
@@ -278,6 +286,7 @@ export function CompactSessionListFilter({
                 setLabelFilter(new Map())
                 setProjectFilter(new Map())
                 setEmployeeFilter(new Map())
+                setUnreadOnly(false)
               }}
               className="text-xs text-muted-foreground hover:text-foreground"
             >
@@ -316,6 +325,17 @@ export function CompactSessionListFilter({
               effectiveSessionStatuses={effectiveSessionStatuses}
               labelConfigs={labelConfigs}
             />
+          )}
+
+          {showUnreadFilter && (
+            <div className="pt-3">
+              <FilterRow
+                icon={<MailOpen className="h-4 w-4" />}
+                label={unreadLabel}
+                radioSelected={unreadOnly}
+                onTap={() => setUnreadOnly(!unreadOnly)}
+              />
+            </div>
           )}
 
           {results.states.length > 0 && (
@@ -413,6 +433,7 @@ export function CompactSessionListFilter({
             && results.labels.length === 0
             && results.projects.length === 0
             && results.employees.length === 0
+            && !showUnreadFilter
             && (
             <div className="px-4 py-6 text-center text-sm text-muted-foreground">
               No matches

@@ -651,10 +651,17 @@ function AppShellContent({
   const automationFilter: AutomationFilter | null = isAutomationsNavigation(navState) ? navState.filter ?? null : null
 
   // Per-view filter storage: each session list view (allSessions, flagged, state:X, label:X, view:X)
-  // has its own independent set of status and label filters.
+  // has its own independent set of secondary filters.
   // Each filter entry stores a mode ('include' or 'exclude') for tri-state filtering.
   type FilterEntry = Record<string, FilterMode> // id → mode
-  type ViewFiltersMap = Record<string, { statuses: FilterEntry, labels: FilterEntry, projects?: FilterEntry, employees?: FilterEntry, groupingMode?: ChatGroupingMode }>
+  type ViewFiltersMap = Record<string, {
+    statuses: FilterEntry
+    labels: FilterEntry
+    projects?: FilterEntry
+    employees?: FilterEntry
+    unreadOnly?: boolean
+    groupingMode?: ChatGroupingMode
+  }>
 
   // Compute a stable key for the current chat filter view
   const sessionFilterKey = useMemo(() => {
@@ -729,6 +736,10 @@ function AppShellContent({
     return new Map<string, FilterMode>(Object.entries(entry) as [string, FilterMode][])
   }, [viewFiltersMap, sessionFilterKey])
 
+  const unreadOnly = sessionFilterKey
+    ? viewFiltersMap[sessionFilterKey]?.unreadOnly === true
+    : false
+
   // Setter for status filter — updates only the current view's entry in the map
   const setListFilter = useCallback((updater: Map<SessionStatusId, FilterMode> | ((prev: Map<SessionStatusId, FilterMode>) => Map<SessionStatusId, FilterMode>)) => {
     setViewFiltersMap(prev => {
@@ -739,11 +750,11 @@ function AppShellContent({
       return {
         ...prev,
         [sessionFilterKey]: {
+          ...existing,
           statuses: Object.fromEntries(next),
           labels: existing?.labels ?? {},
           projects: existing?.projects ?? {},
           employees: existing?.employees ?? {},
-          groupingMode: existing?.groupingMode,
         }
       }
     })
@@ -759,11 +770,11 @@ function AppShellContent({
       return {
         ...prev,
         [sessionFilterKey]: {
+          ...existing,
           statuses: existing?.statuses ?? {},
           labels: Object.fromEntries(next),
           projects: existing?.projects ?? {},
           employees: existing?.employees ?? {},
-          groupingMode: existing?.groupingMode,
         }
       }
     })
@@ -779,11 +790,11 @@ function AppShellContent({
       return {
         ...prev,
         [sessionFilterKey]: {
+          ...existing,
           statuses: existing?.statuses ?? {},
           labels: existing?.labels ?? {},
           projects: Object.fromEntries(next),
           employees: existing?.employees ?? {},
-          groupingMode: existing?.groupingMode,
         }
       }
     })
@@ -799,11 +810,27 @@ function AppShellContent({
       return {
         ...prev,
         [sessionFilterKey]: {
+          ...existing,
           statuses: existing?.statuses ?? {},
           labels: existing?.labels ?? {},
           projects: existing?.projects ?? {},
           employees: Object.fromEntries(next),
-          groupingMode: existing?.groupingMode,
+        }
+      }
+    })
+  }, [sessionFilterKey])
+
+  const setUnreadOnly = useCallback((value: boolean) => {
+    setViewFiltersMap(prev => {
+      if (!sessionFilterKey) return prev
+      const existing = prev[sessionFilterKey]
+      return {
+        ...prev,
+        [sessionFilterKey]: {
+          ...existing,
+          statuses: existing?.statuses ?? {},
+          labels: existing?.labels ?? {},
+          unreadOnly: value,
         }
       }
     })
@@ -818,11 +845,11 @@ function AppShellContent({
       return {
         ...prev,
         allSessions: {
+          ...existing,
           statuses: existing?.statuses ?? {},
           labels: existing?.labels ?? {},
           projects: { [projectId]: 'include' },
           employees: existing?.employees ?? {},
-          groupingMode: existing?.groupingMode,
         }
       }
     })
@@ -836,11 +863,11 @@ function AppShellContent({
       return {
         ...prev,
         allSessions: {
+          ...existing,
           statuses: existing?.statuses ?? {},
           labels: existing?.labels ?? {},
           projects: existing?.projects ?? {},
           employees: { [employeeId]: 'include' },
-          groupingMode: existing?.groupingMode,
         }
       }
     })
@@ -870,11 +897,11 @@ function AppShellContent({
         return {
           ...prev,
           allSessions: {
+            ...existing,
             statuses: existing?.statuses ?? {},
             labels: { [scope.labelId]: 'include' },
             projects: scope.projectId ? { [scope.projectId]: 'include' } : {},
             employees: existing?.employees ?? {},
-            groupingMode: existing?.groupingMode,
           }
         }
       })
@@ -1801,8 +1828,18 @@ function AppShellContent({
       }
     }
 
+    if (unreadOnly) {
+      result = result.filter(s => s.hasUnread === true)
+    }
+
     return result
-  }, [workspaceSessionMetas, activeSessionMetas, sessionFilter, listFilter, labelFilter, projectFilter, employeeFilter, labelConfigs])
+  }, [workspaceSessionMetas, activeSessionMetas, sessionFilter, evaluateViews, listFilter, labelFilter, projectFilter, employeeFilter, unreadOnly, labelConfigs])
+
+  const hasUserListFilters = unreadOnly
+    || listFilter.size > 0
+    || labelFilter.size > 0
+    || projectFilter.size > 0
+    || employeeFilter.size > 0
 
   // Derive "pinned" (non-removable) filters from the current sessionFilter path.
   // These represent filters that are implicit in the current deeplink/route and
@@ -2938,6 +2975,8 @@ function AppShellContent({
                         setProjectFilter={setProjectFilter}
                         employeeFilter={employeeFilter}
                         setEmployeeFilter={setEmployeeFilter}
+                        unreadOnly={unreadOnly}
+                        setUnreadOnly={setUnreadOnly}
                         projects={projectMenuOptions}
                         employees={employeeMenuOptions}
                         pinnedFilters={pinnedFilters}
@@ -2954,8 +2993,8 @@ function AppShellContent({
                       <DropdownMenuTrigger asChild>
                         <HeaderIconButton
                           icon={<ListFilter className="h-4 w-4" />}
-                          className={(listFilter.size > 0 || labelFilter.size > 0 || projectFilter.size > 0 || employeeFilter.size > 0) ? "bg-accent/5 text-accent rounded-[8px] shadow-tinted" : "rounded-[8px]"}
-                          style={(listFilter.size > 0 || labelFilter.size > 0 || projectFilter.size > 0 || employeeFilter.size > 0) ? { '--shadow-color': 'var(--accent-rgb)' } as React.CSSProperties : undefined}
+                          className={hasUserListFilters ? "bg-accent/5 text-accent rounded-[8px] shadow-tinted" : "rounded-[8px]"}
+                          style={hasUserListFilters ? { '--shadow-color': 'var(--accent-rgb)' } as React.CSSProperties : undefined}
                         />
                       </DropdownMenuTrigger>
                       <StyledDropdownMenuContent
@@ -2982,7 +3021,7 @@ function AppShellContent({
                         {/* Header with title and clear button (only clears user-added filters, never pinned) */}
                         <div className="flex items-center justify-between px-2 py-1.5">
                           <span className="text-xs font-medium text-muted-foreground">{t("sidebar.filterChats")}</span>
-                          {(listFilter.size > 0 || labelFilter.size > 0 || projectFilter.size > 0 || employeeFilter.size > 0) && (
+                          {hasUserListFilters && (
                             <button
                               onClick={(e) => {
                                 e.preventDefault()
@@ -2990,6 +3029,7 @@ function AppShellContent({
                                 setLabelFilter(new Map())
                                 setProjectFilter(new Map())
                                 setEmployeeFilter(new Map())
+                                setUnreadOnly(false)
                               }}
                               className="text-xs text-muted-foreground hover:text-foreground"
                             >
@@ -3249,6 +3289,20 @@ function AppShellContent({
                                 <StyledDropdownMenuSeparator />
                               </>
                             )}
+
+                            <StyledDropdownMenuItem
+                              onClick={(e) => {
+                                e.preventDefault()
+                                setUnreadOnly(!unreadOnly)
+                              }}
+                            >
+                              <FilterMenuRow
+                                icon={<MailOpen className="h-3.5 w-3.5" />}
+                                label={t("sidebar.groupByUnread")}
+                                accessory={unreadOnly ? <Check className="h-3 w-3 text-muted-foreground" /> : null}
+                              />
+                            </StyledDropdownMenuItem>
+                            <StyledDropdownMenuSeparator />
 
                             {/* Statuses submenu - hierarchical with toggle selection */}
                             <DropdownMenuSub>
@@ -3896,6 +3950,7 @@ function AppShellContent({
                   labelFilterMap={labelFilter}
                   projectFilterMap={projectFilter}
                   employeeFilterMap={employeeFilter}
+                  unreadOnly={unreadOnly}
                   focusedSessionId={panelCount === 0 ? null : panelCount > 1 ? focusedSessionId : undefined}
                   onNavigateToSession={panelCount > 1 ? navigateToSessionInPanel : undefined}
                   hasPendingPrompt={hasPendingPrompt}

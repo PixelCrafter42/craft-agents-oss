@@ -53,6 +53,8 @@ export interface UseSessionSearchOptions {
   labelFilterMap?: Map<string, FilterMode>
   projectFilterMap?: Map<string, FilterMode>
   employeeFilterMap?: Map<string, FilterMode>
+  /** When true, only sessions with unread messages match the current list filter. */
+  unreadOnly?: boolean
   /** Workspace label tree — label filters match descendants through it (shared matchesLabelFilter). */
   labelConfigs?: LabelConfig[]
   /** Collapsed group keys — collapsed items are excluded from pagination and flatItems */
@@ -209,6 +211,7 @@ interface FilterMatchOptions {
   labelFilterMap?: Map<string, 'include' | 'exclude'>
   projectFilterMap?: Map<string, 'include' | 'exclude'>
   employeeFilterMap?: Map<string, 'include' | 'exclude'>
+  unreadOnly?: boolean
   labelConfigs?: LabelConfig[]
 }
 
@@ -240,6 +243,7 @@ export function sessionMatchesCurrentFilter(
     labelFilterMap,
     projectFilterMap,
     employeeFilterMap,
+    unreadOnly,
     labelConfigs,
   } = options
 
@@ -280,6 +284,7 @@ export function sessionMatchesCurrentFilter(
     || !passesLabelFilter()
     || !passesEntityFilter(session.projectId, projectFilterMap)
     || !passesEntityFilter(session.employeeId, employeeFilterMap)
+    || (unreadOnly && session.hasUnread !== true)
   ) return false
 
   if (!currentFilter) return true
@@ -332,6 +337,7 @@ export function useSessionSearch({
   labelFilterMap,
   projectFilterMap,
   employeeFilterMap,
+  unreadOnly,
   labelConfigs,
   collapsedGroups,
   groupingMode,
@@ -444,6 +450,7 @@ export function useSessionSearch({
           labelFilterMap,
           projectFilterMap,
           employeeFilterMap,
+          unreadOnly,
           labelConfigs,
         })
       )
@@ -463,7 +470,7 @@ export function useSessionSearch({
         const countB = contentSearchResults.get(b.id)?.matchCount || 0
         return countB - countA
       })
-  }, [sortedItems, isSearchMode, searchQuery, contentSearchResults, currentFilter, evaluateViews, statusFilter, labelFilterMap, projectFilterMap, employeeFilterMap, labelConfigs])
+  }, [sortedItems, isSearchMode, searchQuery, contentSearchResults, currentFilter, evaluateViews, statusFilter, labelFilterMap, projectFilterMap, employeeFilterMap, unreadOnly, labelConfigs])
 
   // Split search results: matching current filter vs others
   const { matchingFilterItems, otherResultItems, exceededSearchLimit } = useMemo(() => {
@@ -472,7 +479,8 @@ export function useSessionSearch({
       (statusFilter && statusFilter.size > 0) ||
       (labelFilterMap && labelFilterMap.size > 0) ||
       (projectFilterMap && projectFilterMap.size > 0) ||
-      (employeeFilterMap && employeeFilterMap.size > 0)
+      (employeeFilterMap && employeeFilterMap.size > 0) ||
+      unreadOnly === true
 
     if (searchQuery.trim() && searchFilteredItems.length > 0) {
       searchLog.info('search:grouping', {
@@ -484,6 +492,7 @@ export function useSessionSearch({
         labelFilterSize: labelFilterMap?.size ?? 0,
         projectFilterSize: projectFilterMap?.size ?? 0,
         employeeFilterSize: employeeFilterMap?.size ?? 0,
+        unreadOnly: unreadOnly === true,
         itemCount: searchFilteredItems.length,
       })
     }
@@ -508,6 +517,7 @@ export function useSessionSearch({
         labelFilterMap,
         projectFilterMap,
         employeeFilterMap,
+        unreadOnly,
         labelConfigs,
       })
       if (matches) {
@@ -526,7 +536,7 @@ export function useSessionSearch({
     }
 
     return { matchingFilterItems: matching, otherResultItems: others, exceededSearchLimit: exceeded }
-  }, [searchFilteredItems, currentFilter, evaluateViews, isSearchMode, statusFilter, labelFilterMap, projectFilterMap, employeeFilterMap, labelConfigs, searchQuery])
+  }, [searchFilteredItems, currentFilter, evaluateViews, isSearchMode, statusFilter, labelFilterMap, projectFilterMap, employeeFilterMap, unreadOnly, labelConfigs, searchQuery])
 
   // --- Pagination ---
 

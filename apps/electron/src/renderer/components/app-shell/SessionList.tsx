@@ -95,6 +95,8 @@ interface SessionListProps {
   projectFilterMap?: Map<string, FilterMode>
   /** Secondary employee filter - for search result grouping. */
   employeeFilterMap?: Map<string, FilterMode>
+  /** Whether the list is narrowed to sessions with unread messages. */
+  unreadOnly?: boolean
   /** Override which session is highlighted (for multi-panel focused panel tracking) */
   focusedSessionId?: string | null
   /** Override navigation target (for multi-panel: focuses existing panel or navigates focused panel) */
@@ -155,6 +157,7 @@ export function SessionList({
   labelFilterMap,
   projectFilterMap,
   employeeFilterMap,
+  unreadOnly,
   focusedSessionId,
   onNavigateToSession,
   hasPendingPrompt,
@@ -273,6 +276,7 @@ export function SessionList({
     labelFilterMap,
     projectFilterMap,
     employeeFilterMap,
+    unreadOnly,
     labelConfigs: labels,
     collapsedGroups,
     groupingMode,

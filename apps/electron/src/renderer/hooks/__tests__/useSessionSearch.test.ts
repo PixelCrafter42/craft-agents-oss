@@ -105,3 +105,33 @@ describe('sessionMatchesCurrentFilter entity filters', () => {
     })).toBe(true)
   })
 })
+
+describe('sessionMatchesCurrentFilter unread filter', () => {
+  it('keeps only explicitly unread sessions when unread-only is enabled', () => {
+    expect(sessionMatchesCurrentFilter(makeSession('unread', { hasUnread: true }), undefined, {
+      unreadOnly: true,
+    })).toBe(true)
+    expect(sessionMatchesCurrentFilter(makeSession('read', { hasUnread: false }), undefined, {
+      unreadOnly: true,
+    })).toBe(false)
+    expect(sessionMatchesCurrentFilter(makeSession('legacy-without-flag'), undefined, {
+      unreadOnly: true,
+    })).toBe(false)
+  })
+
+  it('composes unread-only with the existing entity filters', () => {
+    const unreadAssigned = makeSession('unread-assigned', {
+      hasUnread: true,
+      projectId: 'project-1',
+    })
+
+    expect(sessionMatchesCurrentFilter(unreadAssigned, undefined, {
+      unreadOnly: true,
+      projectFilterMap: new Map([['project-1', 'include']]),
+    })).toBe(true)
+    expect(sessionMatchesCurrentFilter(unreadAssigned, undefined, {
+      unreadOnly: true,
+      projectFilterMap: new Map([['project-2', 'include']]),
+    })).toBe(false)
+  })
+})

@@ -227,8 +227,11 @@ export function EmployeeBoardContainer() {
           onDragEnd={handleDragEnd}
           onDragCancel={() => setActiveSessionId(null)}
         >
-          <div className="min-h-0 flex-1 overflow-x-auto">
-            <div className="flex h-full min-w-max gap-3 p-3">
+          <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
+            <div
+              className="grid items-start gap-3 p-3"
+              style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 280px), 1fr))' }}
+            >
               {columns.map(column => (
                 <EmployeeColumn
                   key={column.id}
@@ -286,7 +289,10 @@ function EmployeeColumn({
   const isUnassigned = column.id === UNASSIGNED_EMPLOYEE_COLUMN_ID
 
   return (
-    <section className="flex h-full w-[290px] shrink-0 flex-col">
+    <section
+      className="flex min-w-0 flex-col"
+      style={{ height: 'clamp(360px, calc(100vh - 132px), 520px)' }}
+    >
       <div className="flex items-center gap-2 px-0.5 pb-2">
         <span
           className="inline-flex min-w-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold text-white"
