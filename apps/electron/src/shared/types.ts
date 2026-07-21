@@ -735,7 +735,7 @@ export interface ElectronAPI {
   // Messaging gateway — workspaceId is taken from the client handshake (ctx.workspaceId)
   getMessagingConfig(): Promise<{
     enabled: boolean
-    platforms: Record<string, { enabled: boolean; accessMode?: MessagingPlatformAccessMode; owners?: MessagingPlatformOwnerInfo[] } | undefined>
+    platforms: Record<string, { enabled: boolean; accessMode?: MessagingPlatformAccessMode; owners?: MessagingPlatformOwnerInfo[]; domain?: 'lark' | 'feishu' } | undefined>
     runtime: Record<string, MessagingPlatformRuntimeInfo | undefined>
   } | null>
   updateMessagingConfig(config: Record<string, unknown>): Promise<void>
@@ -743,6 +743,24 @@ export interface ElectronAPI {
   saveTelegramToken(token: string): Promise<void>
   testLarkCredentials(creds: { appId: string; appSecret: string; domain: 'lark' | 'feishu' }): Promise<{ success: boolean; botName?: string; error?: string }>
   saveLarkCredentials(creds: { appId: string; appSecret: string; domain: 'lark' | 'feishu' }): Promise<void>
+  beginLarkRegistration(input?: {
+    region?: 'lark' | 'feishu'
+    existingAppId?: string
+    repairExisting?: boolean
+  }): Promise<{
+    attemptId: string
+    verificationUrl: string
+    expiresAt: number
+  }>
+  getLarkRegistrationStatus(attemptId: string): Promise<{
+    attemptId: string
+    state: 'waiting' | 'authorizing' | 'saving' | 'connected' | 'expired' | 'cancelled' | 'error'
+    expiresAt?: number
+    identity?: string
+    domain?: 'lark' | 'feishu'
+    error?: string
+  }>
+  cancelLarkRegistration(attemptId?: string): Promise<{ success: boolean }>
   disconnectMessagingPlatform(platform: string): Promise<void>
   forgetMessagingPlatform(platform: string): Promise<void>
   getMessagingBindings(): Promise<Array<{ id: string; workspaceId: string; sessionId: string; platform: string; channelId: string; threadId?: number; channelName?: string; enabled: boolean; createdAt: number; accessMode?: MessagingBindingAccessMode; allowedSenderIds?: string[] }>>
@@ -785,7 +803,7 @@ export interface MessagingPlatformRuntimeInfo {
   platform: string
   configured: boolean
   connected: boolean
-  state: 'disconnected' | 'connecting' | 'connected' | 'reconnect_required' | 'error'
+  state: 'disconnected' | 'connecting' | 'connected' | 'degraded' | 'reconnect_required' | 'error'
   identity?: string
   lastError?: string
   updatedAt: number

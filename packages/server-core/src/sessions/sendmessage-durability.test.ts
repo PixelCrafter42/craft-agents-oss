@@ -88,6 +88,7 @@ describe('sendMessage durability', () => {
     // Force the mid-stream branch. Agent is null, so redirect() falls back to
     // false and the queue path runs.
     managed.isProcessing = true
+    managed.activeMessagingOriginId = 'origin-active'
 
     let ackedMessageId: string | null = null
     let onDiskAtAck = false
@@ -97,7 +98,7 @@ describe('sendMessage durability', () => {
       'queued message',
       undefined,
       undefined,
-      undefined,
+      { messagingOriginId: 'origin-queued' },
       undefined,
       undefined,
       (messageId) => {
@@ -108,12 +109,15 @@ describe('sendMessage durability', () => {
 
     expect(ackedMessageId).not.toBeNull()
     expect(onDiskAtAck).toBe(true)
+    expect(managed.activeMessagingOriginId).toBe('origin-active')
+    expect(managed.messageQueue[0]?.options?.messagingOriginId).toBe('origin-queued')
   })
 
   it('tracks a steered mid-stream message as the fallback retry target', async () => {
     const sessionId = 'durability-steered-fallback'
     const managed = buildSession(sessionId)
     managed.isProcessing = true
+    managed.activeMessagingOriginId = 'origin-active'
     managed.messages.push(
       { id: 'prev-user', role: 'user', content: 'previous message', timestamp: 1 } as never,
       { id: 'prev-tool', role: 'tool', content: 'side effect already happened', timestamp: 2 } as never,
@@ -139,7 +143,7 @@ describe('sendMessage durability', () => {
       'steered message',
       undefined,
       undefined,
-      undefined,
+      { messagingOriginId: 'origin-steer' },
       undefined,
       undefined,
       (messageId) => {
@@ -151,6 +155,8 @@ describe('sendMessage durability', () => {
     expect(ackedMessageIds).toHaveLength(1)
     expect(managed.messageQueue).toHaveLength(0)
     expect(managed.lastSentMessage).toBe('steered message')
+    expect(managed.activeMessagingOriginId).toBe('origin-active')
+    expect(managed.lastSentOptions?.messagingOriginId).toBe('origin-active')
     const ackedMessageId = ackedMessageIds[0]
     expect(managed.modelFallbackState?.userMessageId).toBe(ackedMessageId)
     expect((sm as unknown as {

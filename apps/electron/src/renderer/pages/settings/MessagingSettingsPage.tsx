@@ -202,6 +202,7 @@ function PlatformRow({ platform, workspaceId }: { platform: Platform; workspaceI
   )
   const [connectOpen, setConnectOpen] = React.useState(false)
   const [reconfigure, setReconfigure] = React.useState(false)
+  const [larkDomain, setLarkDomain] = React.useState<'lark' | 'feishu'>('lark')
   const [menuOpen, setMenuOpen] = React.useState(false)
   // Telegram supergroup state — only relevant when platform === 'telegram'.
   // Lifted into PlatformRow so the supergroup sub-row sits inside the same
@@ -266,6 +267,9 @@ function PlatformRow({ platform, workspaceId }: { platform: Platform; workspaceI
       if (cancelled) return
       const next = cfg?.runtime?.[platform]
       setRuntime((next ?? defaultRuntime(platform)) as MessagingPlatformRuntimeInfo)
+      if (platform === 'lark') {
+        setLarkDomain(cfg?.platforms?.lark?.domain ?? 'lark')
+      }
     })
     const off = window.electronAPI.onMessagingPlatformStatus((wsId, p, status) => {
       if (wsId !== workspaceId || p !== platform) return
@@ -353,7 +357,12 @@ function PlatformRow({ platform, workspaceId }: { platform: Platform; workspaceI
             </div>
           </div>
 
-          {runtime.connected ? (
+          {platform === 'lark' && runtime.state === 'degraded' ? (
+            <Button variant="outline" size="sm" onClick={handleReconfigure}>
+              <RefreshCcw className="mr-1.5 h-3.5 w-3.5" />
+              {t('settings.messaging.lark.repairPermissions')}
+            </Button>
+          ) : runtime.connected ? (
             <DropdownMenu modal={false} open={menuOpen} onOpenChange={setMenuOpen}>
               <DropdownMenuTrigger asChild>
                 <button
@@ -385,9 +394,11 @@ function PlatformRow({ platform, workspaceId }: { platform: Platform; workspaceI
                   </>
                 ) : (
                   <>
-                    <StyledDropdownMenuItem onClick={() => runAfterMenuClose(handleConnect)}>
+                    <StyledDropdownMenuItem onClick={() => runAfterMenuClose(
+                      platform === 'lark' ? handleReconfigure : handleConnect,
+                    )}>
                       <RefreshCcw className="h-3.5 w-3.5" />
-                      <span>{t('common.reconnect')}</span>
+                      <span>{platform === 'lark' ? t('common.reconfigure') : t('common.reconnect')}</span>
                     </StyledDropdownMenuItem>
                     <StyledDropdownMenuItem onClick={handleDisconnect}>
                       <PowerOff className="h-3.5 w-3.5" />
@@ -479,7 +490,12 @@ function PlatformRow({ platform, workspaceId }: { platform: Platform; workspaceI
         <WeixinConnectDialog open={connectOpen} onOpenChange={setConnectOpen} />
       )}
       {platform === 'lark' && (
-        <LarkConnectDialog open={connectOpen} onOpenChange={setConnectOpen} reconfigure={reconfigure} />
+        <LarkConnectDialog
+          open={connectOpen}
+          onOpenChange={setConnectOpen}
+          reconfigure={reconfigure}
+          initialDomain={larkDomain}
+        />
       )}
     </>
   )
@@ -859,6 +875,9 @@ function buildDescription(
   runtime: MessagingPlatformRuntimeInfo,
   t: (key: string, opts?: Record<string, unknown>) => string,
 ): string {
+  if (runtime.state === 'degraded') {
+    return runtime.lastError ?? t('settings.messaging.lark.authError')
+  }
   if (runtime.connected) {
     if ((platform === 'whatsapp' || platform === 'weixin') && runtime.identity) {
       return t(`dialog.${platform}.connectedAs`, { name: runtime.identity })

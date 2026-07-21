@@ -32,6 +32,7 @@ import type {
   SentMessage,
   InlineButton,
   ResponseMode,
+  NativeStreamHandle,
 } from './types'
 
 /**
@@ -97,6 +98,11 @@ interface RenderState {
   progressStatus: string | null
   /** Set after draft API failure so this binding falls back to normal messages. */
   draftsDisabled: boolean
+  /** Native CardKit stream used by Lark/Feishu. */
+  nativeStream: NativeStreamHandle | null
+  nativeStreamStart: Promise<NativeStreamHandle> | null
+  nativeStreamDisabled: boolean
+  nativeStatus: string | null
 }
 
 const DEFAULT_EDIT_INTERVAL_MS = 3500
@@ -121,6 +127,7 @@ export type PlanMessageRecorder = (
   binding: ChannelBinding,
   token: string,
   messageId: string,
+  messagingOriginId?: string,
 ) => void
 
 /**
@@ -134,6 +141,7 @@ export type PermissionMessageRecorder = (
   binding: ChannelBinding,
   requestId: string,
   messageId: string,
+  messagingOriginId?: string,
 ) => void
 
 export class Renderer {
@@ -143,6 +151,7 @@ export class Renderer {
   private readonly planTokens: PlanTokenRegistry | undefined
   private readonly recordPlanMessage: PlanMessageRecorder | undefined
   private readonly recordPermissionMessage: PermissionMessageRecorder | undefined
+  private readonly contextualOptions = new Map<string, SendOptions>()
 
   constructor(deps?: {
     planTokens?: PlanTokenRegistry
@@ -171,6 +180,10 @@ export class Renderer {
         progressDraftId: null,
         progressStatus: null,
         draftsDisabled: false,
+        nativeStream: null,
+        nativeStreamStart: null,
+        nativeStreamDisabled: false,
+        nativeStatus: null,
       }
       this.states.set(bindingId, state)
     }
@@ -182,7 +195,11 @@ export class Renderer {
     event: SessionEvent,
     binding: ChannelBinding,
     adapter: PlatformAdapter,
+    contextualOptions?: SendOptions,
   ): Promise<void> {
+    if (contextualOptions) {
+      this.contextualOptions.set(binding.id, contextualOptions)
+    }
     // Permission / error prompts are mode-agnostic — handle first so they
     // can't be swallowed by mode state.
     if (event.type === 'permission_request') {
@@ -203,6 +220,13 @@ export class Renderer {
     }
 
     const mode = resolveResponseMode(binding.config.responseMode, binding.config.streamResponses)
+    const state = this.getState(binding.id)
+    if (
+      mode !== 'final_only' &&
+      (state.nativeStream !== null || state.nativeStreamStart !== null || this.canUseNativeStream(state, adapter))
+    ) {
+      return this.handleNativeStream(event, binding, adapter, mode)
+    }
     switch (mode) {
       case 'streaming':
         return this.handleStreaming(event, binding, adapter)
@@ -210,6 +234,150 @@ export class Renderer {
         return this.handleProgress(event, binding, adapter)
       case 'final_only':
         return this.handleFinalOnly(event, binding, adapter)
+    }
+  }
+
+  private canUseNativeStream(state: RenderState, adapter: PlatformAdapter): boolean {
+    return !state.nativeStreamDisabled &&
+      adapter.capabilities.nativeStreaming === true &&
+      typeof adapter.beginNativeStream === 'function' &&
+      typeof adapter.updateNativeStream === 'function' &&
+      typeof adapter.finishNativeStream === 'function'
+  }
+
+  private async handleNativeStream(
+    event: SessionEvent,
+    binding: ChannelBinding,
+    adapter: PlatformAdapter,
+    mode: Exclude<ResponseMode, 'final_only'>,
+  ): Promise<void> {
+    const state = this.getState(binding.id)
+
+    switch (event.type) {
+      case 'status':
+        if (mode === 'progress') {
+          state.nativeStatus = THINKING_LABEL
+          await this.writeNativeStream(state, binding, adapter, this.nativeCardText(state, mode))
+        }
+        return
+      case 'text_delta': {
+        const delta = typeof event.delta === 'string' ? event.delta : ''
+        if (!delta) return
+        state.textBuffer += delta
+        state.processing = true
+        state.nativeStatus = null
+        await this.writeNativeStream(state, binding, adapter, this.nativeCardText(state, mode))
+        return
+      }
+      case 'text_complete': {
+        const text = typeof event.text === 'string' ? event.text : ''
+        if (text.trim()) {
+          if (!event.isIntermediate) state.finalBuffer = appendFinal(state.finalBuffer, text)
+          state.lastAssistantText = text
+          // Prefer the authoritative complete payload over possibly partial deltas.
+          state.textBuffer = text
+          state.nativeStatus = null
+          await this.writeNativeStream(state, binding, adapter, this.nativeCardText(state, mode))
+        }
+        return
+      }
+      case 'tool_start': {
+        // Streaming mode intentionally stays silent until its first visible
+        // text delta. Progress mode may surface safe tool display names first.
+        if (mode === 'streaming' && !state.nativeStream && !state.textBuffer) return
+        const toolName = typeof event.toolName === 'string' ? event.toolName : 'tool'
+        const displayName =
+          typeof event.toolDisplayName === 'string' && event.toolDisplayName.length > 0
+            ? event.toolDisplayName
+            : toolName
+        state.nativeStatus = `🔧 ${displayName}…`
+        await this.writeNativeStream(state, binding, adapter, this.nativeCardText(state, mode))
+        return
+      }
+      case 'tool_result':
+        if (mode === 'streaming' && !state.nativeStream && !state.textBuffer) return
+        state.nativeStatus = THINKING_LABEL
+        await this.writeNativeStream(state, binding, adapter, this.nativeCardText(state, mode))
+        return
+      case 'complete':
+      case 'turn_complete': {
+        const finalText = state.finalBuffer.trim() || state.lastAssistantText.trim() || state.textBuffer.trim()
+        await this.finishNativeStream(state, binding, adapter, finalText || state.nativeStatus || THINKING_LABEL)
+        this.resetRun(state, binding.id)
+        return
+      }
+    }
+  }
+
+  private nativeCardText(state: RenderState, mode: Exclude<ResponseMode, 'final_only'>): string {
+    const answer = state.textBuffer.trim()
+    if (answer) {
+      return state.nativeStatus ? `${state.nativeStatus}\n\n${answer}` : answer
+    }
+    return state.nativeStatus ?? (mode === 'progress' ? THINKING_LABEL : '')
+  }
+
+  private async writeNativeStream(
+    state: RenderState,
+    binding: ChannelBinding,
+    adapter: PlatformAdapter,
+    markdown: string,
+  ): Promise<void> {
+    if (!markdown) return
+    try {
+      const handle = await this.ensureNativeStream(state, binding, adapter, markdown)
+      await adapter.updateNativeStream!(handle, markdown)
+    } catch {
+      state.nativeStreamDisabled = true
+      // Creation failed before a card became visible: fall back to the stable
+      // message/edit renderer on the next event or terminal completion.
+    }
+  }
+
+  private async ensureNativeStream(
+    state: RenderState,
+    binding: ChannelBinding,
+    adapter: PlatformAdapter,
+    markdown: string,
+  ): Promise<NativeStreamHandle> {
+    if (state.nativeStream) return state.nativeStream
+    if (!state.nativeStreamStart) {
+      state.nativeStreamStart = adapter.beginNativeStream!(
+        binding.channelId,
+        markdown,
+        this.optionsFor(binding),
+      )
+    }
+    try {
+      state.nativeStream = await state.nativeStreamStart
+      return state.nativeStream
+    } finally {
+      state.nativeStreamStart = null
+    }
+  }
+
+  private async finishNativeStream(
+    state: RenderState,
+    binding: ChannelBinding,
+    adapter: PlatformAdapter,
+    finalMarkdown: string,
+  ): Promise<void> {
+    try {
+      const handle = state.nativeStream ??
+        (state.nativeStreamStart ? await state.nativeStreamStart : undefined)
+      if (handle) {
+        await adapter.finishNativeStream!(handle, finalMarkdown)
+        return
+      }
+    } catch {
+      // A visible native stream may still be recoverable through failNativeStream.
+      if (state.nativeStream && adapter.failNativeStream) {
+        await adapter.failNativeStream(state.nativeStream, finalMarkdown).catch(() => {})
+        return
+      }
+    }
+    if (finalMarkdown.trim()) {
+      await this.sendText(adapter, binding, finalMarkdown)
     }
   }
 
@@ -264,14 +432,15 @@ export class Renderer {
         break
       }
 
-      case 'complete': {
+      case 'complete':
+      case 'turn_complete': {
         this.cancelEditTimer(state)
         if (state.textBuffer.trim() && state.streamingDraftId && !state.streamingMessageId) {
           await this.sendText(adapter, binding, state.textBuffer.trim())
         } else if (state.textBuffer.trim() && !state.streamingMessageId) {
           await this.sendText(adapter, binding, state.textBuffer.trim())
         }
-        this.resetRun(state)
+        this.resetRun(state, binding.id)
         break
       }
 
@@ -300,9 +469,9 @@ export class Renderer {
             state.textBuffer = ''
             state.lastEditedLength = 0
           }
-          await adapter.sendText(binding.channelId, `🔧 ${displayName}...`, bindingOpts(binding))
+          await adapter.sendText(binding.channelId, `🔧 ${displayName}...`, this.optionsFor(binding))
         } else {
-          await adapter.sendTyping(binding.channelId, bindingOpts(binding)).catch(() => {})
+          await adapter.sendTyping(binding.channelId, this.optionsFor(binding)).catch(() => {})
         }
         break
       }
@@ -316,7 +485,7 @@ export class Renderer {
   ): Promise<void> {
     if (!state.streamingMessageId && state.textBuffer.length > 0) {
       try {
-        const sent = await adapter.sendText(binding.channelId, state.textBuffer, bindingOpts(binding))
+        const sent = await adapter.sendText(binding.channelId, state.textBuffer, this.optionsFor(binding))
         state.streamingMessageId = sent.messageId
         state.lastEditedLength = state.textBuffer.length
         this.scheduleEdit(state, binding, adapter)
@@ -426,7 +595,10 @@ export class Renderer {
     if (!state.progressDraftId) {
       state.progressDraftId = this.nextDraftId()
     }
-    const sent = await this.trySendDraft(state, binding, adapter, state.progressDraftId, status, false)
+    // Bot API 10.2 exposes the dedicated InputRichBlockThinking block. The
+    // adapter maps the thinking label to that block and other statuses to
+    // structured paragraphs, then this path falls back to regular drafts.
+    const sent = await this.trySendDraft(state, binding, adapter, state.progressDraftId, status, true)
     if (!sent) {
       state.progressDraftId = null
       return false
@@ -443,8 +615,8 @@ export class Renderer {
     text: string,
     preferRich: boolean,
   ): Promise<boolean> {
-    const opts = bindingOpts(binding)
-    if (preferRich && this.canUseRichMessageDrafts(binding, adapter) && shouldUseRichMessage(text, adapter)) {
+    const opts = this.optionsFor(binding)
+    if (preferRich && this.canUseRichMessageDrafts(binding, adapter)) {
       try {
         await adapter.sendRichMessageDraft!(binding.channelId, draftId, text, opts)
         return true
@@ -540,7 +712,8 @@ export class Renderer {
         return
       }
 
-      case 'complete': {
+      case 'complete':
+      case 'turn_complete': {
         // Prefer the clean non-intermediate final; fall back to the last
         // assistant text so a tool-terminated run still delivers a message
         // instead of freezing the bubble on "thinking…".
@@ -566,7 +739,7 @@ export class Renderer {
           // Adapter can't edit (WhatsApp) — send one message at the end.
           await this.sendText(adapter, binding, finalText)
         }
-        this.resetRun(state)
+        this.resetRun(state, binding.id)
         return
       }
     }
@@ -585,7 +758,7 @@ export class Renderer {
   ): Promise<void> {
     if (!state.progressMessageId) {
       try {
-        const sent = await adapter.sendText(binding.channelId, status, bindingOpts(binding))
+        const sent = await adapter.sendText(binding.channelId, status, this.optionsFor(binding))
         state.progressMessageId = sent.messageId
         state.progressStatus = status
       } catch {
@@ -627,7 +800,8 @@ export class Renderer {
         return
       }
 
-      case 'complete': {
+      case 'complete':
+      case 'turn_complete': {
         // Prefer the clean non-intermediate final; fall back to the last
         // assistant text so final_only still delivers something rather than
         // staying silent when the run ends on a tool call.
@@ -635,7 +809,7 @@ export class Renderer {
         if (finalText) {
           await this.sendText(adapter, binding, finalText)
         }
-        this.resetRun(state)
+        this.resetRun(state, binding.id)
         return
       }
     }
@@ -676,7 +850,7 @@ export class Renderer {
         binding.channelId,
         `⏸ Permission required: ${request.description}
 Approve it in the desktop app to continue.`,
-        bindingOpts(binding),
+        this.optionsFor(binding),
       )
       return
     }
@@ -687,14 +861,19 @@ Approve it in the desktop app to continue.`,
         { id: `perm:allow:${request.requestId}`, label: '✅ Allow' },
         { id: `perm:deny:${request.requestId}`, label: '❌ Deny' },
       ]
-      const sent = await adapter.sendButtons(binding.channelId, text, buttons, bindingOpts(binding))
-      this.recordPermissionMessage?.(binding, request.requestId, sent.messageId)
+      const sent = await adapter.sendButtons(binding.channelId, text, buttons, this.optionsFor(binding))
+      this.recordPermissionMessage?.(
+        binding,
+        request.requestId,
+        sent.messageId,
+        typeof event.messagingOriginId === 'string' ? event.messagingOriginId : undefined,
+      )
     } else {
       await adapter.sendText(
         binding.channelId,
         `⏸ Permission required: ${request.description}
 Approve in the desktop app to continue.`,
-        bindingOpts(binding),
+        this.optionsFor(binding),
       )
     }
   }
@@ -707,7 +886,7 @@ Approve in the desktop app to continue.`,
     await adapter.sendText(
       binding.channelId,
       '🔐 Credentials are required to continue. Open the desktop app to review and submit them securely.',
-      bindingOpts(binding),
+      this.optionsFor(binding),
     )
   }
 
@@ -721,7 +900,7 @@ Approve in the desktop app to continue.`,
       await adapter.sendText(
         binding.channelId,
         '📝 A plan is ready for review. Open the desktop app to inspect and approve it.',
-        bindingOpts(binding),
+        this.optionsFor(binding),
       )
       return
     }
@@ -737,7 +916,7 @@ Approve in the desktop app to continue.`,
       await adapter.sendText(
         binding.channelId,
         '📝 A plan is ready for review. Open the desktop app to inspect and approve it.',
-        bindingOpts(binding),
+        this.optionsFor(binding),
       )
       return
     }
@@ -764,8 +943,13 @@ Approve in the desktop app to continue.`,
         : `${header}\n\n${firstLines(planContent, 15)}\n\n…full plan attached below.`
 
     try {
-      const sent = await adapter.sendButtons(binding.channelId, bodyText, buttons, bindingOpts(binding))
-      this.recordPlanMessage?.(binding, token, sent.messageId)
+      const sent = await adapter.sendButtons(binding.channelId, bodyText, buttons, this.optionsFor(binding))
+      this.recordPlanMessage?.(
+        binding,
+        token,
+        sent.messageId,
+        typeof event.messagingOriginId === 'string' ? event.messagingOriginId : undefined,
+      )
 
       if (!fitsInline && planContent.length > 0) {
         await adapter.sendFile(
@@ -773,7 +957,7 @@ Approve in the desktop app to continue.`,
           Buffer.from(planContent, 'utf-8'),
           'plan.md',
           'Full plan',
-          bindingOpts(binding),
+          this.optionsFor(binding),
         )
       }
     } catch (err) {
@@ -783,7 +967,7 @@ Approve in the desktop app to continue.`,
         `📝 A plan is ready for review (couldn't render inline: ${
           err instanceof Error ? err.message : 'unknown error'
         }). Open the desktop app to approve it.`,
-        bindingOpts(binding),
+        this.optionsFor(binding),
       )
     }
   }
@@ -796,8 +980,12 @@ Approve in the desktop app to continue.`,
   ): Promise<void> {
     const errorMsg = extractErrorMessage(event.error)
     this.cancelEditTimer(state)
-    await adapter.sendText(binding.channelId, `❌ ${errorMsg}`, bindingOpts(binding))
-    this.resetRun(state)
+    if (state.nativeStream && adapter.failNativeStream) {
+      await adapter.failNativeStream(state.nativeStream, `❌ ${errorMsg}`).catch(() => {})
+    } else {
+      await adapter.sendText(binding.channelId, `❌ ${errorMsg}`, this.optionsFor(binding))
+    }
+    this.resetRun(state, binding.id)
   }
 
   // ---------------------------------------------------------------------------
@@ -816,7 +1004,7 @@ Approve in the desktop app to continue.`,
     try {
       // editMessage on Telegram is keyed by (chat_id, message_id) and ignores
       // message_thread_id, but we pass it for caller uniformity.
-      await adapter.editMessage(binding.channelId, messageId, truncated, bindingOpts(binding))
+      await adapter.editMessage(binding.channelId, messageId, truncated, this.optionsFor(binding))
       state.currentEditIntervalMs = DEFAULT_EDIT_INTERVAL_MS
     } catch (err: unknown) {
       const is429 =
@@ -840,7 +1028,7 @@ Approve in the desktop app to continue.`,
   }
 
   /** Reset per-run state (called on `complete`, `error`, etc.). */
-  private resetRun(state: RenderState): void {
+  private resetRun(state: RenderState, bindingId?: string): void {
     this.cancelEditTimer(state)
     state.textBuffer = ''
     state.streamingMessageId = null
@@ -852,6 +1040,10 @@ Approve in the desktop app to continue.`,
     state.progressMessageId = null
     state.progressDraftId = null
     state.progressStatus = null
+    state.nativeStream = null
+    state.nativeStreamStart = null
+    state.nativeStatus = null
+    if (bindingId) this.contextualOptions.delete(bindingId)
   }
 
   /** Send text, splitting if it exceeds platform limits. */
@@ -861,7 +1053,7 @@ Approve in the desktop app to continue.`,
     text: string,
   ): Promise<SentMessage | undefined> {
     const maxLen = adapter.capabilities.maxMessageLength
-    const opts = bindingOpts(binding)
+    const opts = this.optionsFor(binding)
     if (canUseRichMessages(binding, adapter) && shouldUseRichMessage(text, adapter)) {
       try {
         return await adapter.sendRichMessage!(binding.channelId, text, opts)
@@ -895,6 +1087,14 @@ Approve in the desktop app to continue.`,
     if (state) {
       this.cancelEditTimer(state)
       this.states.delete(bindingId)
+    }
+    this.contextualOptions.delete(bindingId)
+  }
+
+  private optionsFor(binding: ChannelBinding): SendOptions {
+    return {
+      ...bindingOpts(binding),
+      ...(this.contextualOptions.get(binding.id) ?? {}),
     }
   }
 }
@@ -935,6 +1135,7 @@ function shouldUseRichMessage(text: string, adapter: PlatformAdapter): boolean {
 
 function hasRichMarkdown(text: string): boolean {
   return /(^|\n)#{1,6}\s+\S/.test(text) ||
+    /(^|\n)!\[[^\]]*\]\(https?:\/\//.test(text) ||
     /(^|\n)\s*[-*+]\s+\[[ xX]\]\s+\S/.test(text) ||
     /(^|\n)\|.+\|/.test(text) ||
     /```/.test(text) ||

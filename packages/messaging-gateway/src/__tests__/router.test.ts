@@ -119,6 +119,40 @@ describe('Router', () => {
     expect(args[0]).toBe('sess-A') // sessionId
     expect(args[1]).toBe('hi there') // message
     expect(args[2]).toBeUndefined() // fileAttachments
+    const options = args[4] as { messagingOriginId?: string }
+    expect(options.messagingOriginId).toBeTruthy()
+  })
+
+  it('keeps native reply/thread ids in the gateway-only origin map', async () => {
+    const { router, sessionManager, store } = makeRouter()
+    const binding = store.findByChannel('telegram', 'chat-1')!
+    await router.route(makeFakeAdapter(), baseMsg({
+      platform: 'lark',
+      chatType: 'group',
+      messageId: 'om_source',
+      senderId: 'ou_sender',
+      rootMessageId: 'om_root',
+      nativeThreadId: 'omt_thread',
+    }))
+    // Rebind as Lark for this test because binding lookup is platform-scoped.
+    if (sessionManager.sendMessage.mock.calls.length === 0) {
+      store.bind('ws1', binding.sessionId, 'lark', 'chat-1')
+      await router.route(makeFakeAdapter(), baseMsg({
+        platform: 'lark',
+        chatType: 'group',
+        messageId: 'om_source',
+        senderId: 'ou_sender',
+        rootMessageId: 'om_root',
+        nativeThreadId: 'omt_thread',
+      }))
+    }
+    const args = sessionManager.sendMessage.mock.calls.at(-1)!
+    const originId = (args[4] as { messagingOriginId: string }).messagingOriginId
+    const origin = router.getMessagingOrigin(originId)
+    expect(origin?.bindingId).toBeTruthy()
+    expect(origin?.messageId).toBe('om_source')
+    expect(origin?.nativeThreadId).toBe('omt_thread')
+    expect(origin?.senderId).toBe('ou_sender')
   })
 
   it('materializes a localPath attachment into FileAttachment[]', async () => {

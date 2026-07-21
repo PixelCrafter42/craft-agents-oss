@@ -96,7 +96,8 @@ function makeFakeAdapter(): FakeAdapter {
     }),
     editMessage: async () => {},
     sendButtons: mock(async (channelId: string, text: string) => {
-      const messageId = String(nextId++)
+      // Button callbacks must echo the exact platform message id.
+      const messageId = '1'
       calls.push({ kind: 'sendButtons', channelId, text, messageId })
       return { platform: 'telegram' as const, channelId, messageId }
     }),

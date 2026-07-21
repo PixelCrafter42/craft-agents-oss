@@ -39,6 +39,7 @@ import type {
   PlatformAdapter,
   PlatformOwner,
   PlatformType,
+  SendOptions,
 } from './types'
 
 const NOOP_LOGGER: MessagingLogger = {
@@ -137,7 +138,7 @@ interface SkillCommandContext {
   binding: ChannelBinding
   session: Session
   workspace: Workspace
-  replyOpts: { threadId?: number }
+  replyOpts: SendOptions
 }
 
 interface PendingSkillInvocation {
@@ -170,6 +171,36 @@ export function parseCommand(text: string): { cmd: string; args: string } {
   const m = trimmed.match(/^\/([a-z0-9_]+)(?:@[a-z0-9_]+)?(?:\s+([\s\S]*))?$/i)
   if (!m) return { cmd: '', args: '' }
   return { cmd: '/' + m[1]!.toLowerCase(), args: (m[2] ?? '').trim() }
+}
+
+function replyOptionsForMessage(msg: IncomingMessage): SendOptions {
+  return {
+    ...(msg.threadId !== undefined ? { threadId: msg.threadId } : {}),
+    ...(msg.platform === 'lark' ? { replyToMessageId: msg.messageId } : {}),
+    ...(msg.platform === 'lark' && msg.nativeThreadId ? { replyInThread: true } : {}),
+    ...(msg.ephemeralReply ? { ephemeral: msg.ephemeralReply } : {}),
+  }
+}
+
+function replyOptionsForButton(press: ButtonPress): SendOptions {
+  return {
+    ...(press.threadId !== undefined ? { threadId: press.threadId } : {}),
+    ...(press.ephemeralReply ? { ephemeral: press.ephemeralReply } : {}),
+  }
+}
+
+function sourceMessageOptionsForButton(press: ButtonPress): SendOptions {
+  return {
+    ...(press.threadId !== undefined ? { threadId: press.threadId } : {}),
+    ...(press.sourceEphemeral
+      ? {
+          ephemeral: {
+            recipientId: press.sourceEphemeral.recipientId,
+            sourceMessageId: press.sourceEphemeral.messageId,
+          },
+        }
+      : {}),
+  }
 }
 
 function compareSkills(a: LoadedSkill, b: LoadedSkill): number {
@@ -280,7 +311,7 @@ export class Commands {
 
   async handle(adapter: PlatformAdapter, msg: IncomingMessage): Promise<void> {
     const text = msg.text.trim()
-    const replyOpts = msg.threadId !== undefined ? { threadId: msg.threadId } : {}
+    const replyOpts = replyOptionsForMessage(msg)
 
     // Pre-binding gate: every inbound stimulus runs through the access
     // evaluator, including non-command free-form text. Without this,
@@ -477,9 +508,13 @@ export class Commands {
     if (!press.buttonId.startsWith('menu:')) return false
 
     const msg = this.messageFromButtonPress(press)
-    const replyOpts = press.threadId !== undefined ? { threadId: press.threadId } : {}
+    const replyOpts = replyOptionsForButton(press)
     if (adapter.clearButtons && press.messageId) {
-      await adapter.clearButtons(press.channelId, press.messageId, replyOpts).catch(() => {})
+      await adapter.clearButtons(
+        press.channelId,
+        press.messageId,
+        sourceMessageOptionsForButton(press),
+      ).catch(() => {})
     }
 
     const parts = press.buttonId.split(':')
@@ -524,6 +559,9 @@ export class Commands {
         await this.handleHelp(adapter, msg)
         return true
       case 'close':
+        if (press.sourceEphemeral && adapter.deleteEphemeralMessage) {
+          await adapter.deleteEphemeralMessage(press.channelId, press.sourceEphemeral).catch(() => {})
+        }
         return true
       default:
         return true
@@ -540,7 +578,7 @@ export class Commands {
   }
 
   private async sendHomeMenu(adapter: PlatformAdapter, msg: IncomingMessage): Promise<void> {
-    const replyOpts = msg.threadId !== undefined ? { threadId: msg.threadId } : {}
+    const replyOpts = replyOptionsForMessage(msg)
     const binding = this.bindingStore.findByChannel(adapter.platform, msg.channelId, msg.threadId)
     const session = binding ? await this.sessionManager.getSession(binding.sessionId) : null
     const boundLine = binding
@@ -575,17 +613,31 @@ export class Commands {
           [{ id: 'menu:close', label: 'Close' }],
         ]
 
+    const menuText = `Craft Agents Menu\n\n${boundLine}\nWhat do you want to do?`
+    if (
+      msg.platform === 'lark' &&
+      msg.chatType === 'group' &&
+      adapter.capabilities.ephemeralCards &&
+      adapter.sendEphemeralCard
+    ) {
+      try {
+        await adapter.sendEphemeralCard(msg.channelId, msg.senderId, menuText, rows.flat())
+        return
+      } catch {
+        // The ephemeral endpoint requires an online group client; normal card fallback below.
+      }
+    }
     await this.sendButtonRows(
       adapter,
       msg.channelId,
-      `Craft Agents Menu\n\n${boundLine}\nWhat do you want to do?`,
+      menuText,
       rows,
       replyOpts,
     )
   }
 
   private async sendSessionsMenu(adapter: PlatformAdapter, msg: IncomingMessage): Promise<void> {
-    const replyOpts = msg.threadId !== undefined ? { threadId: msg.threadId } : {}
+    const replyOpts = replyOptionsForMessage(msg)
     const recent = this.getRecentSessions()
     if (recent.length === 0) {
       await this.sendButtonRows(
@@ -757,7 +809,7 @@ export class Commands {
     channelId: string,
     text: string,
     rows: InlineButtonRow[],
-    opts: { threadId?: number },
+    opts: SendOptions,
   ): Promise<void> {
     const filteredRows = rows
       .map((row) => row.filter(Boolean))
@@ -779,6 +831,8 @@ export class Commands {
       ...(press.senderName ? { senderName: press.senderName } : {}),
       ...(press.senderUsername ? { senderUsername: press.senderUsername } : {}),
       ...(press.senderIsBot ? { senderIsBot: true } : {}),
+      ...(press.chatType ? { chatType: press.chatType } : {}),
+      ...(press.ephemeralReply ? { ephemeralReply: press.ephemeralReply } : {}),
       text: '',
       timestamp: Date.now(),
       raw: press,
@@ -802,7 +856,7 @@ export class Commands {
 
   private async handleNew(adapter: PlatformAdapter, msg: IncomingMessage): Promise<void> {
     const name = parseCommand(msg.text).args || undefined
-    const replyOpts = msg.threadId !== undefined ? { threadId: msg.threadId } : {}
+    const replyOpts = replyOptionsForMessage(msg)
 
     try {
       const session = await this.sessionManager.createSession(this.workspaceId, { name })
@@ -847,7 +901,7 @@ export class Commands {
   private async handleBind(adapter: PlatformAdapter, msg: IncomingMessage): Promise<void> {
     const bindArg = parseCommand(msg.text).args
     const recent = this.getRecentSessions()
-    const replyOpts = msg.threadId !== undefined ? { threadId: msg.threadId } : {}
+    const replyOpts = replyOptionsForMessage(msg)
 
     if (bindArg) {
       const session = await this.resolveBindTarget(bindArg, recent)
@@ -918,7 +972,7 @@ export class Commands {
   }
 
   private async handlePair(adapter: PlatformAdapter, msg: IncomingMessage): Promise<void> {
-    const replyOpts = msg.threadId !== undefined ? { threadId: msg.threadId } : {}
+    const replyOpts = replyOptionsForMessage(msg)
 
     if (!this.pairingConsumer) {
       await adapter.sendText(msg.channelId, 'Pairing is not available in this build.', replyOpts)
@@ -1122,7 +1176,7 @@ export class Commands {
   }
 
   private async handleUnbind(adapter: PlatformAdapter, msg: IncomingMessage): Promise<void> {
-    const replyOpts = msg.threadId !== undefined ? { threadId: msg.threadId } : {}
+    const replyOpts = replyOptionsForMessage(msg)
     const removed = this.bindingStore.unbind(adapter.platform, msg.channelId, msg.threadId)
     if (removed) {
       await adapter.sendText(msg.channelId, 'Disconnected from session.', replyOpts)
@@ -1176,7 +1230,7 @@ export class Commands {
   private async handleUse(adapter: PlatformAdapter, msg: IncomingMessage): Promise<void> {
     const { args } = parseCommand(msg.text)
     const parsed = parseSkillInvocationArgs(args)
-    const replyOpts = msg.threadId !== undefined ? { threadId: msg.threadId } : {}
+    const replyOpts = replyOptionsForMessage(msg)
     if (!parsed) {
       await adapter.sendText(
         msg.channelId,
@@ -1223,7 +1277,7 @@ export class Commands {
   ): Promise<void> {
     const { args } = parseCommand(msg.text)
     const prompt = args.trim()
-    const replyOpts = msg.threadId !== undefined ? { threadId: msg.threadId } : {}
+    const replyOpts = replyOptionsForMessage(msg)
     if (!prompt) {
       await adapter.sendText(
         msg.channelId,
@@ -1321,7 +1375,7 @@ export class Commands {
     adapter: PlatformAdapter,
     msg: IncomingMessage,
   ): Promise<SkillCommandContext | null> {
-    const replyOpts = msg.threadId !== undefined ? { threadId: msg.threadId } : {}
+    const replyOpts = replyOptionsForMessage(msg)
     const binding = this.bindingStore.findByChannel(adapter.platform, msg.channelId, msg.threadId)
     if (!binding) {
       await adapter.sendText(
@@ -1408,7 +1462,10 @@ export class Commands {
     try {
       await adapter.setCommandMenu(
         BASE_COMMAND_MENU,
-        { channelId: msg.channelId },
+        {
+          channelId: msg.channelId,
+          ...(msg.ephemeralReply ? { ephemeral: true } : {}),
+        },
       )
       this.log.info('chat command menu synced with skills', {
         event: 'compact_command_menu_synced',
@@ -1427,7 +1484,7 @@ export class Commands {
   }
 
   private async handleStatus(adapter: PlatformAdapter, msg: IncomingMessage): Promise<void> {
-    const replyOpts = msg.threadId !== undefined ? { threadId: msg.threadId } : {}
+    const replyOpts = replyOptionsForMessage(msg)
     const binding = this.bindingStore.findByChannel(adapter.platform, msg.channelId, msg.threadId)
     if (!binding) {
       await adapter.sendText(msg.channelId, 'No session bound. Use /bind, /new, or /pair.', replyOpts)
@@ -1439,15 +1496,13 @@ export class Commands {
     const mode = binding.config.approvalChannel
     const responseMode = binding.config.responseMode
 
-    await adapter.sendText(
-      msg.channelId,
-      `Bound to "${name}"\nApproval: ${mode}\nResponse mode: ${responseMode}`,
-      replyOpts,
-    )
+    const text = `Bound to "${name}"\nApproval: ${mode}\nResponse mode: ${responseMode}`
+    if (await this.trySendEphemeral(adapter, msg, text)) return
+    await adapter.sendText(msg.channelId, text, replyOpts)
   }
 
   private async handleStop(adapter: PlatformAdapter, msg: IncomingMessage): Promise<void> {
-    const replyOpts = msg.threadId !== undefined ? { threadId: msg.threadId } : {}
+    const replyOpts = replyOptionsForMessage(msg)
     const binding = this.bindingStore.findByChannel(adapter.platform, msg.channelId, msg.threadId)
     if (!binding) {
       await adapter.sendText(msg.channelId, 'No session bound.', replyOpts)
@@ -1466,11 +1521,9 @@ export class Commands {
     const bindLine = adapter.platform === 'whatsapp' || adapter.platform === 'weixin'
       ? '/bind — list recent sessions (then use /bind <number>)\n'
       : '/bind — pick from recent sessions\n'
-    const replyOpts = msg.threadId !== undefined ? { threadId: msg.threadId } : {}
+    const replyOpts = replyOptionsForMessage(msg)
 
-    await adapter.sendText(
-      msg.channelId,
-      'Commands:\n' +
+    const text = 'Commands:\n' +
       '/new [name] — create + bind new session\n' +
       bindLine +
       '/bind <id> — bind to specific session\n' +
@@ -1481,9 +1534,28 @@ export class Commands {
       '/unbind — disconnect this chat\n' +
       '/status — show current binding\n' +
       '/stop — abort current agent run\n' +
-      '/help — show this message',
-      replyOpts,
-    )
+      '/help — show this message'
+    if (await this.trySendEphemeral(adapter, msg, text)) return
+    await adapter.sendText(msg.channelId, text, replyOpts)
+  }
+
+  private async trySendEphemeral(
+    adapter: PlatformAdapter,
+    msg: IncomingMessage,
+    markdown: string,
+  ): Promise<boolean> {
+    if (
+      msg.platform !== 'lark' ||
+      msg.chatType !== 'group' ||
+      !adapter.capabilities.ephemeralCards ||
+      !adapter.sendEphemeralCard
+    ) return false
+    try {
+      await adapter.sendEphemeralCard(msg.channelId, msg.senderId, markdown)
+      return true
+    } catch {
+      return false
+    }
   }
 
   private getRecentSessions(): ReturnType<ISessionManager['getSessions']> {

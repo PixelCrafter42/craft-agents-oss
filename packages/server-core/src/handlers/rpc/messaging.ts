@@ -20,6 +20,9 @@ export const HANDLED_CHANNELS = [
   RPC_CHANNELS.messaging.SAVE_TELEGRAM,
   RPC_CHANNELS.messaging.TEST_LARK,
   RPC_CHANNELS.messaging.SAVE_LARK,
+  RPC_CHANNELS.messaging.LARK_BEGIN_REGISTRATION,
+  RPC_CHANNELS.messaging.LARK_REGISTRATION_STATUS,
+  RPC_CHANNELS.messaging.LARK_CANCEL_REGISTRATION,
   RPC_CHANNELS.messaging.DISCONNECT,
   RPC_CHANNELS.messaging.FORGET,
   RPC_CHANNELS.messaging.GET_BINDINGS,
@@ -81,6 +84,35 @@ export function registerMessagingHandlers(server: RpcServer, deps: HandlerDeps):
   ) => {
     if (!ctx.workspaceId) throw new Error('Missing workspaceId')
     await registry.saveLarkCredentials(ctx.workspaceId, creds)
+    return { success: true }
+  })
+
+  server.handle(RPC_CHANNELS.messaging.LARK_BEGIN_REGISTRATION, async (
+    ctx,
+    input?: {
+      region?: 'lark' | 'feishu'
+      existingAppId?: string
+      repairExisting?: boolean
+    },
+  ) => {
+    if (!ctx.workspaceId) throw new Error('Missing workspaceId')
+    return registry.beginLarkRegistration(ctx.workspaceId, input)
+  })
+
+  server.handle(RPC_CHANNELS.messaging.LARK_REGISTRATION_STATUS, async (
+    ctx,
+    attemptId: string,
+  ) => {
+    if (!ctx.workspaceId) throw new Error('Missing workspaceId')
+    return registry.getLarkRegistrationStatus(ctx.workspaceId, attemptId)
+  })
+
+  server.handle(RPC_CHANNELS.messaging.LARK_CANCEL_REGISTRATION, async (
+    ctx,
+    attemptId?: string,
+  ) => {
+    if (!ctx.workspaceId) throw new Error('Missing workspaceId')
+    registry.cancelLarkRegistration(ctx.workspaceId, attemptId)
     return { success: true }
   })
 

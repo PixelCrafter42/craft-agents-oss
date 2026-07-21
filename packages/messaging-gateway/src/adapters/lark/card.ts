@@ -3,7 +3,7 @@
  *
  * Lark "interactive" message type is a JSON card with a fixed schema. We use
  * schema 2.0, which supports rich elements (`div`, `action`, `markdown`, etc.).
- * Phase 2 only emits a minimal subset: a single text body element plus an
+ * Cards use a schema-2.0 Markdown body plus optional action buttons. A button
  * action row of buttons. Each button's `value` carries our correlation IDs
  * so the gateway can route the press back to the right session.
  *
@@ -33,29 +33,23 @@ export interface LarkCardSchema {
   body: {
     direction?: 'vertical' | 'horizontal'
     elements: Array<
-      | { tag: 'div'; text: { tag: 'plain_text'; content: string } }
+      | { tag: 'markdown'; content: string; element_id?: string }
       | {
           tag: 'button'
           text: { tag: 'plain_text'; content: string }
           type: 'primary' | 'default'
           behaviors: Array<{
             type: 'callback'
-            value: { buttonId: string; messageId: string; data?: string }
+            value: { buttonId: string; data?: string }
           }>
         }
     >
   }
 }
 
-export interface BuildCardOptions {
-  /** Identifier used in the button's `value.messageId` so we can correlate presses back. */
-  messageId: string
-}
-
 export function buildLarkCard(
   text: string,
   buttons: InlineButton[],
-  opts: BuildCardOptions,
 ): LarkCardSchema {
   const capped = buttons.slice(0, MAX_BUTTONS)
 
@@ -64,7 +58,7 @@ export function buildLarkCard(
     config: { wide_screen_mode: true },
     body: {
       elements: [
-        { tag: 'div', text: { tag: 'plain_text', content: text } },
+        { tag: 'markdown', content: text, element_id: 'craft-content' },
         // Schema 2.0: buttons sit directly inside `body.elements` (no `action`
         // wrapper) and the click payload moves into `behaviors[].value`.
         ...capped.map((btn, idx) => ({
@@ -77,7 +71,6 @@ export function buildLarkCard(
               type: 'callback' as const,
               value: {
                 buttonId: btn.id,
-                messageId: opts.messageId,
                 ...(btn.data !== undefined ? { data: btn.data } : {}),
               },
             },
@@ -97,14 +90,22 @@ function truncateLabel(label: string): string {
  * A "remove buttons" patch — used by `clearButtons` after a press is processed.
  * Drops the `action` element, keeping the original text body.
  */
-export function buildClearedCard(text: string): LarkCardSchema {
+export function buildClearedCard(text: string, resolution?: string): LarkCardSchema {
   return {
     schema: '2.0',
     config: { wide_screen_mode: true },
     body: {
-      elements: [{ tag: 'div', text: { tag: 'plain_text', content: text } }],
+      elements: [{
+        tag: 'markdown',
+        content: resolution ? `${text}\n\n---\n${resolution}` : text,
+        element_id: 'craft-content',
+      }],
     },
   }
+}
+
+export function buildMarkdownCard(text: string): LarkCardSchema {
+  return buildClearedCard(text)
 }
 
 // ---------------------------------------------------------------------------

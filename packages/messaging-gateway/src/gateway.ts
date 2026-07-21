@@ -24,6 +24,7 @@ import {
   evaluateBindingAccess,
   evaluatePreBindingAccess,
   executeRejection,
+  readPlatformOwners,
 } from './access-control'
 import { BindingStore } from './binding-store'
 import { Router } from './router'
@@ -41,11 +42,34 @@ import type {
   PlatformOwner,
   ChannelBinding,
   ResponseMode,
+  SendOptions,
+  SentMessage,
 } from './types'
 import { normalizeBindingConfig } from './types'
 
 const MAX_MESSAGING_FILE_BYTES = 20 * 1024 * 1024
 const MESSAGING_FILE_PLATFORM_PRIORITY: PlatformType[] = ['telegram', 'weixin', 'lark', 'whatsapp']
+
+function replyOptionsForPress(press: ButtonPress): SendOptions {
+  return {
+    ...(press.threadId !== undefined ? { threadId: press.threadId } : {}),
+    ...(press.ephemeralReply ? { ephemeral: press.ephemeralReply } : {}),
+  }
+}
+
+function sourceMessageOptionsForPress(press: ButtonPress): SendOptions {
+  return {
+    ...(press.threadId !== undefined ? { threadId: press.threadId } : {}),
+    ...(press.sourceEphemeral
+      ? {
+          ephemeral: {
+            recipientId: press.sourceEphemeral.recipientId,
+            sourceMessageId: press.sourceEphemeral.messageId,
+          },
+        }
+      : {}),
+  }
+}
 
 const consoleLogger: MessagingLogger = {
   info: (message, meta) => console.log('[MessagingGateway]', message, meta ?? ''),
@@ -106,6 +130,9 @@ interface PlanMessageRecord {
   platform: PlatformType
   channelId: string
   messageId: string
+  /** Sender that initiated the turn which produced this approval card. */
+  initiatorSenderId?: string
+  chatType?: IncomingMessage['chatType']
 }
 
 /**
@@ -127,6 +154,9 @@ interface PermissionMessageRecord {
   channelId: string
   messageId: string
   threadId?: number
+  /** Sender that initiated the turn which produced this approval card. */
+  initiatorSenderId?: string
+  chatType?: IncomingMessage['chatType']
 }
 
 interface PendingCompactAccept {
@@ -166,7 +196,7 @@ export class MessagingGateway {
   private readonly planMessages = new Map<string, PlanMessageRecord>()
   private readonly automationOutputBindings = new Map<string, ChannelBinding[]>()
   /** Live permission prompts, keyed by `requestId`. See PermissionMessageRecord. */
-  private readonly permissionMessages = new Map<string, PermissionMessageRecord>()
+  private readonly permissionMessages = new Map<string, PermissionMessageRecord[]>()
   private readonly pendingCompactAccepts = new Map<string, PendingCompactAccept>()
   private readonly adapters = new Map<PlatformType, PlatformAdapter>()
   private readonly log: MessagingLogger
@@ -243,23 +273,42 @@ export class MessagingGateway {
       // We must not resolve it ourselves — `findBySession` returns every
       // binding and picking the first Telegram binding attributes the
       // message to the wrong chat whenever the session has more than one.
-      recordPlanMessage: (binding, token, messageId) => {
+      recordPlanMessage: (binding, token, messageId, messagingOriginId) => {
+        const origin = this.router.getMessagingOrigin(messagingOriginId)
         this.planMessages.set(token, {
           bindingId: binding.id,
           platform: binding.platform,
           channelId: binding.channelId,
           messageId,
+          ...(origin?.bindingId === binding.id
+            ? { initiatorSenderId: origin.senderId }
+            : {}),
+          ...(origin?.bindingId === binding.id && origin.chatType
+            ? { chatType: origin.chatType }
+            : {}),
         })
       },
-      recordPermissionMessage: (binding, requestId, messageId) => {
-        this.permissionMessages.set(requestId, {
+      recordPermissionMessage: (binding, requestId, messageId, messagingOriginId) => {
+        const origin = this.router.getMessagingOrigin(messagingOriginId)
+        const record: PermissionMessageRecord = {
           bindingId: binding.id,
           sessionId: binding.sessionId,
           platform: binding.platform,
           channelId: binding.channelId,
           messageId,
           ...(binding.threadId !== undefined ? { threadId: binding.threadId } : {}),
-        })
+          ...(origin?.bindingId === binding.id
+            ? { initiatorSenderId: origin.senderId }
+            : {}),
+          ...(origin?.bindingId === binding.id && origin.chatType
+            ? { chatType: origin.chatType }
+            : {}),
+        }
+        const existing = this.permissionMessages.get(requestId) ?? []
+        this.permissionMessages.set(requestId, [
+          ...existing.filter((candidate) => candidate.bindingId !== binding.id),
+          record,
+        ])
       },
     })
     this.syncSessionMessagingCallbacks()
@@ -447,6 +496,7 @@ export class MessagingGateway {
     this.sweepStalePermissions(event)
 
     const outputBindings = this.automationOutputBindings.get(event.sessionId) ?? []
+    const origin = this.router.getMessagingOrigin(event.messagingOriginId as string | undefined)
     const bindings = [
       ...this.bindingStore.findBySession(event.sessionId),
       ...outputBindings,
@@ -465,7 +515,14 @@ export class MessagingGateway {
         })
         continue
       }
-      this.renderer.handle(event, binding, adapter).catch((err) => {
+      const contextualOptions =
+        origin && origin.bindingId === binding.id && adapter.capabilities.contextualReplies
+          ? {
+              replyToMessageId: origin.messageId,
+              replyInThread: Boolean(origin.nativeThreadId),
+            }
+          : undefined
+      this.renderer.handle(event, binding, adapter, contextualOptions).catch((err) => {
         this.log.error('renderer failed to emit event to chat', {
           event: 'renderer_failed',
           sessionId: event.sessionId,
@@ -479,9 +536,13 @@ export class MessagingGateway {
 
     if (
       outputBindings.length > 0 &&
-      (event.type === 'complete' || event.type === 'error' || event.type === 'typed_error')
+      (event.type === 'complete' || event.type === 'turn_complete' || event.type === 'error' || event.type === 'typed_error')
     ) {
       this.automationOutputBindings.delete(event.sessionId)
+    }
+
+    if (event.type === 'complete' || event.type === 'turn_complete') {
+      this.router.releaseMessagingOrigin(event.messagingOriginId as string | undefined)
     }
   }
 
@@ -503,19 +564,26 @@ export class MessagingGateway {
         ? ((event.request as { requestId?: string } | undefined)?.requestId ?? null)
         : null
 
-    for (const [requestId, record] of this.permissionMessages) {
-      if (record.sessionId !== event.sessionId) continue
+    for (const [requestId, records] of this.permissionMessages) {
+      if (!records.some((record) => record.sessionId === event.sessionId)) continue
       if (requestId === eventRequestId) continue
       this.permissionMessages.delete(requestId)
 
-      const adapter = this.adapters.get(record.platform)
-      if (adapter?.clearButtons && adapter.isConnected()) {
-        adapter.clearButtons(record.channelId, record.messageId).catch(() => {})
+      for (const record of records) {
+        const adapter = this.adapters.get(record.platform)
+        if (adapter?.clearButtons && adapter.isConnected()) {
+          adapter.clearButtons(
+            record.channelId,
+            record.messageId,
+            undefined,
+            '⚠️ Expired',
+          ).catch(() => {})
+        }
       }
       this.log.info('cleared stale permission prompt after agent moved on', {
         event: 'perm_prompt_cleared_stale',
         requestId,
-        sessionId: record.sessionId,
+        sessionId: event.sessionId,
         triggerEventType: event.type,
       })
     }
@@ -581,12 +649,34 @@ export class MessagingGateway {
     const file = await readFile(filePath)
     const fileName = sanitizeFilename(request.name?.trim() || basename(filePath))
     const caption = request.caption?.trim() || undefined
-    const sent = await adapter.sendFile(
+    const sendOpts = binding.threadId !== undefined ? { threadId: binding.threadId } : undefined
+    let sent: SentMessage | undefined
+    if (binding.platform === 'telegram' && adapter.sendRichMedia) {
+      try {
+        sent = await adapter.sendRichMedia(
+          binding.channelId,
+          file,
+          fileName,
+          caption,
+          sendOpts,
+        )
+      } catch (err) {
+        this.log.warn('Telegram rich media rejected; falling back to attachment send', {
+          event: 'telegram_rich_media_fallback',
+          sessionId,
+          channelId: binding.channelId,
+          threadId: binding.threadId,
+          fileName,
+          error: err,
+        })
+      }
+    }
+    sent ??= await adapter.sendFile(
       binding.channelId,
       file,
       fileName,
       caption,
-      binding.threadId !== undefined ? { threadId: binding.threadId } : undefined,
+      sendOpts,
     )
 
     return {
@@ -641,7 +731,7 @@ export class MessagingGateway {
 
     // Press metadata reused across all branches so responses post back into
     // the same topic (Telegram supergroup) the button was tapped from.
-    const pressOpts = press.threadId !== undefined ? { threadId: press.threadId } : {}
+    const pressOpts = replyOptionsForPress(press)
 
     // Access gate. Inline buttons in supergroup topics are visible to
     // every member of the chat, so without this gate any non-owner could
@@ -661,7 +751,11 @@ export class MessagingGateway {
       }
 
       if (adapter.clearButtons && press.messageId) {
-        await adapter.clearButtons(press.channelId, press.messageId, pressOpts).catch(() => {})
+        await adapter.clearButtons(
+          press.channelId,
+          press.messageId,
+          sourceMessageOptionsForPress(press),
+        ).catch(() => {})
       }
 
       this.bindingStore.bind(
@@ -727,7 +821,7 @@ export class MessagingGateway {
     press: ButtonPress,
   ): Promise<void> {
     const startedAt = Date.now()
-    const pressOpts = press.threadId !== undefined ? { threadId: press.threadId } : {}
+    const pressOpts = replyOptionsForPress(press)
 
     const parts = press.buttonId.split(':')
     const action = parts[1]
@@ -737,7 +831,8 @@ export class MessagingGateway {
     // Idempotency claim: remove the entry up-front. A concurrent second tap
     // (or a race with the stale-prompt sweep in onSessionEvent) finds nothing
     // here and exits silently — no duplicate "✅ Allowed" message.
-    const record = this.permissionMessages.get(requestId)
+    const records = this.permissionMessages.get(requestId)
+    const record = records?.find((candidate) => this.matchesApprovalMessage(candidate, press))
     if (!record) {
       this.log.info('perm press dropped: no live prompt for requestId', {
         event: 'perm_press_stale',
@@ -749,10 +844,18 @@ export class MessagingGateway {
     }
     this.permissionMessages.delete(requestId)
 
-    // Clear the inline keyboard before doing anything else so Telegram won't
-    // deliver further callbacks for this prompt at all.
-    if (adapter.clearButtons) {
-      await adapter.clearButtons(record.channelId, record.messageId).catch(() => {})
+    // Clear every copy of this prompt. Multi-binding sessions can render the
+    // same request in more than one chat; resolving one copy expires all.
+    for (const candidate of records ?? []) {
+      const candidateAdapter = this.adapters.get(candidate.platform)
+      if (candidateAdapter?.clearButtons) {
+        await candidateAdapter.clearButtons(
+          candidate.channelId,
+          candidate.messageId,
+          undefined,
+          action === 'allow' ? '✅ Approved' : '❌ Rejected',
+        ).catch(() => {})
+      }
     }
 
     const allowed = action === 'allow'
@@ -792,7 +895,7 @@ export class MessagingGateway {
     const token = parts[2]
     if (!token || (action !== 'accept' && action !== 'compact')) return
 
-    const pressOpts = press.threadId !== undefined ? { threadId: press.threadId } : {}
+    const pressOpts = replyOptionsForPress(press)
 
     const entry = this.planTokens.resolve(token)
     if (!entry) {
@@ -807,7 +910,12 @@ export class MessagingGateway {
     // Disable the buttons so the user can't tap twice. Non-fatal if it fails.
     const record = this.planMessages.get(token)
     if (record && adapter.clearButtons) {
-      await adapter.clearButtons(record.channelId, record.messageId).catch(() => {})
+      await adapter.clearButtons(
+        record.channelId,
+        record.messageId,
+        undefined,
+        action === 'accept' ? '✅ Approved' : '♻️ Approved; compacting',
+      ).catch(() => {})
     }
 
     this.planTokens.revoke(token)
@@ -891,9 +999,12 @@ export class MessagingGateway {
       platform: press.platform,
       channelId: press.channelId,
       ...(press.threadId !== undefined ? { threadId: press.threadId } : {}),
+      messageId: press.messageId,
       senderId: press.senderId,
       ...(press.senderName ? { senderName: press.senderName } : {}),
       ...(press.senderUsername ? { senderUsername: press.senderUsername } : {}),
+      ...(press.chatType ? { chatType: press.chatType } : {}),
+      ...(press.ephemeralReply ? { ephemeralReply: press.ephemeralReply } : {}),
     }
 
     let verdict: import('./access-control').AccessDecision
@@ -930,6 +1041,40 @@ export class MessagingGateway {
       press.buttonId.startsWith('perm:') ||
       press.buttonId.startsWith('plan:')
     ) {
+      const approval = this.resolveApprovalRecord(press)
+      if (!senderShape.chatType && approval?.chatType) senderShape.chatType = approval.chatType
+      if (approval && !this.matchesApprovalMessage(approval, press)) {
+        this.log.warn('approval callback correlation mismatch', {
+          event: 'approval_callback_correlation_mismatch',
+          platform: press.platform,
+          channelId: press.channelId,
+          messageId: press.messageId,
+          senderId: press.senderId,
+          buttonId: press.buttonId,
+        })
+        return false
+      }
+
+      if (
+        approval?.initiatorSenderId &&
+        press.senderId !== approval.initiatorSenderId &&
+        !readPlatformOwners(this.accessDeps.getWorkspaceConfig(), press.platform)
+          .some((owner) => owner.userId === press.senderId)
+      ) {
+        await executeRejection(
+          adapter,
+          senderShape,
+          'not-on-binding-allowlist',
+          {
+            recentRejectReplies: this.buttonRecentRejectReplies,
+            pendingStore: this.pendingStore,
+          },
+          this.log,
+          { bindingId: approval.bindingId },
+        )
+        return false
+      }
+
       // `perm:`/`plan:` are session-level approvals; the sender must have
       // routing access to the binding the button was attached to.
       const binding = this.bindingStore.findByChannel(
@@ -970,6 +1115,27 @@ export class MessagingGateway {
     return false
   }
 
+  private resolveApprovalRecord(
+    press: ButtonPress,
+  ): PlanMessageRecord | PermissionMessageRecord | undefined {
+    const parts = press.buttonId.split(':')
+    if (parts[0] === 'perm' && parts[2]) {
+      const records = this.permissionMessages.get(parts[2])
+      return records?.find((record) => this.matchesApprovalMessage(record, press)) ?? records?.[0]
+    }
+    if (parts[0] === 'plan') return parts[2] ? this.planMessages.get(parts[2]) : undefined
+    return undefined
+  }
+
+  private matchesApprovalMessage(
+    record: PlanMessageRecord | PermissionMessageRecord,
+    press: ButtonPress,
+  ): boolean {
+    return record.platform === press.platform &&
+      record.channelId === press.channelId &&
+      record.messageId === press.messageId
+  }
+
   /**
    * Build the minimum `IncomingMessage` shape the access evaluators read.
    * The evaluators only consult `platform`, `senderId`, `senderIsBot` —
@@ -985,6 +1151,8 @@ export class MessagingGateway {
       ...(press.senderName ? { senderName: press.senderName } : {}),
       ...(press.senderUsername ? { senderUsername: press.senderUsername } : {}),
       ...(press.senderIsBot ? { senderIsBot: true } : {}),
+      ...(press.chatType ? { chatType: press.chatType } : {}),
+      ...(press.ephemeralReply ? { ephemeralReply: press.ephemeralReply } : {}),
       text: '',
       timestamp: Date.now(),
       raw: press,

@@ -39,10 +39,19 @@ export interface MessagingPlatformRuntimeInfo {
   platform: string
   configured: boolean
   connected: boolean
-  state: 'disconnected' | 'connecting' | 'connected' | 'reconnect_required' | 'error'
+  state: 'disconnected' | 'connecting' | 'connected' | 'degraded' | 'reconnect_required' | 'error'
   identity?: string
   lastError?: string
   updatedAt: number
+}
+
+export interface LarkRegistrationStatusInfo {
+  attemptId: string
+  state: 'waiting' | 'authorizing' | 'saving' | 'connected' | 'expired' | 'cancelled' | 'error'
+  expiresAt?: number
+  identity?: string
+  domain?: 'lark' | 'feishu'
+  error?: string
 }
 
 /**
@@ -91,8 +100,8 @@ export type MessagingBindingAccessMode = 'inherit' | 'allow-list' | 'open'
 export interface MessagingConfigInfo {
   enabled: boolean
   /**
-   * Per-platform config. Telegram may carry optional `supergroup`,
-   * `accessMode`, and `owners` fields; other platforms only use `enabled`.
+   * Per-platform config. Telegram may carry `supergroup`; Telegram and Lark
+   * share `accessMode`/`owners`; Lark also carries its regional domain.
    */
   platforms: Record<
     string,
@@ -101,6 +110,7 @@ export interface MessagingConfigInfo {
         supergroup?: MessagingSupergroupInfo
         accessMode?: MessagingPlatformAccessMode
         owners?: MessagingPlatformOwnerInfo[]
+        domain?: 'lark' | 'feishu'
       }
     | undefined
   >
@@ -190,6 +200,20 @@ export interface IMessagingGatewayRegistry {
     appSecret: string
     domain: 'lark' | 'feishu'
   }): Promise<void>
+
+  /** Start one-click Lark/Feishu app creation or repair. Secrets remain server-side. */
+  beginLarkRegistration(
+    workspaceId: string,
+    input?: {
+      region?: 'lark' | 'feishu'
+      existingAppId?: string
+      repairExisting?: boolean
+    },
+  ): Promise<{ attemptId: string; verificationUrl: string; expiresAt: number }>
+
+  getLarkRegistrationStatus(workspaceId: string, attemptId: string): LarkRegistrationStatusInfo
+
+  cancelLarkRegistration(workspaceId: string, attemptId?: string): void
 
   /** Disable a platform for a workspace, preserving WhatsApp auth state unless forgotten separately. */
   disconnectPlatform(workspaceId: string, platform: string): Promise<void>

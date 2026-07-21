@@ -8,8 +8,11 @@ This file accumulates release notes for the next unreleased version. PRs that ad
 - **Employee avatars** — Add a custom rounded-rectangle avatar for each employee and see it consistently in employee settings, session badges, menus, and board columns.
 - **Unread session filter** — Narrow any conversation list to unread sessions from the existing filter menu, with the choice remembered independently for each view.
 - **Messaging-bound session discovery** — Agents can now find sessions by Telegram, Weixin, WhatsApp, or Lark binding in one read-only query, including exact channel and Telegram topic details for reliable automation handoffs.
+- **Telegram private group interactions and richer AI replies** — Group commands, button acknowledgements, access denials, and status replies now prefer participant-only ephemeral messages, while AI responses can use structured rich blocks and embedded media with automatic fallback when Telegram rejects the richer delivery path.
 
 ## Improvements
+
+- **Feishu and Lark AI-native conversations** — Feishu/Lark now use the official Channel and CardKit stack for reconnect-safe long connections, one-card streaming progress, Schema 2.0 Markdown, contextual and private group replies, richer media, secure approval callbacks, and one-click app creation or permission repair with graceful plain-message fallback.
 
 ## Bug Fixes
 

@@ -11,6 +11,7 @@ import {
   buildRejectionReply,
   evaluateBindingAccess,
   evaluatePreBindingAccess,
+  executeRejection,
 } from '../access-control'
 import {
   normalizeBindingConfig,
@@ -18,6 +19,7 @@ import {
   type IncomingMessage,
   type MessagingConfig,
   type PlatformAccessMode,
+  type PlatformAdapter,
   type PlatformOwner,
 } from '../types'
 
@@ -117,6 +119,19 @@ describe('evaluatePreBindingAccess', () => {
       workspaceConfig: buildConfig({}),
     })
     expect(verdict.allow).toBe(true)
+  })
+
+  it('applies owner-only policy to Lark open_ids', () => {
+    const verdict = evaluatePreBindingAccess({
+      msg: buildMsg({ platform: 'lark', senderId: STRANGER_ID }),
+      workspaceConfig: {
+        enabled: true,
+        platforms: {
+          lark: { enabled: true, accessMode: 'owner-only', owners: [OWNER] },
+        },
+      },
+    })
+    expect(verdict).toEqual({ allow: false, reason: 'not-owner' })
   })
 })
 
@@ -244,5 +259,43 @@ describe('buildRejectionReply', () => {
     const text = buildRejectionReply('not-on-binding-allowlist')
     expect(text).toBeTruthy()
     expect(text).toContain('allow-list')
+  })
+
+  it('falls back from a private Lark rejection to the exact source context', async () => {
+    let ephemeralCalls = 0
+    let fallbackOptions: unknown
+    const adapter = {
+      platform: 'lark',
+      capabilities: { ephemeralCards: true },
+      sendEphemeralCard: async () => {
+        ephemeralCalls += 1
+        throw new Error('recipient offline')
+      },
+      sendText: async (_channelId: string, _text: string, options: unknown) => {
+        fallbackOptions = options
+        return { platform: 'lark', channelId: 'oc_chat', messageId: 'om_reply' }
+      },
+    } as unknown as PlatformAdapter
+    const logger = {
+      info: () => {}, warn: () => {}, error: () => {}, child() { return this },
+    }
+
+    await executeRejection(
+      adapter,
+      {
+        platform: 'lark',
+        channelId: 'oc_chat',
+        messageId: 'om_source',
+        nativeThreadId: 'omt_thread',
+        senderId: STRANGER_ID,
+        chatType: 'group',
+      },
+      'not-owner',
+      { recentRejectReplies: new Map() },
+      logger,
+    )
+
+    expect(ephemeralCalls).toBe(1)
+    expect(fallbackOptions).toEqual({ replyToMessageId: 'om_source', replyInThread: true })
   })
 })

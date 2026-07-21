@@ -14,6 +14,8 @@
 
 import { existsSync, readdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
+import { randomUUID } from 'node:crypto'
+import { registerApp } from '@larksuiteoapi/node-sdk'
 import { RPC_CHANNELS } from '@craft-agent/shared/protocol'
 import type { PushTarget } from '@craft-agent/shared/protocol'
 import type { CredentialManager } from '@craft-agent/shared/credentials'
@@ -87,6 +89,8 @@ export interface MessagingGatewayRegistryOptions {
     nodeBin?: string
   }
   logger?: MessagingLogger
+  /** Test seam for the SDK device-registration flow. */
+  registerLarkApp?: typeof registerApp
 }
 
 interface WorkspaceState {
@@ -101,6 +105,31 @@ interface WorkspaceState {
   runtime: Record<PlatformType, MessagingPlatformRuntimeInfo>
 }
 
+export type LarkRegistrationState =
+  | 'waiting'
+  | 'authorizing'
+  | 'saving'
+  | 'connected'
+  | 'expired'
+  | 'cancelled'
+  | 'error'
+
+export interface LarkRegistrationStatus {
+  attemptId: string
+  state: LarkRegistrationState
+  expiresAt?: number
+  identity?: string
+  domain?: 'lark' | 'feishu'
+  error?: string
+}
+
+interface LarkRegistrationAttempt extends LarkRegistrationStatus {
+  workspaceId: string
+  controller: AbortController
+  rejectQr?: (error: unknown) => void
+  qrSettled?: boolean
+}
+
 export class MessagingGatewayRegistry implements IMessagingGatewayRegistry {
   private readonly workspaces = new Map<string, WorkspaceState>()
   /** Workspaces whose gateway lifecycle initialization completed (or was disabled). */
@@ -108,6 +137,7 @@ export class MessagingGatewayRegistry implements IMessagingGatewayRegistry {
   /** Deduplicates concurrent initialization attempts for the same workspace. */
   private readonly initializingWorkspaces = new Map<string, Promise<void>>()
   private readonly pairing = new PairingCodeManager()
+  private readonly larkRegistrationAttempts = new Map<string, LarkRegistrationAttempt>()
   private readonly log: MessagingLogger
 
   constructor(private readonly opts: MessagingGatewayRegistryOptions) {
@@ -300,6 +330,7 @@ export class MessagingGatewayRegistry implements IMessagingGatewayRegistry {
   async removeWorkspace(workspaceId: string): Promise<void> {
     const state = this.workspaces.get(workspaceId)
     if (!state) return
+    this.cancelLarkRegistration(workspaceId)
     await state.gateway.stop()
     this.pairing.clearWorkspace(workspaceId)
     this.workspaces.delete(workspaceId)
@@ -308,6 +339,8 @@ export class MessagingGatewayRegistry implements IMessagingGatewayRegistry {
   }
 
   async stopAll(): Promise<void> {
+    for (const attempt of this.larkRegistrationAttempts.values()) attempt.controller.abort()
+    this.larkRegistrationAttempts.clear()
     const stops = Array.from(this.workspaces.values()).map((s) => s.gateway.stop().catch(() => {}))
     await Promise.all(stops)
     this.workspaces.clear()
@@ -903,9 +936,14 @@ export class MessagingGatewayRegistry implements IMessagingGatewayRegistry {
     )
 
     const state = this.workspaces.get(workspaceId) ?? this.bootstrapWorkspace(workspaceId)
+    const cfg = state.configStore.get()
+    const currentLark = cfg.platforms.lark ?? { enabled: true }
     state.configStore.update({
       enabled: true,
-      platforms: { lark: { enabled: true, domain: creds.domain } },
+      platforms: {
+        ...cfg.platforms,
+        lark: { ...currentLark, enabled: true, domain: creds.domain },
+      },
     })
 
     this.setPlatformRuntime(workspaceId, state, 'lark', {
@@ -917,6 +955,152 @@ export class MessagingGatewayRegistry implements IMessagingGatewayRegistry {
 
     await this.tryConnectLark(workspaceId, state)
     await state.gateway.start()
+  }
+
+  async beginLarkRegistration(
+    workspaceId: string,
+    input: {
+      region?: 'lark' | 'feishu'
+      existingAppId?: string
+      repairExisting?: boolean
+    } = {},
+  ): Promise<{ attemptId: string; verificationUrl: string; expiresAt: number }> {
+    this.cancelLarkRegistration(workspaceId)
+
+    const region = input.region ?? 'feishu'
+    let existingAppId = input.existingAppId?.trim() || undefined
+    if (input.repairExisting && !existingAppId) {
+      const stored = await this.opts.credentialManager
+        .get({ type: 'messaging_bearer', workspaceId, name: 'lark' })
+        .catch(() => null)
+      if (!stored?.value) throw new Error('No existing Lark app is configured')
+      existingAppId = parseLarkCredentials(stored.value).appId
+    }
+
+    const attemptId = randomUUID()
+    const controller = new AbortController()
+    const attempt: LarkRegistrationAttempt = {
+      attemptId,
+      workspaceId,
+      state: 'waiting',
+      controller,
+    }
+    this.larkRegistrationAttempts.set(workspaceId, attempt)
+
+    let resolveQr!: (value: { attemptId: string; verificationUrl: string; expiresAt: number }) => void
+    let rejectQr!: (error: unknown) => void
+    const qrReady = new Promise<{ attemptId: string; verificationUrl: string; expiresAt: number }>(
+      (resolve, reject) => {
+        resolveQr = resolve
+        rejectQr = reject
+      },
+    )
+    attempt.rejectQr = rejectQr
+
+    const register = this.opts.registerLarkApp ?? registerApp
+    void register({
+      signal: controller.signal,
+      source: 'craft-agents',
+      domain: region === 'lark' ? 'accounts.larksuite.com' : 'accounts.feishu.cn',
+      larkDomain: 'accounts.larksuite.com',
+      ...(existingAppId ? { appId: existingAppId } : { createOnly: true }),
+      appPreset: {
+        name: 'Craft Agent',
+        desc: 'Craft Agents AI assistant for Feishu and Lark',
+      },
+      addons: {
+        scopes: {
+          tenant: [
+            'im:message',
+            'im:message:readonly',
+            'im:message:send_as_bot',
+            'im:resource',
+            'cardkit:card:read',
+            'cardkit:card:write',
+          ],
+        },
+        events: { items: { tenant: ['im.message.receive_v1'] } },
+        callbacks: { items: ['card.action.trigger'] },
+      },
+      onQRCodeReady: ({ url, expireIn }) => {
+        if (this.larkRegistrationAttempts.get(workspaceId)?.attemptId !== attemptId) return
+        const expiresAt = Date.now() + expireIn * 1000
+        attempt.expiresAt = expiresAt
+        attempt.qrSettled = true
+        resolveQr({ attemptId, verificationUrl: url, expiresAt })
+      },
+      onStatusChange: ({ status }) => {
+        if (this.larkRegistrationAttempts.get(workspaceId)?.attemptId !== attemptId) return
+        if (status === 'domain_switched') attempt.state = 'authorizing'
+      },
+    }).then(async (result) => {
+      if (this.larkRegistrationAttempts.get(workspaceId)?.attemptId !== attemptId) {
+        if (!attempt.qrSettled) rejectQr(new Error('Lark registration was superseded'))
+        return
+      }
+      attempt.state = 'saving'
+      const domain: LarkCredentials['domain'] =
+        result.user_info?.tenant_brand ?? region
+      await this.saveLarkCredentials(workspaceId, {
+        appId: result.client_id,
+        appSecret: result.client_secret,
+        domain,
+      })
+      const state = this.workspaces.get(workspaceId)
+      attempt.state = 'connected'
+      attempt.domain = domain
+      attempt.identity = state?.botUsernames.lark ?? domain
+    }).catch((error: unknown) => {
+      if (this.larkRegistrationAttempts.get(workspaceId)?.attemptId !== attemptId) {
+        if (!attempt.qrSettled) rejectQr(error)
+        return
+      }
+      const code = (error as { code?: unknown })?.code
+      if (attempt.state === 'expired') {
+        // Expiry intentionally aborts the SDK poller; keep the user-facing
+        // state distinct from an explicit cancellation.
+      } else if (controller.signal.aborted || code === 'abort') {
+        attempt.state = 'cancelled'
+      } else if (code === 'expired_token') {
+        attempt.state = 'expired'
+      } else {
+        attempt.state = 'error'
+        // Do not pass the SDK authorization response or QR parameters across
+        // the RPC boundary. The operator only needs a safe retry instruction.
+        attempt.error = 'Lark authorization failed. Please restart the authorization flow.'
+      }
+      if (!attempt.qrSettled) rejectQr(error)
+    })
+
+    return qrReady
+  }
+
+  getLarkRegistrationStatus(workspaceId: string, attemptId: string): LarkRegistrationStatus {
+    const attempt = this.larkRegistrationAttempts.get(workspaceId)
+    if (!attempt || attempt.attemptId !== attemptId) {
+      return { attemptId, state: 'cancelled', error: 'Registration attempt is no longer active' }
+    }
+    if (
+      attempt.expiresAt &&
+      Date.now() >= attempt.expiresAt &&
+      (attempt.state === 'waiting' || attempt.state === 'authorizing')
+    ) {
+      attempt.state = 'expired'
+      attempt.controller.abort()
+    }
+    const { state, expiresAt, identity, domain, error } = attempt
+    return { attemptId, state, expiresAt, identity, domain, error }
+  }
+
+  cancelLarkRegistration(workspaceId: string, attemptId?: string): void {
+    const attempt = this.larkRegistrationAttempts.get(workspaceId)
+    if (!attempt || (attemptId && attempt.attemptId !== attemptId)) return
+    attempt.state = 'cancelled'
+    attempt.controller.abort()
+    if (!attempt.qrSettled) {
+      attempt.qrSettled = true
+      attempt.rejectQr?.(new Error('Lark registration cancelled'))
+    }
   }
 
   async disconnectPlatform(workspaceId: string, platform: string): Promise<void> {
@@ -1447,6 +1631,45 @@ export class MessagingGatewayRegistry implements IMessagingGatewayRegistry {
           workspaceId,
           platform: 'lark',
         }),
+        onRuntimeState: (runtimeState, detail) => {
+          if (runtimeState === 'degraded') {
+            this.setPlatformRuntime(workspaceId, state, 'lark', {
+              configured: true,
+              connected: true,
+              state: 'degraded',
+              identity: state.botUsernames.lark ?? creds.domain,
+              lastError: detail ?? 'CardKit permission is missing. Re-authorize the app to restore rich cards.',
+            })
+            return
+          }
+          if (runtimeState === 'reconnecting' || runtimeState === 'connecting') {
+            this.setPlatformRuntime(workspaceId, state, 'lark', {
+              configured: true,
+              connected: false,
+              state: 'connecting',
+              identity: state.botUsernames.lark ?? creds.domain,
+              lastError: detail,
+            })
+            return
+          }
+          if (runtimeState === 'connected') {
+            this.setPlatformRuntime(workspaceId, state, 'lark', {
+              configured: true,
+              connected: true,
+              state: 'connected',
+              identity: state.botUsernames.lark ?? creds.domain,
+              lastError: undefined,
+            })
+            return
+          }
+          this.setPlatformRuntime(workspaceId, state, 'lark', {
+            configured: true,
+            connected: false,
+            state: 'error',
+            identity: state.botUsernames.lark ?? creds.domain,
+            lastError: detail ?? 'Lark connection failed.',
+          })
+        },
       })
 
       try {
@@ -1620,6 +1843,24 @@ export class MessagingGatewayRegistry implements IMessagingGatewayRegistry {
     })
   }
 
+  /** Patch Lark config without dropping domain, owners, or access policy. */
+  private patchLarkConfig(
+    workspaceId: string,
+    patch: Partial<NonNullable<MessagingConfig['platforms']['lark']>>,
+    options: { ensureMessagingEnabled?: boolean } = {},
+  ): MessagingConfig {
+    const state = this.workspaces.get(workspaceId) ?? this.bootstrapWorkspace(workspaceId)
+    const cfg = state.configStore.get()
+    const larkConfig = cfg.platforms.lark ?? { enabled: true }
+    return state.configStore.update({
+      enabled: options.ensureMessagingEnabled ? true : cfg.enabled,
+      platforms: {
+        ...cfg.platforms,
+        lark: { ...larkConfig, ...patch },
+      },
+    })
+  }
+
   /**
    * Append `candidate` to the platform's owners list iff the list is
    * currently empty. Returns the (possibly unchanged) list. Used by the
@@ -1630,20 +1871,30 @@ export class MessagingGatewayRegistry implements IMessagingGatewayRegistry {
     platform: PlatformType,
     candidate: PlatformOwner,
   ): Promise<PlatformOwner[]> {
-    if (platform !== 'telegram') return []
+    if (platform !== 'telegram' && platform !== 'lark') return []
     const state = this.workspaces.get(workspaceId) ?? this.bootstrapWorkspace(workspaceId)
     const cfg = state.configStore.get()
-    const currentOwners = cfg.platforms.telegram?.owners ?? []
+    const platformConfig = platform === 'telegram'
+      ? cfg.platforms.telegram
+      : cfg.platforms.lark
+    const currentOwners = platformConfig?.owners ?? []
     if (currentOwners.length > 0) return currentOwners
 
     const nextOwners: PlatformOwner[] = [candidate]
     // Workspaces that haven't picked an explicit access mode default
     // to `owner-only` once an owner exists. Existing 'open' workspaces
     // are respected (the operator chose to stay public).
-    this.patchTelegramConfig(workspaceId, {
-      accessMode: cfg.platforms.telegram?.accessMode ?? 'owner-only',
-      owners: nextOwners,
-    })
+    if (platform === 'telegram') {
+      this.patchTelegramConfig(workspaceId, {
+        accessMode: cfg.platforms.telegram?.accessMode ?? 'owner-only',
+        owners: nextOwners,
+      })
+    } else {
+      this.patchLarkConfig(workspaceId, {
+        accessMode: cfg.platforms.lark?.accessMode ?? 'owner-only',
+        owners: nextOwners,
+      })
+    }
     this.log.info('seeded first owner', {
       event: 'first_owner_seeded',
       workspaceId,
@@ -1654,9 +1905,12 @@ export class MessagingGatewayRegistry implements IMessagingGatewayRegistry {
   }
 
   getPlatformOwners(workspaceId: string, platform: PlatformType): PlatformOwner[] {
-    if (platform !== 'telegram') return []
+    if (platform !== 'telegram' && platform !== 'lark') return []
     const state = this.workspaces.get(workspaceId) ?? this.bootstrapWorkspace(workspaceId)
-    return state.configStore.get().platforms.telegram?.owners ?? []
+    const cfg = state.configStore.get()
+    return platform === 'telegram'
+      ? (cfg.platforms.telegram?.owners ?? [])
+      : (cfg.platforms.lark?.owners ?? [])
   }
 
   setPlatformOwners(
@@ -1664,19 +1918,29 @@ export class MessagingGatewayRegistry implements IMessagingGatewayRegistry {
     platform: PlatformType,
     owners: PlatformOwner[],
   ): PlatformOwner[] {
-    if (platform !== 'telegram') {
-      throw new Error('Owner lists are only supported on Telegram in this build.')
+    if (platform !== 'telegram' && platform !== 'lark') {
+      throw new Error('Owner lists are only supported on Telegram and Lark.')
     }
     const state = this.workspaces.get(workspaceId) ?? this.bootstrapWorkspace(workspaceId)
-    this.patchTelegramConfig(workspaceId, { owners: dedupeOwners(owners) })
+    if (platform === 'telegram') {
+      this.patchTelegramConfig(workspaceId, { owners: dedupeOwners(owners) })
+    } else {
+      this.patchLarkConfig(workspaceId, { owners: dedupeOwners(owners) })
+    }
     this.emitBindingChanged(workspaceId)
-    return state.configStore.get().platforms.telegram?.owners ?? []
+    const cfg = state.configStore.get()
+    return platform === 'telegram'
+      ? (cfg.platforms.telegram?.owners ?? [])
+      : (cfg.platforms.lark?.owners ?? [])
   }
 
   getPlatformAccessMode(workspaceId: string, platform: PlatformType): PlatformAccessMode {
-    if (platform !== 'telegram') return 'open'
+    if (platform !== 'telegram' && platform !== 'lark') return 'open'
     const state = this.workspaces.get(workspaceId) ?? this.bootstrapWorkspace(workspaceId)
-    return state.configStore.get().platforms.telegram?.accessMode ?? 'open'
+    const cfg = state.configStore.get()
+    return platform === 'telegram'
+      ? (cfg.platforms.telegram?.accessMode ?? 'open')
+      : (cfg.platforms.lark?.accessMode ?? 'open')
   }
 
   setPlatformAccessMode(
@@ -1684,10 +1948,14 @@ export class MessagingGatewayRegistry implements IMessagingGatewayRegistry {
     platform: PlatformType,
     mode: PlatformAccessMode,
   ): void {
-    if (platform !== 'telegram') {
-      throw new Error('Access mode is only supported on Telegram in this build.')
+    if (platform !== 'telegram' && platform !== 'lark') {
+      throw new Error('Access mode is only supported on Telegram and Lark.')
     }
-    this.patchTelegramConfig(workspaceId, { accessMode: mode })
+    if (platform === 'telegram') {
+      this.patchTelegramConfig(workspaceId, { accessMode: mode })
+    } else {
+      this.patchLarkConfig(workspaceId, { accessMode: mode })
+    }
 
     // Lock-down semantics: switching the workspace to `owner-only` must
     // also close any binding that's still in `open` mode, otherwise the
@@ -1695,23 +1963,22 @@ export class MessagingGatewayRegistry implements IMessagingGatewayRegistry {
     // bindings remain public — exactly the false-sense-of-security UX
     // the feature is supposed to prevent.
     if (mode === 'owner-only') {
-      this.migrateOpenBindingsToInherit(workspaceId)
+      this.migrateOpenBindingsToInherit(workspaceId, platform)
     }
 
     this.emitBindingChanged(workspaceId)
   }
 
   /**
-   * Walk all Telegram bindings and flip any with `accessMode === 'open'`
+   * Walk all bindings for the selected platform and flip any `open` binding
    * to `inherit` (the safe default). Used when locking down the workspace.
-   * Telegram-only — other platforms don't yet have per-binding access.
    */
-  private migrateOpenBindingsToInherit(workspaceId: string): void {
+  private migrateOpenBindingsToInherit(workspaceId: string, platform: PlatformType): void {
     const state = this.workspaces.get(workspaceId)
     if (!state) return
     const store = state.gateway.getBindingStore()
     for (const b of store.getAll()) {
-      if (b.platform !== 'telegram') continue
+      if (b.platform !== platform) continue
       if (b.config.accessMode !== 'open') continue
       store.updateBindingConfig(b.id, { accessMode: 'inherit', allowedSenderIds: [] })
     }

@@ -10,6 +10,7 @@
  */
 
 import type { ISessionManager } from '@craft-agent/server-core/handlers'
+import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import { basename, extname } from 'node:path'
 import { readFileAttachment } from '@craft-agent/shared/utils'
@@ -38,6 +39,21 @@ const NOOP_LOGGER: MessagingLogger = {
 }
 
 const MAX_ROUTED_ATTACHMENT_BYTES = 20 * 1024 * 1024
+const MESSAGING_ORIGIN_TTL_MS = 30 * 60 * 1000
+const MAX_MESSAGING_ORIGINS = 512
+
+export interface MessagingOriginContext {
+  id: string
+  bindingId: string
+  platform: IncomingMessage['platform']
+  channelId: string
+  messageId: string
+  senderId: string
+  chatType?: IncomingMessage['chatType']
+  rootMessageId?: string
+  nativeThreadId?: string
+  createdAt: number
+}
 
 const MIME_EXT_FALLBACK: Record<string, string> = {
   'image/jpeg': '.jpg',
@@ -176,6 +192,7 @@ function buildImageAttachmentFromLocalPath(a: IncomingAttachment): FileAttachmen
 export class Router {
   private readonly deps: RouterDeps
   private readonly recentRejectReplies = new Map<string, number>()
+  private readonly messagingOrigins = new Map<string, MessagingOriginContext>()
 
   constructor(
     private readonly sessionManager: ISessionManager,
@@ -209,6 +226,19 @@ export class Router {
 
       try {
         const fileAttachments = this.resolveAttachments(msg)
+        const messagingOriginId = randomUUID()
+        this.rememberMessagingOrigin({
+          id: messagingOriginId,
+          bindingId: binding.id,
+          platform: msg.platform,
+          channelId: msg.channelId,
+          messageId: msg.messageId,
+          senderId: msg.senderId,
+          chatType: msg.chatType,
+          rootMessageId: msg.rootMessageId,
+          nativeThreadId: msg.nativeThreadId,
+          createdAt: Date.now(),
+        })
         this.log.info('routing inbound chat message to session', {
           event: 'message_routed',
           platform: msg.platform,
@@ -223,7 +253,7 @@ export class Router {
           msg.text,
           fileAttachments,
           undefined, // storedAttachments (handled by session layer)
-          undefined, // SendMessageOptions
+          { messagingOriginId },
         )
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : 'Unknown error'
@@ -239,7 +269,12 @@ export class Router {
         await adapter.sendText(
           msg.channelId,
           `Failed to send message to session: ${errorMsg}`,
-          { threadId: msg.threadId },
+          {
+            ...(msg.threadId !== undefined ? { threadId: msg.threadId } : {}),
+            ...(msg.platform === 'lark' ? { replyToMessageId: msg.messageId } : {}),
+            ...(msg.platform === 'lark' && msg.nativeThreadId ? { replyInThread: true } : {}),
+            ...(msg.ephemeralReply ? { ephemeral: msg.ephemeralReply } : {}),
+          },
         )
       }
       return
@@ -253,6 +288,36 @@ export class Router {
       messageId: msg.messageId,
     })
     await this.commands.handle(adapter, msg)
+  }
+
+  getMessagingOrigin(id: string | undefined): MessagingOriginContext | undefined {
+    if (!id) return undefined
+    const origin = this.messagingOrigins.get(id)
+    if (!origin) return undefined
+    if (Date.now() - origin.createdAt > MESSAGING_ORIGIN_TTL_MS) {
+      this.messagingOrigins.delete(id)
+      return undefined
+    }
+    return origin
+  }
+
+  releaseMessagingOrigin(id: string | undefined): void {
+    if (id) this.messagingOrigins.delete(id)
+  }
+
+  private rememberMessagingOrigin(origin: MessagingOriginContext): void {
+    const now = Date.now()
+    for (const [id, existing] of this.messagingOrigins) {
+      if (now - existing.createdAt > MESSAGING_ORIGIN_TTL_MS) {
+        this.messagingOrigins.delete(id)
+      }
+    }
+    while (this.messagingOrigins.size >= MAX_MESSAGING_ORIGINS) {
+      const oldest = this.messagingOrigins.keys().next().value
+      if (typeof oldest !== 'string') break
+      this.messagingOrigins.delete(oldest)
+    }
+    this.messagingOrigins.set(origin.id, origin)
   }
 
   /**

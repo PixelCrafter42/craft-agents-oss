@@ -15,13 +15,11 @@ import {
 import type { InlineButton } from '../../../types'
 
 describe('buildLarkCard', () => {
-  const messageId = 'msg-abc-123'
-
   it('wraps elements under `body` (schema 2.0 envelope)', () => {
     // Regression guard: top-level `elements` is rejected with code 200621
     // ("unknown property, property: elements") on Lark schema 2.0 — the
     // payload must nest elements under `body`. This test locks the wrapper.
-    const card = buildLarkCard('hi', [{ id: 'a', label: 'A' }], { messageId })
+    const card = buildLarkCard('hi', [{ id: 'a', label: 'A' }])
     expect(card.body).toBeTruthy()
     expect(Array.isArray(card.body.elements)).toBe(true)
     expect((card as unknown as { elements?: unknown }).elements).toBeUndefined()
@@ -32,11 +30,11 @@ describe('buildLarkCard', () => {
       { id: 'accept', label: 'Accept' },
       { id: 'reject', label: 'Reject' },
     ]
-    const card = buildLarkCard('Plan ready. Approve?', buttons, { messageId })
+    const card = buildLarkCard('Plan ready. Approve?', buttons)
     expect(card.schema).toBe('2.0')
     // 1 text element + N button elements (no `action` wrapper in 2.0)
     expect(card.body.elements.length).toBe(3)
-    expect(card.body.elements[0]!.tag).toBe('div')
+    expect(card.body.elements[0]!.tag).toBe('markdown')
     expect(card.body.elements[1]!.tag).toBe('button')
     expect(card.body.elements[2]!.tag).toBe('button')
 
@@ -46,7 +44,7 @@ describe('buildLarkCard', () => {
       expect(first.type).toBe('primary')
       expect(first.behaviors[0]!.type).toBe('callback')
       expect(first.behaviors[0]!.value.buttonId).toBe('accept')
-      expect(first.behaviors[0]!.value.messageId).toBe(messageId)
+      expect(first.behaviors[0]!.value).not.toHaveProperty('messageId')
     }
     const second = card.body.elements[2]!
     if (second.tag === 'button') {
@@ -58,7 +56,7 @@ describe('buildLarkCard', () => {
     // Lark rejects `tag: 'action'` under schema 2.0 with code 200861. The
     // type system enforces this — `body.elements` only allows `div` and
     // `button` tags, never `action`.
-    const card = buildLarkCard('hi', [{ id: 'a', label: 'A' }], { messageId })
+    const card = buildLarkCard('hi', [{ id: 'a', label: 'A' }])
     for (const el of card.body.elements) {
       expect(el.tag).not.toBe('action')
     }
@@ -67,7 +65,7 @@ describe('buildLarkCard', () => {
   it('truncates labels longer than LARK_MAX_LABEL_LENGTH', () => {
     const longLabel = 'a'.repeat(LARK_MAX_LABEL_LENGTH + 5)
     const buttons: InlineButton[] = [{ id: 'x', label: longLabel }]
-    const card = buildLarkCard('hi', buttons, { messageId })
+    const card = buildLarkCard('hi', buttons)
     const btn = card.body.elements[1]!
     if (btn.tag === 'button') {
       expect(btn.text.content.length).toBe(LARK_MAX_LABEL_LENGTH)
@@ -80,14 +78,14 @@ describe('buildLarkCard', () => {
       id: `b${i}`,
       label: `Btn ${i}`,
     }))
-    const card = buildLarkCard('hi', buttons, { messageId })
+    const card = buildLarkCard('hi', buttons)
     // 1 text element + LARK_MAX_BUTTONS button elements
     expect(card.body.elements.length).toBe(1 + LARK_MAX_BUTTONS)
   })
 
   it('forwards button.data into the behaviors[].value payload when set', () => {
     const buttons: InlineButton[] = [{ id: 'x', label: 'X', data: 'extra-payload' }]
-    const card = buildLarkCard('hi', buttons, { messageId })
+    const card = buildLarkCard('hi', buttons)
     const btn = card.body.elements[1]!
     if (btn.tag === 'button') {
       expect(btn.behaviors[0]!.value.data).toBe('extra-payload')
@@ -99,7 +97,7 @@ describe('buildClearedCard', () => {
   it('drops the action row, keeps only the text body, still under body', () => {
     const card = buildClearedCard('Done.')
     expect(card.body.elements.length).toBe(1)
-    expect(card.body.elements[0]!.tag).toBe('div')
+    expect(card.body.elements[0]!.tag).toBe('markdown')
     expect((card as unknown as { elements?: unknown }).elements).toBeUndefined()
   })
 })

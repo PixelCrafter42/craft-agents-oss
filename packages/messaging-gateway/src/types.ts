@@ -48,6 +48,7 @@ export type MessagingPlatformRuntimeState =
   | 'disconnected'
   | 'connecting'
   | 'connected'
+  | 'degraded'
   | 'reconnect_required'
   | 'error'
 
@@ -68,6 +69,8 @@ export interface MessagingPlatformRuntimeInfo {
 export interface AdapterCapabilities {
   messageEditing: boolean
   inlineButtons: boolean
+  /** Platform can address a short-lived reply to one participant in a group. */
+  ephemeralMessages?: boolean
   /**
    * Platform supports ephemeral generated-message drafts. Telegram exposes
    * this as sendMessageDraft/sendRichMessageDraft; other adapters omit it.
@@ -77,6 +80,14 @@ export interface AdapterCapabilities {
   richMessages?: boolean
   /** Platform supports ephemeral drafts backed by rich messages. */
   richMessageDrafts?: boolean
+  /** Platform has a native streaming-card/message lifecycle. */
+  nativeStreaming?: boolean
+  /** Platform can reply to an exact source message or existing thread. */
+  contextualReplies?: boolean
+  /** Platform supports messages/cards visible only to one group member. */
+  ephemeralCards?: boolean
+  /** Platform supports image, file, audio, video, and sticker transport. */
+  richMedia?: boolean
   maxButtons: number
   maxMessageLength: number
   markdown: 'v2' | 'whatsapp' | 'lark-post'
@@ -95,6 +106,12 @@ export interface IncomingMessage {
    * DMs, the General topic, and non-forum chats. Only Telegram populates this.
    */
   threadId?: number
+  /** Generic conversation kind used by contextual and private replies. */
+  chatType?: 'direct' | 'group'
+  /** Root message id when the platform models a threaded conversation. */
+  rootMessageId?: string
+  /** Platform-native thread id. Never participates in Telegram binding keys. */
+  nativeThreadId?: string
   messageId: string
   senderId: string
   senderName?: string
@@ -114,6 +131,12 @@ export interface IncomingMessage {
   text: string
   attachments?: IncomingAttachment[]
   replyToMessageId?: string
+  /**
+   * Short-lived, participant-scoped reply context supplied by the adapter.
+   * Telegram populates this for group/supergroup messages. The gateway still
+   * applies its normal access checks before using it.
+   */
+  ephemeralReply?: EphemeralReplyTarget
   timestamp: number
   raw: unknown
 }
@@ -138,6 +161,24 @@ export interface SentMessage {
   platform: PlatformType
   channelId: string
   messageId: string
+  /** Present when the platform returned a participant-scoped message id. */
+  ephemeral?: EphemeralMessageReference
+}
+
+/** Generic participant-scoped reply context; native field names stay in adapters. */
+export interface EphemeralReplyTarget {
+  recipientId: string
+  /** Identifier of the interaction that triggered the reply, if any. */
+  interactionId?: string
+  /** Identifier of an incoming ephemeral message being replied to, if any. */
+  sourceMessageId?: string
+  /** Local deadline for interaction/reply-window based delivery. */
+  expiresAt?: number
+}
+
+export interface EphemeralMessageReference {
+  recipientId: string
+  messageId: string
 }
 
 export interface InlineButton {
@@ -160,6 +201,8 @@ export interface CommandMenuOptions {
    * topics inside a supergroup share the same chat-scoped menu.
    */
   channelId?: string
+  /** Mark commands as participant-scoped where the platform supports it. */
+  ephemeral?: boolean
 }
 
 export interface ButtonPress {
@@ -175,6 +218,12 @@ export interface ButtonPress {
   senderUsername?: string
   /** True when the platform marks the sender as a bot. Access control silent-drops these. */
   senderIsBot?: boolean
+  /** Direct/group context when the callback payload exposes it. */
+  chatType?: 'direct' | 'group'
+  /** Participant-scoped context for replying to this interaction. */
+  ephemeralReply?: EphemeralReplyTarget
+  /** Participant-scoped id of the message that carried the button. */
+  sourceEphemeral?: EphemeralMessageReference
   buttonId: string
   data?: string
 }
@@ -186,6 +235,19 @@ export interface ButtonPress {
 export interface SendOptions {
   /** Telegram forum topic to post into. Undefined → DM or General topic. */
   threadId?: number
+  /** Reply to this platform-native message id. */
+  replyToMessageId?: string
+  /** Keep the reply inside the source message's existing thread. */
+  replyInThread?: boolean
+  /** Prefer a participant-scoped group reply, falling back to normal delivery. */
+  ephemeral?: EphemeralReplyTarget
+}
+
+export interface NativeStreamHandle {
+  /** Adapter-owned opaque id. */
+  id: string
+  /** Platform message id once the stream card/message exists. */
+  messageId?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -204,6 +266,11 @@ export interface PlatformConfig {
   acceptedSupergroupChatId?: string
   /** Optional logger for adapter-level diagnostics. */
   logger?: MessagingLogger
+  /** Optional adapter lifecycle/capability notification for registry UI state. */
+  onRuntimeState?: (
+    state: 'connecting' | 'connected' | 'degraded' | 'reconnecting' | 'error',
+    detail?: string,
+  ) => void
   [key: string]: unknown
 }
 
@@ -227,6 +294,20 @@ export interface PlatformAdapter {
   sendMessageDraft?(channelId: string, draftId: number, text: string, opts?: SendOptions): Promise<void>
   sendRichMessage?(channelId: string, markdown: string, opts?: SendOptions): Promise<SentMessage>
   sendRichMessageDraft?(channelId: string, draftId: number, markdown: string, opts?: SendOptions): Promise<void>
+  beginNativeStream?(channelId: string, initialMarkdown: string, opts?: SendOptions): Promise<NativeStreamHandle>
+  updateNativeStream?(handle: NativeStreamHandle, markdown: string): Promise<void>
+  finishNativeStream?(handle: NativeStreamHandle, finalMarkdown: string): Promise<SentMessage>
+  failNativeStream?(handle: NativeStreamHandle, fallbackMarkdown: string): Promise<void>
+  sendEphemeralCard?(
+    channelId: string,
+    recipientId: string,
+    markdown: string,
+    buttons?: InlineButton[],
+  ): Promise<SentMessage>
+  /** Send an attachment as media inside a rich message when supported. */
+  sendRichMedia?(channelId: string, file: Buffer, filename: string, caption?: string, opts?: SendOptions): Promise<SentMessage>
+  editEphemeralMessage?(channelId: string, message: EphemeralMessageReference, text: string): Promise<void>
+  deleteEphemeralMessage?(channelId: string, message: EphemeralMessageReference): Promise<void>
   setCommandMenu?(commands: PlatformCommand[], opts?: CommandMenuOptions): Promise<void>
 
   /**
@@ -235,7 +316,12 @@ export interface PlatformAdapter {
    * Errors are the caller's concern — most implementations should swallow
    * "message can't be edited" since it's non-fatal.
    */
-  clearButtons?(channelId: string, messageId: string, opts?: SendOptions): Promise<void>
+  clearButtons?(
+    channelId: string,
+    messageId: string,
+    opts?: SendOptions,
+    resolution?: string,
+  ): Promise<void>
 
   /**
    * Update the set of chats the adapter accepts inbound messages from at
@@ -547,6 +633,10 @@ export interface MessagingConfig {
        *  - `feishu` → open.feishu.cn (China)
        */
       domain?: 'lark' | 'feishu'
+      /** Workspace-level access policy, shared with Telegram semantics. */
+      accessMode?: PlatformAccessMode
+      /** Lark/Feishu open_ids allowed to act as workspace owners. */
+      owners?: PlatformOwner[]
     }
   }
 }

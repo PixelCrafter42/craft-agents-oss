@@ -22,6 +22,7 @@ import type {
   IncomingMessage,
   MessagingConfig,
   PlatformAdapter,
+  SendOptions,
 } from '../types'
 
 let storageDir: string
@@ -38,12 +39,14 @@ interface FakeAdapter extends PlatformAdapter {
   fireButton: (press: ButtonPress) => Promise<void>
   fireMessage: (msg: IncomingMessage) => Promise<void>
   sent: string[]
+  sentOptions: Array<SendOptions | undefined>
 }
 
 function makeFakeAdapter(): FakeAdapter {
   let buttonHandler: ((press: ButtonPress) => Promise<void>) | null = null
   let messageHandler: ((msg: IncomingMessage) => Promise<void>) | null = null
   const sent: string[] = []
+  const sentOptions: Array<SendOptions | undefined> = []
   const adapter = {
     platform: 'telegram' as const,
     capabilities: {
@@ -63,16 +66,22 @@ function makeFakeAdapter(): FakeAdapter {
     onButtonPress(h: (press: ButtonPress) => Promise<void>) {
       buttonHandler = h
     },
-    sendText: mock(async (_channelId: string, text: string) => {
+    sendText: mock(async (_channelId: string, text: string, opts?: SendOptions) => {
       sent.push(text)
+      sentOptions.push(opts)
       return { platform: 'telegram', channelId: _channelId, messageId: String(sent.length) }
     }),
     editMessage: async () => {},
-    sendButtons: async () => ({ platform: 'telegram' as const, channelId: '', messageId: '0' }),
+    sendButtons: async (channelId: string) => ({
+      platform: 'telegram' as const,
+      channelId,
+      messageId: '1',
+    }),
     sendTyping: async () => {},
     sendFile: async () => ({ platform: 'telegram' as const, channelId: '', messageId: '0' }),
   } as unknown as FakeAdapter
   ;(adapter as { sent: string[] }).sent = sent
+  ;(adapter as { sentOptions: Array<SendOptions | undefined> }).sentOptions = sentOptions
   ;(adapter as { fireButton: (press: ButtonPress) => Promise<void> }).fireButton = (press) =>
     buttonHandler!(press)
   ;(adapter as { fireMessage: (msg: IncomingMessage) => Promise<void> }).fireMessage = (msg) =>
@@ -83,7 +92,7 @@ function makeFakeAdapter(): FakeAdapter {
 function makeStubSessionManager(): ISessionManager {
   return {
     getSession: async (id: string) => ({ id, name: id } as never),
-    sendMessage: async () => {},
+    sendMessage: mock(async () => {}),
     cancelProcessing: async () => {},
     respondToPermission: mock(() => true),
     acceptPlan: mock(async () => {}),
@@ -133,7 +142,12 @@ function buildPress(overrides: Partial<ButtonPress> = {}): ButtonPress {
  */
 async function registerPermissionPrompt(
   gateway: MessagingGateway,
-  args: { sessionId: string; requestId: string; channelId?: string },
+  args: {
+    sessionId: string
+    requestId: string
+    channelId?: string
+    messagingOriginId?: string
+  },
 ): Promise<void> {
   const event: SessionEvent = {
     type: 'permission_request',
@@ -143,6 +157,7 @@ async function registerPermissionPrompt(
       toolName: 'bash',
       description: 'run tests',
     },
+    ...(args.messagingOriginId ? { messagingOriginId: args.messagingOriginId } : {}),
   }
   gateway.onSessionEvent('session:event', { to: 'workspace', workspaceId: 'ws-test' }, event)
   // renderer.handle is dispatched as fire-and-forget; let the
@@ -153,6 +168,30 @@ async function registerPermissionPrompt(
 }
 
 describe('MessagingGateway button-press access gate', () => {
+  it('carries callback interaction and topic context into the ephemeral response', async () => {
+    const h = await makeHarness({
+      workspaceConfig: {
+        enabled: true,
+        platforms: { telegram: { enabled: true, accessMode: 'open' } },
+      },
+    })
+    const ephemeralReply = {
+      recipientId: 'sender-A',
+      interactionId: 'callback-query-1',
+      expiresAt: Date.now() + 15_000,
+    }
+
+    await h.adapter.fireButton(buildPress({
+      buttonId: 'bind:sess-A',
+      threadId: 44,
+      ephemeralReply,
+    }))
+
+    expect(h.adapter.sent.some((text) => text.includes('Bound to'))).toBe(true)
+    expect(h.adapter.sentOptions.at(-1)).toEqual({ threadId: 44, ephemeral: ephemeralReply })
+    expect(h.gateway.getBindingStore().findByChannel('telegram', 'chat-1', 44)?.sessionId).toBe('sess-A')
+  })
+
   it('rejects bind: button press from non-owner on locked-down workspace', async () => {
     const h = await makeHarness({
       workspaceConfig: {
@@ -254,6 +293,90 @@ describe('MessagingGateway button-press access gate', () => {
       }),
     )
     expect(h.sessionManager.respondToPermission).toHaveBeenCalled()
+  })
+
+  it('allows only the originating sender or an owner to act on a contextual approval', async () => {
+    const h = await makeHarness({
+      workspaceConfig: {
+        enabled: true,
+        platforms: {
+          telegram: {
+            enabled: true,
+            accessMode: 'open',
+            owners: [{ userId: 'owner-1', addedAt: 0 }],
+          },
+        },
+      },
+    })
+    h.gateway.getBindingStore().bind(
+      'ws-test',
+      'sess-A',
+      'telegram',
+      'chat-1',
+      undefined,
+      { accessMode: 'open', approvalChannel: 'chat' },
+    )
+
+    await h.adapter.fireMessage({
+      platform: 'telegram',
+      channelId: 'chat-1',
+      messageId: 'source-1',
+      senderId: 'initiator',
+      text: 'do something sensitive',
+      timestamp: Date.now(),
+      raw: {},
+    })
+    const sendCall = (h.sessionManager.sendMessage as unknown as ReturnType<typeof mock>).mock.calls[0]
+    const messagingOriginId = (sendCall?.[4] as { messagingOriginId?: string })?.messagingOriginId
+    expect(messagingOriginId).toBeString()
+
+    await registerPermissionPrompt(h.gateway, {
+      sessionId: 'sess-A',
+      requestId: 'request-origin',
+      messagingOriginId,
+    })
+
+    await h.adapter.fireButton(buildPress({
+      buttonId: 'perm:allow:request-origin',
+      senderId: 'bystander',
+    }))
+    expect(h.sessionManager.respondToPermission).not.toHaveBeenCalled()
+
+    await h.adapter.fireButton(buildPress({
+      buttonId: 'perm:allow:request-origin',
+      senderId: 'owner-1',
+    }))
+    expect(h.sessionManager.respondToPermission).toHaveBeenCalledTimes(1)
+  })
+
+  it('rejects a forged callback message id without consuming the live prompt', async () => {
+    const h = await makeHarness({
+      workspaceConfig: {
+        enabled: true,
+        platforms: { telegram: { enabled: true, accessMode: 'open' } },
+      },
+    })
+    h.gateway.getBindingStore().bind(
+      'ws-test',
+      'sess-A',
+      'telegram',
+      'chat-1',
+      undefined,
+      { accessMode: 'open', approvalChannel: 'chat' },
+    )
+    await registerPermissionPrompt(h.gateway, {
+      sessionId: 'sess-A',
+      requestId: 'request-forge',
+    })
+
+    await h.adapter.fireButton(buildPress({
+      buttonId: 'perm:allow:request-forge',
+      messageId: 'forged-message',
+    }))
+    expect(h.sessionManager.respondToPermission).not.toHaveBeenCalled()
+
+    await h.adapter.fireButton(buildPress({ buttonId: 'perm:allow:request-forge' }))
+    expect(h.sessionManager.respondToPermission).toHaveBeenCalledTimes(1)
   })
 
   it('silent-drops bot senders on button press (no reply, no side-effect)', async () => {

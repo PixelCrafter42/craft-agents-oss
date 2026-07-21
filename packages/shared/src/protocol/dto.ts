@@ -376,7 +376,7 @@ export interface PermissionModeState {
 // ---------------------------------------------------------------------------
 
 // turnId: Correlation ID from the API's message.id, groups all events in an assistant turn
-export type SessionEvent =
+export type SessionEvent = (
   | { type: 'text_delta'; sessionId: string; delta: string; turnId?: string }
   | { type: 'text_complete'; sessionId: string; text: string; isIntermediate?: boolean; turnId?: string; parentToolUseId?: string; timestamp?: number; messageId?: string }
   | { type: 'tool_start'; sessionId: string; toolName: string; toolUseId: string; toolInput: Record<string, unknown>; toolIntent?: string; toolDisplayName?: string; toolDisplayMeta?: ToolDisplayMeta; turnId?: string; parentToolUseId?: string; timestamp?: number }
@@ -425,6 +425,15 @@ export type SessionEvent =
   | { type: 'usage_update'; sessionId: string; tokenUsage: { inputTokens: number; contextWindow?: number } }
   | { type: 'message_annotations_updated'; sessionId: string; messageId: string; annotations: AnnotationV1[] }
   | { type: 'working_directory_error'; sessionId: string; error: string }
+  | { type: 'turn_complete'; sessionId: string; reason: 'complete' | 'interrupted' | 'error' | 'timeout' }
+) & {
+  /**
+   * Runtime-only correlation token for a turn initiated by an external
+   * messaging connector. The token is opaque: native chat/message/user ids
+   * stay inside the messaging gateway and are never persisted in transcripts.
+   */
+  messagingOriginId?: string
+}
 
 export interface SendMessageOptions {
   skillSlugs?: string[]
@@ -437,6 +446,12 @@ export interface SendMessageOptions {
    * surfacing) that should wake the agent without looking user-authored.
    */
   hidden?: boolean
+  /**
+   * Opaque runtime-only correlation token supplied by the messaging gateway.
+   * Preserved through queues and retries, but never copied onto persisted
+   * Message records or the usage ledger.
+   */
+  messagingOriginId?: string
 }
 
 // ---------------------------------------------------------------------------

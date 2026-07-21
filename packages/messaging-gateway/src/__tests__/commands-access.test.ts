@@ -20,6 +20,7 @@ import type {
   MessagingConfig,
   PlatformAdapter,
   PlatformOwner,
+  SendOptions,
   SentMessage,
 } from '../types'
 
@@ -59,8 +60,9 @@ function makeSessionManager(sessions: Session[] = []): ISessionManager {
   } as unknown as ISessionManager
 }
 
-function makeAdapter(): PlatformAdapter & { sent: string[] } {
+function makeAdapter(): PlatformAdapter & { sent: string[]; sentOptions: Array<SendOptions | undefined> } {
   const sent: string[] = []
+  const sentOptions: Array<SendOptions | undefined> = []
   return {
     platform: 'telegram',
     capabilities: {
@@ -72,6 +74,7 @@ function makeAdapter(): PlatformAdapter & { sent: string[] } {
       webhookSupport: false,
     },
     sent,
+    sentOptions,
     async initialize() {},
     async destroy() {},
     isConnected() {
@@ -79,8 +82,9 @@ function makeAdapter(): PlatformAdapter & { sent: string[] } {
     },
     onMessage() {},
     onButtonPress() {},
-    async sendText(_channelId: string, text: string): Promise<SentMessage> {
+    async sendText(_channelId: string, text: string, opts?: SendOptions): Promise<SentMessage> {
       sent.push(text)
+      sentOptions.push(opts)
       return { platform: 'telegram', channelId: 'chan-1', messageId: String(sent.length) }
     },
     async editMessage() {},
@@ -193,6 +197,26 @@ function buildCommands(args: {
 // ---------------------------------------------------------------------------
 
 describe('Commands pre-binding gate', () => {
+  it('carries ephemeral command reply context and forum topic end to end', async () => {
+    const { commands } = buildCommands({ ownerOnly: false })
+    const adapter = makeAdapter()
+    const ephemeralReply = {
+      recipientId: 'user-1',
+      sourceMessageId: '77',
+      expiresAt: Date.now() + 15_000,
+    }
+
+    await commands.handleCommand(adapter, buildMsg({
+      text: '/help',
+      senderId: 'user-1',
+      threadId: 23,
+      ephemeralReply,
+    }))
+
+    expect(adapter.sent[0]).toContain('Commands:')
+    expect(adapter.sentOptions[0]).toEqual({ threadId: 23, ephemeral: ephemeralReply })
+  })
+
   it('open workspace lets a stranger run /new', async () => {
     const { commands } = buildCommands({ ownerOnly: false })
     const adapter = makeAdapter()
@@ -211,6 +235,27 @@ describe('Commands pre-binding gate', () => {
     await commands.handleCommand(adapter, buildMsg({ text: '/new', senderId: 'stranger' }))
     expect(adapter.sent.length).toBe(1)
     expect(adapter.sent[0]).toContain('private')
+  })
+
+  it('keeps ACL authoritative while making the rejection ephemeral', async () => {
+    const { commands, store } = buildCommands({
+      ownerOnly: true,
+      owners: [{ userId: 'owner-1', addedAt: 0 }],
+    })
+    const adapter = makeAdapter()
+    const ephemeralReply = { recipientId: 'stranger' }
+
+    await commands.handleCommand(adapter, buildMsg({
+      text: '/new',
+      senderId: 'stranger',
+      threadId: 24,
+      ephemeralReply,
+    }))
+
+    expect(adapter.sent).toHaveLength(1)
+    expect(adapter.sent[0]).toContain('private')
+    expect(adapter.sentOptions[0]).toEqual({ threadId: 24, ephemeral: ephemeralReply })
+    expect(store.getAll()).toHaveLength(0)
   })
 
   it('owner-only workspace lets the owner run /new', async () => {

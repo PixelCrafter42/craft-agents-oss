@@ -19,7 +19,7 @@
     "@craft-agent/server-core": "workspace:*",
     "@craft-agent/session-tools-core": "workspace:*",
     "@craft-agent/shared": "workspace:*",
-    "@larksuiteoapi/node-sdk": "^1.62.1",
+    "@larksuiteoapi/node-sdk": "1.70.0",
     "grammy": "^1.35.0"
   },
   "devDependencies": {

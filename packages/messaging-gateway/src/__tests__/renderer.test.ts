@@ -36,10 +36,15 @@ interface Call {
     | 'sendMessageDraft'
     | 'sendRichMessage'
     | 'sendRichMessageDraft'
+    | 'beginNativeStream'
+    | 'updateNativeStream'
+    | 'finishNativeStream'
   channelId: string
   messageId?: string
   draftId?: number
   text?: string
+  replyToMessageId?: string
+  replyInThread?: boolean
 }
 
 function makeAdapter(
@@ -99,6 +104,22 @@ function makeAdapter(
     },
     async sendRichMessageDraft(channelId: string, draftId: number, text: string): Promise<void> {
       calls.push({ kind: 'sendRichMessageDraft', channelId, draftId, text })
+    },
+    async beginNativeStream(channelId, text, opts) {
+      const messageId = String(nextId++)
+      calls.push({
+        kind: 'beginNativeStream', channelId, text, messageId,
+        replyToMessageId: opts?.replyToMessageId,
+        replyInThread: opts?.replyInThread,
+      })
+      return { id: `stream-${messageId}`, messageId }
+    },
+    async updateNativeStream(handle, text) {
+      calls.push({ kind: 'updateNativeStream', channelId: 'chan-1', messageId: handle.messageId, text })
+    },
+    async finishNativeStream(handle, text) {
+      calls.push({ kind: 'finishNativeStream', channelId: 'chan-1', messageId: handle.messageId, text })
+      return { platform: 'telegram', channelId: 'chan-1', messageId: handle.messageId ?? '' }
     },
   }
 
@@ -235,11 +256,11 @@ describe('Renderer — progress mode (default)', () => {
     ])
 
     expect(adapter.calls.map((c) => c.kind)).toEqual([
-      'sendMessageDraft',
-      'sendMessageDraft',
+      'sendRichMessageDraft',
+      'sendRichMessageDraft',
       'sendRichMessage',
     ])
-    const drafts = adapter.calls.filter((c) => c.kind === 'sendMessageDraft')
+    const drafts = adapter.calls.filter((c) => c.kind === 'sendRichMessageDraft')
     expect(drafts[0]!.text).toBe('🔧 Read…')
     expect(drafts[1]!.text).toBe('💭 thinking…')
     expect(drafts.every((d) => d.text && d.text.length > 0)).toBe(true)
@@ -247,6 +268,36 @@ describe('Renderer — progress mode (default)', () => {
 
     const rich = adapter.calls.find((c) => c.kind === 'sendRichMessage')
     expect(rich?.text).toBe('# Answer\n\n- one')
+  })
+
+  it('falls back from a rejected rich final to one Markdown message without duplication', async () => {
+    const adapter = makeAdapter({ richMessages: true })
+    adapter.sendRichMessage = async (channelId: string, text: string): Promise<SentMessage> => {
+      adapter.calls.push({ kind: 'sendRichMessage', channelId, text })
+      throw new Error('rich message rejected')
+    }
+    const binding = makeBinding({ responseMode: 'final_only' as ResponseMode })
+
+    await play(renderer, binding, adapter, [
+      ev.final('# Answer\n\n- one'),
+      ev.complete(),
+    ])
+
+    expect(adapter.calls.map((call) => call.kind)).toEqual(['sendRichMessage', 'sendText'])
+    expect(adapter.calls[1]?.text).toBe('# Answer\n\n- one')
+  })
+
+  it('routes AI-authored HTTP media Markdown through the rich-message path', async () => {
+    const adapter = makeAdapter({ richMessages: true })
+    const binding = makeBinding({ responseMode: 'final_only' as ResponseMode })
+
+    await play(renderer, binding, adapter, [
+      ev.final('![Chart](https://example.com/chart.png)'),
+      ev.complete(),
+    ])
+
+    expect(adapter.calls.map((call) => call.kind)).toEqual(['sendRichMessage'])
+    expect(adapter.calls[0]?.text).toBe('![Chart](https://example.com/chart.png)')
   })
 
   it('drops intermediate text — never appears in any message', async () => {
@@ -458,6 +509,64 @@ describe('Renderer — streaming mode (legacy)', () => {
     ])
     expect(adapter.calls[0]!.text).toBe('# first')
     expect(adapter.calls[1]!.text).toBe('# first')
+  })
+})
+
+describe('Renderer — native streaming cards', () => {
+  it('keeps status and visible answer in one native card, then finalizes it once', async () => {
+    const renderer = new Renderer()
+    const adapter = makeAdapter({ nativeStreaming: true, contextualReplies: true })
+    ;(adapter as any).platform = 'lark'
+    const binding = { ...makeBinding(), platform: 'lark' as const }
+
+    await renderer.handle(ev.toolStart('Search'), binding, adapter, {
+      replyToMessageId: 'om_source',
+      replyInThread: true,
+    })
+    await renderer.handle(ev.delta('Hello'), binding, adapter)
+    await renderer.handle(ev.final('Hello world'), binding, adapter)
+    await renderer.handle(ev.complete(), binding, adapter)
+
+    expect(adapter.calls.filter((call) => call.kind === 'beginNativeStream')).toHaveLength(1)
+    const begin = adapter.calls.find((call) => call.kind === 'beginNativeStream')!
+    expect(begin.replyToMessageId).toBe('om_source')
+    expect(begin.replyInThread).toBe(true)
+    expect(adapter.calls.filter((call) => call.kind === 'finishNativeStream')).toHaveLength(1)
+    expect(adapter.calls.findLast((call) => call.kind === 'finishNativeStream')?.text).toBe('Hello world')
+    expect(adapter.calls.filter((call) => call.kind === 'sendText')).toHaveLength(0)
+  })
+
+  it('turn_complete closes a queued turn so the next origin starts a new card', async () => {
+    const renderer = new Renderer()
+    const adapter = makeAdapter({ nativeStreaming: true, contextualReplies: true })
+    ;(adapter as any).platform = 'lark'
+    const binding = { ...makeBinding(), platform: 'lark' as const }
+
+    await renderer.handle(ev.delta('first'), binding, adapter, { replyToMessageId: 'om_first' })
+    await renderer.handle({ type: 'turn_complete', sessionId: 's' }, binding, adapter)
+    await renderer.handle(ev.delta('second'), binding, adapter, { replyToMessageId: 'om_second' })
+    await renderer.handle(ev.complete(), binding, adapter)
+
+    const begins = adapter.calls.filter((call) => call.kind === 'beginNativeStream')
+    expect(begins).toHaveLength(2)
+    expect(begins[0]?.replyToMessageId).toBe('om_first')
+    expect(begins[1]?.replyToMessageId).toBe('om_second')
+  })
+
+  it('keeps native streaming mode silent until the first visible text delta', async () => {
+    const renderer = new Renderer()
+    const adapter = makeAdapter({ nativeStreaming: true })
+    ;(adapter as any).platform = 'lark'
+    const binding = {
+      ...makeBinding({ responseMode: 'streaming' }),
+      platform: 'lark' as const,
+    }
+
+    await renderer.handle(ev.toolStart('Search'), binding, adapter)
+    expect(adapter.calls.filter((call) => call.kind === 'beginNativeStream')).toHaveLength(0)
+
+    await renderer.handle(ev.delta('Visible'), binding, adapter)
+    expect(adapter.calls.filter((call) => call.kind === 'beginNativeStream')).toHaveLength(1)
   })
 })
 

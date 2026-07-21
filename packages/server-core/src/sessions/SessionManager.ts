@@ -954,6 +954,8 @@ interface ManagedSession {
   lastSentAttachments?: FileAttachment[]
   lastSentStoredAttachments?: StoredAttachment[]
   lastSentOptions?: SendMessageOptions
+  /** Runtime-only origin for the turn currently producing events. */
+  activeMessagingOriginId?: string
   // Flag to prevent infinite retry loops (reset at start of each sendMessage)
   authRetryAttempted?: boolean
   // Flag indicating auth retry is in progress (to prevent complete handler from interfering)
@@ -1181,10 +1183,32 @@ function managedToSession(m: ManagedSession, overrides?: Partial<Session>): Sess
 
 // Performance: Batch IPC delta events to reduce renderer load
 const DELTA_BATCH_INTERVAL_MS = 50  // Flush batched deltas every 50ms
+const TURN_SCOPED_SESSION_EVENT_TYPES: ReadonlySet<SessionEvent['type']> = new Set([
+  'text_delta',
+  'text_complete',
+  'tool_start',
+  'tool_result',
+  'error',
+  'typed_error',
+  'complete',
+  'turn_complete',
+  'interrupted',
+  'status',
+  'info',
+  'permission_request',
+  'credential_request',
+  'plan_submitted',
+  'task_backgrounded',
+  'shell_backgrounded',
+  'task_progress',
+  'task_completed',
+  'workflow_agent_completed',
+])
 
 interface PendingDelta {
   delta: string
   turnId?: string
+  messagingOriginId?: string
 }
 
 /**
@@ -6338,7 +6362,9 @@ export class SessionManager implements ISessionManager {
         managed.lastSentMessage = message
         managed.lastSentAttachments = attachments
         managed.lastSentStoredAttachments = displayStoredAttachments
-        managed.lastSentOptions = options
+        managed.lastSentOptions = managed.activeMessagingOriginId
+          ? { ...(options ?? {}), messagingOriginId: managed.activeMessagingOriginId }
+          : options
       }
 
       // Emit to UI — 'accepted' iff a steer succeeded; 'queued' otherwise
@@ -6486,6 +6512,9 @@ export class SessionManager implements ISessionManager {
     if (taskDispatchAborted()) return
     managed.lastMessageAt = Date.now()
     this.setProcessing(managed, true)
+    // Capture once when a real turn starts. Mid-stream steer messages must not
+    // move an already-visible connector response to a different source message.
+    managed.activeMessagingOriginId = options?.messagingOriginId
     managed.streamingText = ''
     managed.turnTerminalError = undefined
     managed.processingGeneration++
@@ -7528,6 +7557,12 @@ Please continue the conversation naturally from where we left off.
 
     // 5. Check queue and process or complete
     if (managed.messageQueue.length > 0) {
+      this.sendEvent({
+        type: 'turn_complete',
+        sessionId,
+        reason,
+      }, managed.workspace.id)
+      managed.activeMessagingOriginId = undefined
       // Has queued messages - process next
       this.processNextQueuedMessage(sessionId)
     } else {
@@ -7574,6 +7609,7 @@ Please continue the conversation naturally from where we left off.
           : undefined,
         tokenUsage: managed.tokenUsage,
       })
+      managed.activeMessagingOriginId = undefined
     }
 
     // 6. Always persist
@@ -9555,7 +9591,13 @@ Please continue the conversation naturally from where we left off.
       return
     }
 
-    this.eventSink(RPC_CHANNELS.sessions.EVENT, { to: 'workspace', workspaceId }, event)
+    const activeOrigin = this.sessions.get(event.sessionId)?.activeMessagingOriginId
+    const outboundEvent =
+      TURN_SCOPED_SESSION_EVENT_TYPES.has(event.type) && !event.messagingOriginId && activeOrigin
+        ? ({ ...event, messagingOriginId: activeOrigin } as SessionEvent)
+        : event
+
+    this.eventSink(RPC_CHANNELS.sessions.EVENT, { to: 'workspace', workspaceId }, outboundEvent)
   }
 
   /**
@@ -9571,7 +9613,11 @@ Please continue the conversation naturally from where we left off.
       if (turnId) existing.turnId = turnId
     } else {
       // Start new batch
-      this.pendingDeltas.set(sessionId, { delta, turnId })
+      this.pendingDeltas.set(sessionId, {
+        delta,
+        turnId,
+        messagingOriginId: this.sessions.get(sessionId)?.activeMessagingOriginId,
+      })
     }
 
     // Schedule flush if not already scheduled
@@ -9602,7 +9648,8 @@ Please continue the conversation naturally from where we left off.
         type: 'text_delta',
         sessionId,
         delta: pending.delta,
-        turnId: pending.turnId
+        turnId: pending.turnId,
+        messagingOriginId: pending.messagingOriginId,
       }, workspaceId)
       this.pendingDeltas.delete(sessionId)
     }

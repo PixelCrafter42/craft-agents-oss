@@ -24,6 +24,8 @@ interface FileCall {
   size: number
 }
 
+type RichFileCall = FileCall
+
 function makeSessionManager(): ISessionManager {
   return {
     getSessions: () => [],
@@ -35,8 +37,13 @@ function makeSessionManager(): ISessionManager {
   } as unknown as ISessionManager
 }
 
-function makeAdapter(platform: PlatformType, connected = true): PlatformAdapter & { files: FileCall[] } {
+function makeAdapter(
+  platform: PlatformType,
+  connected = true,
+  richMode?: 'success' | 'fail',
+): PlatformAdapter & { files: FileCall[]; richFiles: RichFileCall[] } {
   const files: FileCall[] = []
+  const richFiles: RichFileCall[] = []
   const capabilities: AdapterCapabilities = {
     messageEditing: platform === 'telegram' || platform === 'lark',
     inlineButtons: platform === 'telegram' || platform === 'lark',
@@ -46,10 +53,11 @@ function makeAdapter(platform: PlatformType, connected = true): PlatformAdapter 
     webhookSupport: false,
   }
 
-  return {
+  const adapter: PlatformAdapter & { files: FileCall[]; richFiles: RichFileCall[] } = {
     platform,
     capabilities,
     files,
+    richFiles,
     async initialize() {},
     async destroy() {},
     isConnected: () => connected,
@@ -68,6 +76,14 @@ function makeAdapter(platform: PlatformType, connected = true): PlatformAdapter 
       return { platform, channelId, messageId: `${platform}-file-1` } as SentMessage
     },
   }
+  if (richMode) {
+    adapter.sendRichMedia = async (channelId, file, fileName, caption, opts) => {
+      richFiles.push({ channelId, fileName, caption, threadId: opts?.threadId, size: file.length })
+      if (richMode === 'fail') throw new Error('rich media rejected')
+      return { platform, channelId, messageId: `${platform}-rich-file-1` }
+    }
+  }
+  return adapter
 }
 
 function makeGateway(): MessagingGateway {
@@ -171,5 +187,44 @@ describe('MessagingGateway send_messaging_file callback', () => {
 
     expect(result).toMatchObject({ platform: 'telegram', channelId: 'tg-1', threadId: 202 })
     expect(telegram.files).toEqual([{ channelId: 'tg-1', fileName: 'topic.txt', caption: undefined, threadId: 202, size: 5 }])
+  })
+
+  it('uses Telegram rich media for supported AI attachments without a duplicate file send', async () => {
+    const gateway = makeGateway()
+    const telegram = makeAdapter('telegram', true, 'success')
+    gateway.registerAdapter(telegram)
+    gateway.getBindingStore().bind('ws-1', 'sess-1', 'telegram', 'tg-1', undefined, undefined, 303)
+
+    const sendFile = getSessionScopedToolCallbacks('sess-1')!.sendMessagingFileFn!
+    const result = await sendFile({
+      path: writeTempFile('chart.png', 'image-bytes'),
+      caption: '# Results',
+      channelId: 'tg-1',
+      threadId: 303,
+    })
+
+    expect(result).toMatchObject({ messageId: 'telegram-rich-file-1', threadId: 303 })
+    expect(telegram.richFiles).toEqual([{
+      channelId: 'tg-1',
+      fileName: 'chart.png',
+      caption: '# Results',
+      threadId: 303,
+      size: 11,
+    }])
+    expect(telegram.files).toEqual([])
+  })
+
+  it('falls back once to the existing attachment send when rich media is rejected', async () => {
+    const gateway = makeGateway()
+    const telegram = makeAdapter('telegram', true, 'fail')
+    gateway.registerAdapter(telegram)
+    gateway.getBindingStore().bind('ws-1', 'sess-1', 'telegram', 'tg-1')
+
+    const sendFile = getSessionScopedToolCallbacks('sess-1')!.sendMessagingFileFn!
+    const result = await sendFile({ path: writeTempFile('chart.png', 'image-bytes') })
+
+    expect(result.messageId).toBe('telegram-file-1')
+    expect(telegram.richFiles).toHaveLength(1)
+    expect(telegram.files).toHaveLength(1)
   })
 })

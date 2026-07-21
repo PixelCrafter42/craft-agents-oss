@@ -18,6 +18,7 @@ import type {
   PlatformAdapter,
   PlatformOwner,
   PlatformType,
+  EphemeralReplyTarget,
 } from './types'
 
 /**
@@ -121,8 +122,9 @@ export function readPlatformAccessMode(
   config: MessagingConfig,
   platform: PlatformType,
 ): PlatformAccessMode {
-  if (platform !== 'telegram') return 'open'
-  return config.platforms.telegram?.accessMode ?? 'open'
+  if (platform === 'telegram') return config.platforms.telegram?.accessMode ?? 'open'
+  if (platform === 'lark') return config.platforms.lark?.accessMode ?? 'open'
+  return 'open'
 }
 
 /** Read the platform's owners list (empty when not configured). */
@@ -130,8 +132,9 @@ export function readPlatformOwners(
   config: MessagingConfig,
   platform: PlatformType,
 ): PlatformOwner[] {
-  if (platform !== 'telegram') return []
-  return config.platforms.telegram?.owners ?? []
+  if (platform === 'telegram') return config.platforms.telegram?.owners ?? []
+  if (platform === 'lark') return config.platforms.lark?.owners ?? []
+  return []
 }
 
 /**
@@ -143,9 +146,13 @@ export interface RejectableSender {
   platform: PlatformType
   channelId: string
   threadId?: number
+  messageId?: string
+  nativeThreadId?: string
   senderId: string
   senderName?: string
   senderUsername?: string
+  chatType?: 'direct' | 'group'
+  ephemeralReply?: EphemeralReplyTarget
 }
 
 export interface RejectionExecutionContext {
@@ -209,10 +216,34 @@ export async function executeRejection(
   if (Date.now() - last < REJECT_REPLY_COOLDOWN_MS) return
   ctx.recentRejectReplies.set(key, Date.now())
 
+  const replyOpts = {
+    ...(sender.threadId !== undefined ? { threadId: sender.threadId } : {}),
+    ...(sender.platform === 'lark' && sender.messageId
+      ? { replyToMessageId: sender.messageId }
+      : {}),
+    ...(sender.platform === 'lark' && sender.nativeThreadId
+      ? { replyInThread: true }
+      : {}),
+    ...(sender.ephemeralReply ? { ephemeral: sender.ephemeralReply } : {}),
+  }
+
   try {
-    await adapter.sendText(sender.channelId, replyText, {
-      ...(sender.threadId !== undefined ? { threadId: sender.threadId } : {}),
-    })
+    if (
+      sender.platform === 'lark' &&
+      sender.chatType === 'group' &&
+      adapter.capabilities.ephemeralCards &&
+      adapter.sendEphemeralCard
+    ) {
+      try {
+        await adapter.sendEphemeralCard(sender.channelId, sender.senderId, replyText)
+      } catch {
+        // Ephemeral cards are only visible on currently-online group clients.
+        // Fall back once to a contextual normal reply.
+        await adapter.sendText(sender.channelId, replyText, replyOpts)
+      }
+    } else {
+      await adapter.sendText(sender.channelId, replyText, replyOpts)
+    }
   } catch (err) {
     log.warn('failed to send rejection reply (non-fatal)', {
       event: 'reject_reply_failed',

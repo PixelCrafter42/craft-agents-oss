@@ -12,6 +12,9 @@ interface ApiCall {
     | 'sendMessageDraft'
     | 'sendRichMessage'
     | 'sendRichMessageDraft'
+    | 'editEphemeralMessageText'
+    | 'editEphemeralMessageReplyMarkup'
+    | 'deleteEphemeralMessage'
   chatId: number
   messageId?: number
   draftId?: number
@@ -54,8 +57,12 @@ interface FakeTelegramApi {
     other?: Record<string, unknown>,
   ) => Promise<true>
   raw?: {
-    sendRichMessage?: (payload: Record<string, unknown>) => Promise<{ message_id: number }>
+    sendMessage?: (payload: Record<string, unknown>) => Promise<{ message_id: number; ephemeral_message_id?: number }>
+    sendRichMessage?: (payload: Record<string, unknown>) => Promise<{ message_id: number; ephemeral_message_id?: number }>
     sendRichMessageDraft?: (payload: Record<string, unknown>) => Promise<true>
+    editEphemeralMessageText?: (payload: Record<string, unknown>) => Promise<true>
+    editEphemeralMessageReplyMarkup?: (payload: Record<string, unknown>) => Promise<true>
+    deleteEphemeralMessage?: (payload: Record<string, unknown>) => Promise<true>
   }
   setMyCommands?: (
     commands: readonly { command: string; description: string }[],
@@ -199,6 +206,12 @@ describe('TelegramAdapter MarkdownV2 sending', () => {
       'all_chat_administrators',
     ])
     expect(calls.every((call) => call.commands.map((command) => command.command).join(',') === 'menu,pair')).toBe(true)
+    expect(calls.map((call) => Boolean((call.commands[0] as { is_ephemeral?: boolean }).is_ephemeral))).toEqual([
+      false,
+      false,
+      true,
+      true,
+    ])
   })
 
   it('syncs command menus for the current Telegram chat scope', async () => {
@@ -212,13 +225,14 @@ describe('TelegramAdapter MarkdownV2 sending', () => {
 
     await adapter.setCommandMenu(
       [{ command: 'menu', description: 'Open the interactive menu' }],
-      { channelId: '42' },
+      { channelId: '42', ephemeral: true },
     )
 
     expect(calls).toHaveLength(1)
     expect(calls[0]?.other).toEqual({
       scope: { type: 'chat', chat_id: 42 },
     })
+    expect((calls[0]?.commands[0] as { is_ephemeral?: boolean }).is_ephemeral).toBe(true)
   })
 
   it('passes parse_mode for document captions', async () => {
@@ -323,17 +337,24 @@ describe('TelegramAdapter MarkdownV2 sending', () => {
 
     await adapter.sendRichMessage('42', '# Report\n\n- item', { threadId: 9 })
 
-    expect(calls).toEqual([
-      {
-        method: 'sendRichMessage',
-        chatId: 42,
-        payload: {
-          chat_id: 42,
-          rich_message: { markdown: '# Report\n\n- item' },
-          message_thread_id: 9,
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({
+      method: 'sendRichMessage',
+      chatId: 42,
+      payload: {
+        chat_id: 42,
+        message_thread_id: 9,
+        rich_message: {
+          blocks: [
+            { type: 'heading', size: 1, text: 'Report' },
+            {
+              type: 'list',
+              items: [{ blocks: [{ type: 'paragraph', text: 'item' }] }],
+            },
+          ],
         },
       },
-    ])
+    })
   })
 
   it('streams rich message drafts through the raw Bot API', async () => {
@@ -349,18 +370,226 @@ describe('TelegramAdapter MarkdownV2 sending', () => {
 
     await adapter.sendRichMessageDraft('42', 456, '# Draft', { threadId: 9 })
 
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({
+      method: 'sendRichMessageDraft',
+      chatId: 42,
+      payload: {
+        chat_id: 42,
+        draft_id: 456,
+        rich_message: { blocks: [{ type: 'heading', size: 1, text: 'Draft' }] },
+        message_thread_id: 9,
+      },
+    })
+  })
+
+  it('uses the Bot API 10.2 thinking block for rich drafts', async () => {
+    const payloads: Record<string, unknown>[] = []
+    const adapter = makeAdapter({
+      raw: {
+        async sendRichMessageDraft(payload) {
+          payloads.push(payload)
+          return true
+        },
+      },
+    })
+
+    await adapter.sendRichMessageDraft('42', 457, '💭 thinking…', { threadId: 9 })
+
+    expect(payloads[0]).toMatchObject({
+      chat_id: 42,
+      draft_id: 457,
+      message_thread_id: 9,
+      rich_message: {
+        blocks: [{ type: 'thinking', text: '💭 thinking…' }],
+      },
+    })
+  })
+
+  it('sends attachment media through InputRichMessageMedia with topic routing', async () => {
+    const payloads: Record<string, unknown>[] = []
+    const adapter = makeAdapter({
+      raw: {
+        async sendRichMessage(payload) {
+          payloads.push(payload)
+          return { message_id: 11 }
+        },
+      },
+    })
+
+    await adapter.sendRichMedia('42', Buffer.from('image'), 'chart.png', '# Chart', { threadId: 17 })
+
+    expect(payloads[0]).toMatchObject({
+      chat_id: 42,
+      message_thread_id: 17,
+      rich_message: {
+        markdown: '# Chart\n\n![](tg://photo?id=attachment)',
+        media: [{ id: 'attachment', media: { type: 'photo' } }],
+      },
+    })
+    const richMessage = payloads[0]?.rich_message as { media?: Array<{ media?: { media?: unknown } }> }
+    expect(richMessage.media?.[0]?.media?.media).toBeTruthy()
+  })
+
+  it('passes receiver and incoming ephemeral ids, then supports edit/delete', async () => {
+    const calls: Array<{ method: string; payload: Record<string, unknown> }> = []
+    const adapter = makeAdapter({
+      raw: {
+        async sendMessage(payload) {
+          calls.push({ method: 'sendMessage', payload })
+          return { message_id: 0, ephemeral_message_id: 71 }
+        },
+        async editEphemeralMessageText(payload) {
+          calls.push({ method: 'editEphemeralMessageText', payload })
+          return true
+        },
+        async deleteEphemeralMessage(payload) {
+          calls.push({ method: 'deleteEphemeralMessage', payload })
+          return true
+        },
+      },
+    })
+
+    const sent = await adapter.sendText('42', '**private**', {
+      threadId: 9,
+      ephemeral: {
+        recipientId: '123',
+        sourceMessageId: '55',
+        expiresAt: Date.now() + 15_000,
+      },
+    })
+    await adapter.editEphemeralMessage('42', sent.ephemeral!, '_done_')
+    await adapter.deleteEphemeralMessage('42', sent.ephemeral!)
+
+    expect(sent).toMatchObject({
+      messageId: '71',
+      ephemeral: { recipientId: '123', messageId: '71' },
+    })
     expect(calls).toEqual([
       {
-        method: 'sendRichMessageDraft',
-        chatId: 42,
+        method: 'sendMessage',
         payload: {
           chat_id: 42,
-          draft_id: 456,
-          rich_message: { markdown: '# Draft' },
+          text: '*private*',
+          parse_mode: 'MarkdownV2',
           message_thread_id: 9,
+          receiver_user_id: 123,
+          reply_parameters: { ephemeral_message_id: 55 },
+        },
+      },
+      {
+        method: 'editEphemeralMessageText',
+        payload: {
+          chat_id: 42,
+          receiver_user_id: 123,
+          ephemeral_message_id: 71,
+          text: '_done_',
+          parse_mode: 'MarkdownV2',
+        },
+      },
+      {
+        method: 'deleteEphemeralMessage',
+        payload: {
+          chat_id: 42,
+          receiver_user_id: 123,
+          ephemeral_message_id: 71,
         },
       },
     ])
+  })
+
+  it('passes callback query id for ephemeral button responses', async () => {
+    const payloads: Record<string, unknown>[] = []
+    const adapter = makeAdapter({
+      raw: {
+        async sendMessage(payload) {
+          payloads.push(payload)
+          return { message_id: 0, ephemeral_message_id: 72 }
+        },
+        async editEphemeralMessageReplyMarkup(payload) {
+          payloads.push(payload)
+          return true
+        },
+      },
+    })
+
+    await adapter.sendButtons('42', '✅ Allowed', [{ id: 'next', label: 'Next' }], {
+      threadId: 19,
+      ephemeral: {
+        recipientId: '123',
+        interactionId: 'callback-1',
+        expiresAt: Date.now() + 15_000,
+      },
+    })
+
+    expect(payloads[0]).toMatchObject({
+      chat_id: 42,
+      message_thread_id: 19,
+      receiver_user_id: 123,
+      callback_query_id: 'callback-1',
+      reply_markup: { inline_keyboard: [[{ text: 'Next', callback_data: 'next' }]] },
+    })
+
+    await adapter.clearButtons('42', '0', {
+      threadId: 19,
+      ephemeral: { recipientId: '123', sourceMessageId: '72' },
+    })
+    expect(payloads[1]).toEqual({
+      chat_id: 42,
+      receiver_user_id: 123,
+      ephemeral_message_id: 72,
+      reply_markup: { inline_keyboard: [] },
+    })
+  })
+
+  it('falls back once to a normal message when ephemeral permission is rejected', async () => {
+    const calls: string[] = []
+    const adapter = makeAdapter({
+      raw: {
+        async sendMessage() {
+          calls.push('ephemeral')
+          throw new Error('Bad Request: not enough rights to send an ephemeral message')
+        },
+      },
+      async sendMessage() {
+        calls.push('normal')
+        return { message_id: 73 }
+      },
+    })
+
+    const sent = await adapter.sendText('42', 'status', {
+      ephemeral: { recipientId: '123' },
+    })
+
+    expect(calls).toEqual(['ephemeral', 'normal'])
+    expect(sent.messageId).toBe('73')
+    expect(sent.ephemeral).toBeUndefined()
+  })
+
+  it('skips the ephemeral API after 15 seconds and sends one normal message', async () => {
+    const calls: string[] = []
+    const adapter = makeAdapter({
+      raw: {
+        async sendMessage() {
+          calls.push('ephemeral')
+          return { message_id: 0, ephemeral_message_id: 74 }
+        },
+      },
+      async sendMessage() {
+        calls.push('normal')
+        return { message_id: 75 }
+      },
+    })
+
+    await adapter.sendText('42', 'late status', {
+      ephemeral: {
+        recipientId: '123',
+        interactionId: 'old-callback',
+        expiresAt: Date.now() - 1,
+      },
+    })
+
+    expect(calls).toEqual(['normal'])
   })
 
   it('retries entity parse failures as escaped plain text', async () => {

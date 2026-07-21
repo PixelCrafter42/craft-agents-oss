@@ -23,8 +23,16 @@ import type {
   MessagingLogger,
   PlatformCommand,
   CommandMenuOptions,
+  EphemeralMessageReference,
+  EphemeralReplyTarget,
 } from '../../types'
 import { formatForTelegram, formatPlainTextForTelegram } from './format'
+import {
+  buildTelegramRichMediaMessage,
+  buildTelegramRichMessage,
+  type TelegramInputMedia,
+  type TelegramRichMessagePayload,
+} from './rich-message'
 
 /**
  * Discriminated chat metadata returned by `getChatInfo`. Phase A's supergroup
@@ -46,6 +54,9 @@ const TELEGRAM_DRAFT_TEXT_LIMIT = 4096
 const TELEGRAM_PARSE_MODE = 'MarkdownV2' as const
 const TELEGRAM_VOICE_EXTENSIONS = new Set(['.ogg', '.oga', '.opus', '.mp3', '.m4a'])
 const TELEGRAM_AUDIO_EXTENSIONS = new Set(['.mp3', '.m4a'])
+const TELEGRAM_ANIMATION_EXTENSIONS = new Set(['.gif'])
+const TELEGRAM_PHOTO_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.bmp', '.heic', '.heif'])
+const TELEGRAM_VIDEO_EXTENSIONS = new Set(['.mp4', '.mov', '.m4v', '.webm'])
 const TELEGRAM_COMMAND_NAME_RE = /^[a-z0-9_]{1,32}$/
 
 const TELEGRAM_BASE_COMMAND_MENU: PlatformCommand[] = [
@@ -63,6 +74,7 @@ type TelegramCommandScope =
 interface TelegramCommandMenuTarget {
   label: string
   scope: TelegramCommandScope
+  isEphemeral: boolean
 }
 
 /**
@@ -95,13 +107,6 @@ type FetchInput = Parameters<typeof globalThis.fetch>[0]
 type FetchInit = Parameters<typeof globalThis.fetch>[1]
 type NativeFetchInit = NonNullable<FetchInit> & { duplex?: 'half' }
 
-interface TelegramRichMessagePayload {
-  html?: string
-  markdown?: string
-  is_rtl?: boolean
-  skip_entity_detection?: boolean
-}
-
 interface TelegramSendRichMessagePayload {
   chat_id: number | string
   rich_message: TelegramRichMessagePayload
@@ -116,9 +121,50 @@ interface TelegramSendRichMessageDraftPayload {
 }
 
 interface TelegramRawRichApi {
-  sendRichMessage(payload: TelegramSendRichMessagePayload): Promise<{ message_id: number }>
+  sendRichMessage(payload: TelegramSendRichMessagePayload): Promise<TelegramMessageResult>
   sendRichMessageDraft(payload: TelegramSendRichMessageDraftPayload): Promise<true>
 }
+
+interface TelegramMessageResult {
+  message_id: number
+  ephemeral_message_id?: number
+  receiver_user?: { id: number }
+}
+
+interface TelegramSendMessagePayload {
+  chat_id: number | string
+  text: string
+  parse_mode: typeof TELEGRAM_PARSE_MODE
+  message_thread_id?: number
+  receiver_user_id: number
+  callback_query_id?: string
+  reply_parameters?: { ephemeral_message_id: number }
+  reply_markup?: { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> }
+}
+
+interface TelegramRawEphemeralApi {
+  sendMessage(payload: TelegramSendMessagePayload): Promise<TelegramMessageResult>
+  editEphemeralMessageText(payload: {
+    chat_id: number | string
+    receiver_user_id: number
+    ephemeral_message_id: number
+    text: string
+    parse_mode: typeof TELEGRAM_PARSE_MODE
+  }): Promise<true>
+  editEphemeralMessageReplyMarkup(payload: {
+    chat_id: number | string
+    receiver_user_id: number
+    ephemeral_message_id: number
+    reply_markup: { inline_keyboard: [] }
+  }): Promise<true>
+  deleteEphemeralMessage(payload: {
+    chat_id: number | string
+    receiver_user_id: number
+    ephemeral_message_id: number
+  }): Promise<true>
+}
+
+type TelegramRawApi = TelegramRawRichApi & TelegramRawEphemeralApi
 
 function telegramFetch(input: FetchInput, init?: FetchInit): Promise<Response> {
   const body = init?.body
@@ -210,6 +256,15 @@ function isTelegramAudioFile(filename: string): boolean {
   return TELEGRAM_AUDIO_EXTENSIONS.has(extname(filename).toLowerCase())
 }
 
+function richMediaKind(filename: string): TelegramInputMedia['type'] | null {
+  const extension = extname(filename).toLowerCase()
+  if (TELEGRAM_ANIMATION_EXTENSIONS.has(extension)) return 'animation'
+  if (TELEGRAM_PHOTO_EXTENSIONS.has(extension)) return 'photo'
+  if (TELEGRAM_VIDEO_EXTENSIONS.has(extension)) return 'video'
+  if (TELEGRAM_VOICE_EXTENSIONS.has(extension)) return isTelegramAudioFile(filename) ? 'audio' : 'voice_note'
+  return null
+}
+
 function truncateDraftText(text: string): string {
   if (text.length <= TELEGRAM_DRAFT_TEXT_LIMIT) return text
   return `${text.slice(0, TELEGRAM_DRAFT_TEXT_LIMIT - 4)} ...`
@@ -220,8 +275,43 @@ function telegramChatId(channelId: string): number | string {
   return Number.isFinite(numeric) && channelId.trim() !== '' ? numeric : channelId
 }
 
-function telegramRichApi(bot: Bot): TelegramRawRichApi {
-  return (bot.api as unknown as { raw: TelegramRawRichApi }).raw
+function telegramRawApi(bot: Bot): TelegramRawApi {
+  return (bot.api as unknown as { raw: TelegramRawApi }).raw
+}
+
+function numericTelegramId(value: string, label: string): number {
+  const numeric = Number(value)
+  if (!Number.isSafeInteger(numeric)) throw new Error(`Invalid Telegram ${label}: ${value}`)
+  return numeric
+}
+
+function ephemeralParams(target: EphemeralReplyTarget): Pick<
+  TelegramSendMessagePayload,
+  'receiver_user_id' | 'callback_query_id' | 'reply_parameters'
+> {
+  return {
+    receiver_user_id: numericTelegramId(target.recipientId, 'recipient id'),
+    ...(target.interactionId ? { callback_query_id: target.interactionId } : {}),
+    ...(target.sourceMessageId
+      ? { reply_parameters: { ephemeral_message_id: numericTelegramId(target.sourceMessageId, 'ephemeral message id') } }
+      : {}),
+  }
+}
+
+function sentMessageResult(
+  channelId: string,
+  sent: TelegramMessageResult,
+  target?: EphemeralReplyTarget,
+): SentMessage {
+  const ephemeralId = sent.ephemeral_message_id
+  return {
+    platform: 'telegram',
+    channelId,
+    messageId: String(ephemeralId ?? sent.message_id),
+    ...(ephemeralId !== undefined && target
+      ? { ephemeral: { recipientId: target.recipientId, messageId: String(ephemeralId) } }
+      : {}),
+  }
 }
 
 function normalizeCommandMenu(commands: PlatformCommand[]): PlatformCommand[] {
@@ -243,14 +333,15 @@ function commandMenuTargets(opts?: CommandMenuOptions): TelegramCommandMenuTarge
     return [{
       label: 'chat',
       scope: { type: 'chat', chat_id: telegramChatId(opts.channelId) },
+      isEphemeral: opts.ephemeral === true,
     }]
   }
 
   return [
-    { label: 'default', scope: { type: 'default' } },
-    { label: 'all_private_chats', scope: { type: 'all_private_chats' } },
-    { label: 'all_group_chats', scope: { type: 'all_group_chats' } },
-    { label: 'all_chat_administrators', scope: { type: 'all_chat_administrators' } },
+    { label: 'default', scope: { type: 'default' }, isEphemeral: false },
+    { label: 'all_private_chats', scope: { type: 'all_private_chats' }, isEphemeral: false },
+    { label: 'all_group_chats', scope: { type: 'all_group_chats' }, isEphemeral: true },
+    { label: 'all_chat_administrators', scope: { type: 'all_chat_administrators' }, isEphemeral: true },
   ]
 }
 
@@ -261,6 +352,56 @@ function commandMenuTargets(opts?: CommandMenuOptions): TelegramCommandMenuTarge
  */
 export function isPrivateChat(ctx: Context): boolean {
   return ctx.chat?.type === 'private'
+}
+
+/** Translate Bot API 10.2 message fields without leaking their names upstream. */
+export function telegramEphemeralReplyTarget(ctx: Context): EphemeralReplyTarget | undefined {
+  if (ctx.chat?.type !== 'group' && ctx.chat?.type !== 'supergroup') return undefined
+  if (!ctx.from?.id) return undefined
+  const message = ctx.message as (typeof ctx.message & { ephemeral_message_id?: number }) | undefined
+  const sourceMessageId = message?.ephemeral_message_id
+  return {
+    recipientId: String(ctx.from.id),
+    ...(sourceMessageId !== undefined ? { sourceMessageId: String(sourceMessageId) } : {}),
+    ...(sourceMessageId !== undefined && message?.date
+      ? { expiresAt: message.date * 1000 + 15_000 }
+      : {}),
+  }
+}
+
+interface TelegramCallbackEphemeralContext {
+  reply?: EphemeralReplyTarget
+  source?: EphemeralMessageReference
+}
+
+/** Translate callback_query_id plus receiver_user/ephemeral_message_id. */
+export function telegramCallbackEphemeralContext(
+  ctx: Context,
+  receivedAt = Date.now(),
+): TelegramCallbackEphemeralContext {
+  const callbackMessage = ctx.callbackQuery?.message as
+    | (NonNullable<typeof ctx.callbackQuery>['message'] & {
+        ephemeral_message_id?: number
+        receiver_user?: { id: number }
+      })
+    | undefined
+  const recipientId = String(ctx.from?.id ?? '')
+  const ephemeralMessageId = callbackMessage?.ephemeral_message_id
+  const sourceRecipientId = String(callbackMessage?.receiver_user?.id ?? ctx.from?.id ?? '')
+  return {
+    ...((ctx.chat?.type === 'group' || ctx.chat?.type === 'supergroup') && recipientId && ctx.callbackQuery?.id
+      ? {
+          reply: {
+            recipientId,
+            interactionId: ctx.callbackQuery.id,
+            expiresAt: receivedAt + 15_000,
+          },
+        }
+      : {}),
+    ...(ephemeralMessageId !== undefined && sourceRecipientId
+      ? { source: { recipientId: sourceRecipientId, messageId: String(ephemeralMessageId) } }
+      : {}),
+  }
 }
 
 /**
@@ -290,6 +431,7 @@ export class TelegramAdapter implements PlatformAdapter {
   readonly capabilities: AdapterCapabilities = {
     messageEditing: true,
     inlineButtons: true,
+    ephemeralMessages: true,
     messageDrafts: true,
     richMessages: true,
     richMessageDrafts: true,
@@ -426,6 +568,7 @@ export class TelegramAdapter implements PlatformAdapter {
       }
 
       const threadId = this.extractThreadId(ctx)
+      const ephemeralReply = telegramEphemeralReplyTarget(ctx)
       const msg: IncomingMessage = {
         platform: 'telegram',
         channelId: String(ctx.chat.id),
@@ -435,6 +578,7 @@ export class TelegramAdapter implements PlatformAdapter {
         senderName: ctx.from?.first_name ?? undefined,
         ...(ctx.from?.username ? { senderUsername: ctx.from.username } : {}),
         ...(ctx.from?.is_bot ? { senderIsBot: true } : {}),
+        ...(ephemeralReply ? { ephemeralReply } : {}),
         text: ctx.message.text ?? '',
         timestamp: ctx.message.date * 1000,
         raw: ctx.message,
@@ -531,6 +675,7 @@ export class TelegramAdapter implements PlatformAdapter {
     // Handle callback queries (button presses)
     this.bot.on('callback_query:data', async (ctx: Context) => {
       if (!this.buttonHandler || !ctx.callbackQuery) return
+      const receivedAt = Date.now()
       if (!isAcceptedChat(ctx, this.supergroupChatId)) {
         this.logRejectedChat('callback_query:data', ctx)
         // Answer the callback so Telegram stops showing the spinner, but
@@ -547,6 +692,7 @@ export class TelegramAdapter implements PlatformAdapter {
       const threadId = typeof ctx.callbackQuery.message?.message_thread_id === 'number'
         ? ctx.callbackQuery.message.message_thread_id
         : undefined
+      const ephemeral = telegramCallbackEphemeralContext(ctx, receivedAt)
 
       const press: ButtonPress = {
         platform: 'telegram',
@@ -557,6 +703,8 @@ export class TelegramAdapter implements PlatformAdapter {
         ...(ctx.from?.first_name ? { senderName: ctx.from.first_name } : {}),
         ...(ctx.from?.username ? { senderUsername: ctx.from.username } : {}),
         ...(ctx.from?.is_bot ? { senderIsBot: true } : {}),
+        ...(ephemeral.reply ? { ephemeralReply: ephemeral.reply } : {}),
+        ...(ephemeral.source ? { sourceEphemeral: ephemeral.source } : {}),
         buttonId: ctx.callbackQuery.data ?? '',
         data: ctx.callbackQuery.data ?? undefined,
       }
@@ -564,7 +712,6 @@ export class TelegramAdapter implements PlatformAdapter {
       // Diagnostic for #726: timestamp callback receipt vs. handler return so
       // we can tell from logs whether the gateway is slow or grammY's
       // sequential polling is stalling on a previous update.
-      const receivedAt = Date.now()
       this.log.info('[telegram] callback_query received', {
         event: 'telegram_callback_received',
         buttonId: press.buttonId,
@@ -628,7 +775,13 @@ export class TelegramAdapter implements PlatformAdapter {
     const normalized = normalizeCommandMenu(commands)
     await withTimeout(
       Promise.all(commandMenuTargets(opts).map((target) =>
-        this.bot!.api.setMyCommands(normalized, { scope: target.scope })
+        this.bot!.api.setMyCommands(
+          normalized.map((command) => ({
+            ...command,
+            ...(target.isEphemeral ? { is_ephemeral: true } : {}),
+          })) as typeof normalized,
+          { scope: target.scope },
+        )
       )),
       10_000,
       opts?.channelId ? 'setMyCommands:chat' : 'setMyCommands:global-scopes',
@@ -863,10 +1016,55 @@ export class TelegramAdapter implements PlatformAdapter {
     this.buttonHandler = handler
   }
 
+  private async trySendEphemeralText(
+    channelId: string,
+    text: string,
+    opts?: SendOptions,
+    replyMarkup?: TelegramSendMessagePayload['reply_markup'],
+  ): Promise<SentMessage | null> {
+    const target = opts?.ephemeral
+    if (!target) return null
+    if (target.expiresAt !== undefined && Date.now() >= target.expiresAt) {
+      this.log.info('[telegram] ephemeral reply window expired; using normal message', {
+        event: 'telegram_ephemeral_expired',
+        channelId,
+        recipientId: target.recipientId,
+      })
+      return null
+    }
+
+    const send = async (formatted: string) => telegramRawApi(this.bot!).sendMessage({
+      chat_id: telegramChatId(channelId),
+      text: formatted,
+      parse_mode: TELEGRAM_PARSE_MODE,
+      ...threadParams(opts),
+      ...ephemeralParams(target),
+      ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+    })
+
+    try {
+      let sent: TelegramMessageResult
+      try {
+        sent = await send(formatForTelegram(text))
+      } catch (err) {
+        if (!isEntityParseError(err)) throw err
+        sent = await send(formatPlainTextForTelegram(text))
+      }
+      return sentMessageResult(channelId, sent, target)
+    } catch (err) {
+      // Bot API rejects this after the 15-second window and when the bot is
+      // not an administrator. The visible message is the reliable fallback.
+      this.log.warn('[telegram] ephemeral send failed; using normal message', describeError(err))
+      return null
+    }
+  }
+
   async sendText(channelId: string, text: string, opts?: SendOptions): Promise<SentMessage> {
     if (!this.bot) throw new Error('Telegram adapter not initialized')
+    const ephemeral = await this.trySendEphemeralText(channelId, text, opts)
+    if (ephemeral) return ephemeral
     const formatted = formatForTelegram(text)
-    let sent: { message_id: number }
+    let sent: TelegramMessageResult
     try {
       sent = await this.bot.api.sendMessage(
         Number(channelId),
@@ -882,11 +1080,7 @@ export class TelegramAdapter implements PlatformAdapter {
         sendTextOptions(opts),
       )
     }
-    return {
-      platform: 'telegram',
-      channelId,
-      messageId: String(sent.message_id),
-    }
+    return sentMessageResult(channelId, sent)
   }
 
   async sendMessageDraft(channelId: string, draftId: number, text: string, opts?: SendOptions): Promise<void> {
@@ -914,16 +1108,12 @@ export class TelegramAdapter implements PlatformAdapter {
   async sendRichMessage(channelId: string, markdown: string, opts?: SendOptions): Promise<SentMessage> {
     if (!this.bot) throw new Error('Telegram adapter not initialized')
     try {
-      const sent = await telegramRichApi(this.bot).sendRichMessage({
+      const sent = await telegramRawApi(this.bot).sendRichMessage({
         chat_id: telegramChatId(channelId),
-        rich_message: { markdown },
+        rich_message: buildTelegramRichMessage(markdown),
         ...threadParams(opts),
       })
-      return {
-        platform: 'telegram',
-        channelId,
-        messageId: String(sent.message_id),
-      }
+      return sentMessageResult(channelId, sent)
     } catch (err) {
       this.log.warn('[telegram] sendRichMessage failed; caller may fall back to regular text', describeError(err))
       throw err
@@ -933,16 +1123,76 @@ export class TelegramAdapter implements PlatformAdapter {
   async sendRichMessageDraft(channelId: string, draftId: number, markdown: string, opts?: SendOptions): Promise<void> {
     if (!this.bot) throw new Error('Telegram adapter not initialized')
     try {
-      await telegramRichApi(this.bot).sendRichMessageDraft({
+      await telegramRawApi(this.bot).sendRichMessageDraft({
         chat_id: Number(channelId),
         draft_id: draftId,
-        rich_message: { markdown },
+        rich_message: buildTelegramRichMessage(markdown, { draft: true }),
         ...threadParams(opts),
       })
     } catch (err) {
       this.log.warn('[telegram] sendRichMessageDraft failed; caller may fall back to regular draft', describeError(err))
       throw err
     }
+  }
+
+  async sendRichMedia(
+    channelId: string,
+    file: Buffer,
+    filename: string,
+    caption?: string,
+    opts?: SendOptions,
+  ): Promise<SentMessage> {
+    if (!this.bot) throw new Error('Telegram adapter not initialized')
+    const kind = richMediaKind(filename)
+    if (!kind) throw new Error(`Telegram rich messages do not support this media type: ${filename}`)
+    const media: TelegramInputMedia = {
+      type: kind,
+      media: new InputFile(file, filename),
+    } as TelegramInputMedia
+    try {
+      const sent = await telegramRawApi(this.bot).sendRichMessage({
+        chat_id: telegramChatId(channelId),
+        rich_message: buildTelegramRichMediaMessage(caption, media),
+        ...threadParams(opts),
+      })
+      return sentMessageResult(channelId, sent)
+    } catch (err) {
+      this.log.warn('[telegram] rich media send failed; caller may fall back to attachment', describeError(err))
+      throw err
+    }
+  }
+
+  async editEphemeralMessage(
+    channelId: string,
+    message: EphemeralMessageReference,
+    text: string,
+  ): Promise<void> {
+    if (!this.bot) throw new Error('Telegram adapter not initialized')
+    const edit = (formatted: string) => telegramRawApi(this.bot!).editEphemeralMessageText({
+      chat_id: telegramChatId(channelId),
+      receiver_user_id: numericTelegramId(message.recipientId, 'recipient id'),
+      ephemeral_message_id: numericTelegramId(message.messageId, 'ephemeral message id'),
+      text: formatted,
+      parse_mode: TELEGRAM_PARSE_MODE,
+    })
+    try {
+      await edit(formatForTelegram(text))
+    } catch (err) {
+      if (!isEntityParseError(err)) throw err
+      await edit(formatPlainTextForTelegram(text))
+    }
+  }
+
+  async deleteEphemeralMessage(
+    channelId: string,
+    message: EphemeralMessageReference,
+  ): Promise<void> {
+    if (!this.bot) throw new Error('Telegram adapter not initialized')
+    await telegramRawApi(this.bot).deleteEphemeralMessage({
+      chat_id: telegramChatId(channelId),
+      receiver_user_id: numericTelegramId(message.recipientId, 'recipient id'),
+      ephemeral_message_id: numericTelegramId(message.messageId, 'ephemeral message id'),
+    })
   }
 
   async editMessage(channelId: string, messageId: string, text: string, _opts?: SendOptions): Promise<void> {
@@ -983,17 +1233,16 @@ export class TelegramAdapter implements PlatformAdapter {
         }))),
     }
 
+    const ephemeral = await this.trySendEphemeralText(channelId, text, opts, keyboard)
+    if (ephemeral) return ephemeral
+
     const sent = await this.bot.api.sendMessage(Number(channelId), formatForTelegram(text), {
       parse_mode: TELEGRAM_PARSE_MODE,
       reply_markup: keyboard,
       ...threadParams(opts),
     })
 
-    return {
-      platform: 'telegram',
-      channelId,
-      messageId: String(sent.message_id),
-    }
+    return sentMessageResult(channelId, sent)
   }
 
   async sendTyping(channelId: string, opts?: SendOptions): Promise<void> {
@@ -1048,6 +1297,15 @@ export class TelegramAdapter implements PlatformAdapter {
   async clearButtons(channelId: string, messageId: string, _opts?: SendOptions): Promise<void> {
     if (!this.bot) return
     try {
+      if (_opts?.ephemeral?.sourceMessageId) {
+        await telegramRawApi(this.bot).editEphemeralMessageReplyMarkup({
+          chat_id: telegramChatId(channelId),
+          receiver_user_id: numericTelegramId(_opts.ephemeral.recipientId, 'recipient id'),
+          ephemeral_message_id: numericTelegramId(_opts.ephemeral.sourceMessageId, 'ephemeral message id'),
+          reply_markup: { inline_keyboard: [] },
+        })
+        return
+      }
       // editMessageReplyMarkup is also keyed by (chat_id, message_id) only.
       await this.bot.api.editMessageReplyMarkup(Number(channelId), Number(messageId), {
         reply_markup: { inline_keyboard: [] },

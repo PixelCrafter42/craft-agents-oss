@@ -22,6 +22,7 @@ import type { ISessionManager } from '@craft-agent/server-core/handlers'
 import { MessagingGatewayRegistry } from '../registry'
 import type { TelegramChatInfo } from '../adapters/telegram/index'
 import type { PlatformAdapter, PlatformType } from '../types'
+import type { registerApp as registerLarkApp } from '@larksuiteoapi/node-sdk'
 
 let dir: string
 
@@ -196,6 +197,111 @@ describe('MessagingGatewayRegistry binding lookup provider', () => {
     await registry.initializeWorkspace(workspaceId)
 
     expect(starts).toBe(1)
+  })
+})
+
+describe('MessagingGatewayRegistry Lark one-click registration', () => {
+  it('returns a short-lived QR result and stores credentials only after authorization', async () => {
+    let options!: Parameters<typeof registerLarkApp>[0]
+    let complete!: (value: Awaited<ReturnType<typeof registerLarkApp>>) => void
+    const register = ((input: Parameters<typeof registerLarkApp>[0]) => {
+      options = input
+      input.onQRCodeReady({ url: 'https://accounts.example/verify', expireIn: 600 })
+      return new Promise<Awaited<ReturnType<typeof registerLarkApp>>>((resolve) => { complete = resolve })
+    }) as typeof registerLarkApp
+    const registry = new MessagingGatewayRegistry({
+      sessionManager: makeStubSessionManager(),
+      credentialManager: makeStubCredentialManager(),
+      getMessagingDir: (workspaceId: string) => join(dir, workspaceId, 'messaging'),
+      registerLarkApp: register,
+    })
+    const saved: Array<{ workspaceId: string; appId: string; appSecret: string; domain: string }> = []
+    registry.saveLarkCredentials = async (workspaceId, credentials) => {
+      saved.push({ workspaceId, ...credentials })
+    }
+
+    const begin = await registry.beginLarkRegistration('ws-lark')
+    expect(begin.verificationUrl).toBe('https://accounts.example/verify')
+    expect(begin.expiresAt).toBeGreaterThan(Date.now())
+    expect(options.createOnly).toBe(true)
+    expect(options.addons?.callbacks?.items).toContain('card.action.trigger')
+    expect(saved).toHaveLength(0)
+
+    complete({
+      client_id: 'cli_test',
+      client_secret: 'secret',
+      user_info: { tenant_brand: 'lark' },
+    })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(saved).toEqual([{ workspaceId: 'ws-lark', appId: 'cli_test', appSecret: 'secret', domain: 'lark' }])
+    expect(registry.getLarkRegistrationStatus('ws-lark', begin.attemptId).state).toBe('connected')
+  })
+
+  it('repairs the stored app id and cancels an unfinished attempt', async () => {
+    let options!: Parameters<typeof registerLarkApp>[0]
+    const register = ((input: Parameters<typeof registerLarkApp>[0]) => {
+      options = input
+      input.onQRCodeReady({ url: 'https://accounts.example/repair', expireIn: 600 })
+      return new Promise<Awaited<ReturnType<typeof registerLarkApp>>>(() => {})
+    }) as typeof registerLarkApp
+    const credentials = makeStubCredentialManager()
+    credentials.get = async () => ({
+      value: JSON.stringify({ appId: 'cli_existing', appSecret: 'secret', domain: 'feishu' }),
+    }) as any
+    const registry = new MessagingGatewayRegistry({
+      sessionManager: makeStubSessionManager(),
+      credentialManager: credentials,
+      getMessagingDir: (workspaceId: string) => join(dir, workspaceId, 'messaging'),
+      registerLarkApp: register,
+    })
+
+    const begin = await registry.beginLarkRegistration('ws-lark', { repairExisting: true })
+    expect(options.appId).toBe('cli_existing')
+    expect(options.createOnly).toBeUndefined()
+    registry.cancelLarkRegistration('ws-lark', begin.attemptId)
+    expect(registry.getLarkRegistrationStatus('ws-lark', begin.attemptId).state).toBe('cancelled')
+    expect(options.signal?.aborted).toBe(true)
+  })
+
+  it('keeps expiration distinct from cancellation and ignores a superseded late result', async () => {
+    const completions: Array<(value: Awaited<ReturnType<typeof registerLarkApp>>) => void> = []
+    let call = 0
+    const register = ((input: Parameters<typeof registerLarkApp>[0]) => {
+      call += 1
+      input.onQRCodeReady({
+        url: `https://accounts.example/attempt-${call}`,
+        expireIn: call === 1 ? 0 : 600,
+      })
+      return new Promise<Awaited<ReturnType<typeof registerLarkApp>>>((resolve) => {
+        completions.push(resolve)
+      })
+    }) as typeof registerLarkApp
+    const registry = new MessagingGatewayRegistry({
+      sessionManager: makeStubSessionManager(),
+      credentialManager: makeStubCredentialManager(),
+      getMessagingDir: (workspaceId: string) => join(dir, workspaceId, 'messaging'),
+      registerLarkApp: register,
+    })
+    const saved: string[] = []
+    registry.saveLarkCredentials = async (_workspaceId, credentials) => {
+      saved.push(credentials.appId)
+    }
+
+    const expired = await registry.beginLarkRegistration('ws-lark')
+    expect(registry.getLarkRegistrationStatus('ws-lark', expired.attemptId).state).toBe('expired')
+
+    const current = await registry.beginLarkRegistration('ws-lark', { region: 'lark' })
+    completions[0]?.({ client_id: 'cli_stale', client_secret: 'secret' })
+    completions[1]?.({
+      client_id: 'cli_current',
+      client_secret: 'secret',
+      user_info: { tenant_brand: 'lark' },
+    })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(saved).toEqual(['cli_current'])
+    expect(registry.getLarkRegistrationStatus('ws-lark', expired.attemptId).state).toBe('cancelled')
+    expect(registry.getLarkRegistrationStatus('ws-lark', current.attemptId).state).toBe('connected')
   })
 })
 
