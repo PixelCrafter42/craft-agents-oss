@@ -23,7 +23,12 @@ import {
   type WorkerCommand,
   type WorkerEvent,
 } from './protocol'
-import { loadContextToken, saveContextToken } from './context-token-cache'
+import {
+  deleteContextToken,
+  loadContextToken,
+  saveContextToken,
+} from './context-token-cache'
+import { describeWeixinSendResponseError } from './send-error'
 import { sendTextWithPersistedFallback } from './send-text'
 
 declare const __WEIXIN_WORKER_BUILD_ID__: string
@@ -323,10 +328,9 @@ function installWeixinFetchCompatibilityPatch(): void {
         const raw = await response.clone().text().catch(() => '')
         if (raw.trim()) {
           try {
-            const parsed = JSON.parse(raw) as { ret?: number; errmsg?: string }
-            if (parsed.ret !== undefined && parsed.ret !== 0) {
-              throw new Error(`sendMessage ret=${parsed.ret} errmsg=${parsed.errmsg ?? '(none)'}`)
-            }
+            const parsed = JSON.parse(raw) as { ret?: number; errcode?: number; errmsg?: string }
+            const error = describeWeixinSendResponseError(parsed)
+            if (error) throw new Error(error)
           } catch (err) {
             if (err instanceof Error && err.message.startsWith('sendMessage ret=')) throw err
           }
@@ -736,6 +740,11 @@ async function handleSendText(id: string, channelId: string, text: string): Prom
         log(`[weixin] native send failed; using persisted token for ${channelId}`)
         return sendTextWithPersistedContextToken(activeSession, channelId, text)
       },
+      () => {
+        deleteContextToken(activeSession.stateDir, activeSession.accountId, channelId)
+        log(`[weixin] context token expired for ${channelId}; retrying without context token`)
+        return sendTextWithoutContextToken(activeSession, channelId, text)
+      },
     )
     emit({
       type: 'send_result',
@@ -777,6 +786,23 @@ async function sendTextWithPersistedContextToken(
   if (!contextToken) {
     throw new Error('没有找到 context_token，需要在 start() 运行期间至少收到过一条消息')
   }
+  return sendTextWithOptionalContextToken(activeSession, channelId, text, contextToken)
+}
+
+async function sendTextWithoutContextToken(
+  activeSession: SessionState,
+  channelId: string,
+  text: string,
+): Promise<string> {
+  return sendTextWithOptionalContextToken(activeSession, channelId, text)
+}
+
+async function sendTextWithOptionalContextToken(
+  activeSession: SessionState,
+  channelId: string,
+  text: string,
+  contextToken?: string,
+): Promise<string> {
   const messageId = `openclaw-weixin:${Date.now()}-${randomUUID().replace(/-/g, '').slice(0, 8)}`
   const raw = await postWeixinSendMessage(
     activeSession.baseUrl,
@@ -792,22 +818,20 @@ async function sendTextWithPersistedContextToken(
         item_list: text
           ? [{ type: MESSAGE_ITEM_TYPE_TEXT, text_item: { text: markdownToPlainText(text) } }]
           : undefined,
-        context_token: contextToken,
+        ...(contextToken ? { context_token: contextToken } : {}),
       },
     },
   )
   if (raw.trim()) {
     try {
       const parsed = JSON.parse(raw) as { ret?: number; errcode?: number; errmsg?: string }
-      const code = parsed.ret ?? parsed.errcode
-      if (code !== undefined && code !== 0) {
-        throw new Error(`sendMessage ret=${parsed.ret ?? '(none)'} errcode=${parsed.errcode ?? '(none)'} errmsg=${parsed.errmsg ?? '(none)'}`)
-      }
+      const error = describeWeixinSendResponseError(parsed)
+      if (error) throw new Error(error)
     } catch (err) {
       if (err instanceof Error && err.message.startsWith('sendMessage ret=')) throw err
     }
   }
-  log(`[weixin] persisted context token send accepted messageId=${messageId}`)
+  log(`[weixin] ${contextToken ? 'persisted context token' : 'tokenless'} send accepted messageId=${messageId}`)
   return messageId
 }
 

@@ -12,4 +12,7 @@ This file accumulates release notes for the next unreleased version. PRs that ad
 
 ## Bug Fixes
 
+- **OAuth fallback handles missing subscription credentials and attachment-only messages** — Missing OAuth credentials now refresh before model fallback, image-only turns can retry without requiring text, and failed automation turns are recorded as failures instead of successful dispatches.
+- **Weixin proactive delivery survives stale conversation tokens** — Scheduled automations and other outbound messages now clear an expired per-chat context token and retry once without it, so reinstalling or restarting Craft Agents no longer requires the user to message the bot before pushes resume.
+
 ## Breaking Changes

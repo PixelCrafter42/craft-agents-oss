@@ -168,6 +168,173 @@ describe('sendMessage OAuth refresh ordering (#710)', () => {
     }))
   })
 
+  it('retries an attachment-only turn after an auth failure', async () => {
+    const sessionId = 'attachment-only-auth-retry'
+    const managed = buildSession(sessionId)
+    const attachment = {
+      id: 'image-1',
+      type: 'image',
+      name: 'photo.jpg',
+      mimeType: 'image/jpeg',
+      size: 123,
+      path: '/tmp/photo.jpg',
+    } as never
+
+    managed.messages.push({
+      id: 'image-user-message',
+      role: 'user',
+      content: '',
+      timestamp: 1,
+      attachments: [attachment],
+    } as never)
+    managed.lastSentMessage = ''
+    managed.lastSentAttachments = [attachment]
+    managed.authRetryAttempted = false
+
+    const retries: Array<{ message: string; attachments: unknown[] | undefined; isAuthRetry: boolean | undefined }> = []
+    ;(sm as unknown as { sendEvent: unknown }).sendEvent = () => {}
+    ;(sm as unknown as { sendMessage: unknown }).sendMessage = async (
+      _sessionId: string,
+      message: string,
+      attachments: unknown[] | undefined,
+      _storedAttachments: unknown,
+      _options: unknown,
+      _existingMessageId: unknown,
+      isAuthRetry: boolean | undefined,
+    ) => {
+      retries.push({ message, attachments, isAuthRetry })
+    }
+
+    const started = (sm as unknown as {
+      attemptAuthRetry: (sessionId: string, managed: unknown, workspaceId: string, errorCode: string) => boolean
+    }).attemptAuthRetry(sessionId, managed, 'ws_test', 'expired_oauth_token')
+
+    expect(started).toBe(true)
+    await new Promise<void>((resolve) => setImmediate(resolve))
+
+    expect(retries).toEqual([{
+      message: '',
+      attachments: [attachment],
+      isAuthRetry: true,
+    }])
+  })
+
+  it('falls back an attachment-only turn when credential refresh is exhausted', async () => {
+    const sessionId = 'attachment-only-model-fallback'
+    const managed = buildSession(sessionId)
+    const attachment = {
+      id: 'image-2',
+      type: 'image',
+      name: 'fallback.jpg',
+      mimeType: 'image/jpeg',
+      size: 456,
+      path: '/tmp/fallback.jpg',
+    } as never
+
+    managed.messages.push({
+      id: 'fallback-image-user',
+      role: 'user',
+      content: '',
+      timestamp: 1,
+      attachments: [attachment],
+    } as never)
+    managed.lastSentMessage = ''
+    managed.lastSentAttachments = [attachment]
+    managed.modelFallbackState = {
+      attemptedKeys: new Set<string>(),
+      userMessageId: 'fallback-image-user',
+      inProgress: false,
+    }
+    managed.processingGeneration = 1
+    managed.llmConnection = 'xai-grok'
+    managed.model = 'pi/grok-4.5'
+
+    const retries: Array<{ message: string; attachments: unknown[] | undefined; isModelFallbackRetry: boolean | undefined }> = []
+    ;(sm as unknown as { sendEvent: unknown }).sendEvent = () => {}
+    ;(sm as unknown as { persistSession: unknown }).persistSession = () => {}
+    ;(sm as unknown as { flushSession: unknown }).flushSession = async () => {}
+    ;(sm as unknown as { disposeManagedAgentRuntime: unknown }).disposeManagedAgentRuntime = async () => {}
+    ;(sm as unknown as { getNextModelFallbackCandidate: unknown }).getNextModelFallbackCandidate = () => ({
+      connectionSlug: 'backup',
+      model: 'pi/backup-model',
+      connection: {
+        slug: 'backup',
+        name: 'Backup',
+        providerType: 'pi',
+        authType: 'api_key',
+        createdAt: 1,
+        models: ['pi/backup-model'],
+        defaultModel: 'pi/backup-model',
+      },
+    })
+    ;(sm as unknown as { sendMessage: unknown }).sendMessage = async (
+      _sessionId: string,
+      message: string,
+      attachments: unknown[] | undefined,
+      _storedAttachments: unknown,
+      _options: unknown,
+      _existingMessageId: unknown,
+      _isAuthRetry: unknown,
+      _onAck: unknown,
+      _rpcContext: unknown,
+      isModelFallbackRetry: boolean | undefined,
+    ) => {
+      retries.push({ message, attachments, isModelFallbackRetry })
+    }
+
+    const started = await (sm as unknown as {
+      tryStartModelFallback: (
+        sessionId: string,
+        managed: unknown,
+        error: { code: 'invalid_credentials'; title: string; message: string },
+      ) => Promise<boolean>
+    }).tryStartModelFallback(sessionId, managed, {
+      code: 'invalid_credentials',
+      title: 'Invalid Credentials',
+      message: 'OAuth credential missing',
+    })
+
+    expect(started).toBe(true)
+    expect(managed.llmConnection).toBe('backup')
+    expect(managed.model).toBe('pi/backup-model')
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    expect(retries).toEqual([{
+      message: '',
+      attachments: [attachment],
+      isModelFallbackRetry: true,
+    }])
+  })
+
+  it('reports a provider error followed by SDK complete as an error completion', async () => {
+    const sessionId = 'provider-error-completion'
+    buildSession(sessionId)
+
+    const fakeAgent = {
+      setAllSources: () => {},
+      setSourceServers: async () => {},
+      applyBridgeUpdates: async () => {},
+      getModel: () => 'test-model',
+      getSessionId: () => null,
+      async *chat() {
+        yield { type: 'error', message: 'Provider failed permanently' }
+        yield { type: 'complete' }
+      },
+    }
+    ;(sm as unknown as { getOrCreateAgent: unknown }).getOrCreateAgent = async () => fakeAgent
+
+    const completion = new Promise<{ reason: string }>((resolve) => {
+      const unsubscribe = sm.onSessionComplete((event) => {
+        if (event.sessionId !== sessionId) return
+        unsubscribe()
+        resolve(event)
+      })
+    })
+
+    await sm.sendMessage(sessionId, 'hello')
+
+    expect((await completion).reason).toBe('error')
+  })
+
   it('cancels a task send while agent creation preflight is still awaiting', async () => {
     const sessionId = 'task-send-cancel'
     const managed = buildSession(sessionId)

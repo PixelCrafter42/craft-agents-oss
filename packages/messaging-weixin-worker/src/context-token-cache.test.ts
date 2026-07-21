@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import {
   contextTokenCachePath,
   contextTokenKey,
+  deleteContextToken,
   loadContextToken,
   saveContextToken,
 } from './context-token-cache'
@@ -46,6 +47,18 @@ describe('Weixin context token cache', () => {
     saveContextToken(stateDir, 'acct-1', 'user-1', 'token-a')
 
     expect(loadContextToken(stateDir, 'acct-1', 'user-2')).toBeUndefined()
+  })
+
+  it('deletes only the stale token for the requested account and user', () => {
+    const stateDir = makeTmpDir()
+
+    saveContextToken(stateDir, 'acct-1', 'user-1', 'token-a')
+    saveContextToken(stateDir, 'acct-1', 'user-2', 'token-b')
+
+    expect(deleteContextToken(stateDir, 'acct-1', 'user-1')).toBe(true)
+    expect(deleteContextToken(stateDir, 'acct-1', 'user-1')).toBe(false)
+    expect(loadContextToken(stateDir, 'acct-1', 'user-1')).toBeUndefined()
+    expect(loadContextToken(stateDir, 'acct-1', 'user-2')).toBe('token-b')
   })
 
   it('stores the cache under the OpenClaw state dir with private permissions', () => {

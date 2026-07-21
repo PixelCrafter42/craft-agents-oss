@@ -1,4 +1,7 @@
-import { shouldUsePersistedContextTokenFallback } from './send-error'
+import {
+  isExpiredContextTokenError,
+  shouldUsePersistedContextTokenFallback,
+} from './send-error'
 
 export type SendTextWithFallbackResult =
   | { usedFallback: false }
@@ -11,16 +14,25 @@ export type SendTextWithFallbackResult =
 export async function sendTextWithPersistedFallback(
   nativeSend: () => Promise<void>,
   persistedSend: () => Promise<string>,
+  tokenlessSend?: () => Promise<string>,
 ): Promise<SendTextWithFallbackResult> {
   try {
     await nativeSend()
     return { usedFallback: false }
   } catch (error) {
+    if (tokenlessSend && isExpiredContextTokenError(error)) {
+      return { usedFallback: true, messageId: await tokenlessSend() }
+    }
     if (!shouldUsePersistedContextTokenFallback(error)) throw error
   }
 
-  return {
-    usedFallback: true,
-    messageId: await persistedSend(),
+  try {
+    return {
+      usedFallback: true,
+      messageId: await persistedSend(),
+    }
+  } catch (error) {
+    if (!tokenlessSend || !isExpiredContextTokenError(error)) throw error
+    return { usedFallback: true, messageId: await tokenlessSend() }
   }
 }

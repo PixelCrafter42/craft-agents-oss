@@ -443,6 +443,18 @@ export function parseError(
   // Check for specific HTTP status codes or patterns
   } else if (lowerMessage.includes('402') || lowerMessage.includes('payment required')) {
     code = 'billing_error';
+  } else if (
+    lowerMessage.includes('no api key found') ||
+    lowerMessage.includes('no api keys found') ||
+    lowerMessage.includes('api key not found') ||
+    lowerMessage.includes('no oauth token found') ||
+    lowerMessage.includes('oauth token not found')
+  ) {
+    // Some Pi OAuth providers (notably xai-auth) use the SDK's generic
+    // "No API key found" wording when their subscription OAuth credential is
+    // absent from auth storage. Keep this provider-neutral: SessionManager has
+    // the connection's authType and can refresh OAuth before falling back.
+    code = 'invalid_credentials';
   } else if (lowerMessage.includes('401') || lowerMessage.includes('unauthorized') || lowerMessage.includes('invalid api key') || lowerMessage.includes('invalid x-api-key') || lowerMessage.includes('authentication failed') || lowerMessage.includes('token is expired') || lowerMessage.includes('token expired')) {
     // Distinguish between API key and OAuth errors
     if (lowerMessage.includes('oauth') || lowerMessage.includes('token') || lowerMessage.includes('session')) {

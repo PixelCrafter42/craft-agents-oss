@@ -57,6 +57,14 @@ export function isModelFallbackEligibleError(code: ErrorCode | undefined): boole
   return !!code && MODEL_FALLBACK_ELIGIBLE_ERROR_CODES.has(code)
 }
 
+export function shouldAttemptAuthRefreshBeforeFallback(
+  code: ErrorCode | undefined,
+  authType: LlmConnection['authType'] | undefined,
+): boolean {
+  if (code === 'invalid_api_key' || code === 'expired_oauth_token') return true
+  return code === 'invalid_credentials' && authType === 'oauth'
+}
+
 export function buildModelFallbackSequence(input: BuildModelFallbackSequenceInput): ResolvedModelFallbackCandidate[] {
   if (!input.settings.enabled || input.settings.candidates.length === 0) return []
 

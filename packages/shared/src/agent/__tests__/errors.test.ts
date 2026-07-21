@@ -44,6 +44,21 @@ describe('parseError network error handling', () => {
   })
 })
 
+describe('parseError missing credential handling', () => {
+  it('maps Pi generic missing-key wording to provider-neutral invalid_credentials', () => {
+    const parsed = parseError(new Error('No API key found for "xai-auth"'))
+
+    expect(parsed.code).toBe('invalid_credentials')
+    expect(parsed.title).toBe('Invalid Credentials')
+  })
+
+  it('maps missing OAuth-token wording to invalid_credentials', () => {
+    const parsed = parseError(new Error('No OAuth token found for: xai-grok'))
+
+    expect(parsed.code).toBe('invalid_credentials')
+  })
+})
+
 describe('parseError service availability handling', () => {
   it('maps Codex overloaded plain errors to service_unavailable', () => {
     const parsed = parseError(new Error('Codex error: Our servers are currently overloaded. Please try again later.'))

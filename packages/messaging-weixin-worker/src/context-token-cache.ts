@@ -88,3 +88,16 @@ export function loadContextToken(
   const token = record?.token?.trim()
   return token || undefined
 }
+
+export function deleteContextToken(
+  stateDir: string,
+  accountId: string,
+  userId: string,
+): boolean {
+  const cache = loadCache(stateDir)
+  const key = contextTokenKey(accountId, userId)
+  if (!cache.tokens[key]) return false
+  delete cache.tokens[key]
+  saveCache(stateDir, cache)
+  return true
+}

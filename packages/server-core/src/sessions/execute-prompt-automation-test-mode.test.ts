@@ -69,6 +69,42 @@ describe('executePromptAutomation waitForCompletion', () => {
       }),
     ).rejects.toThrow('send failed')
   })
+
+  it('default waits for terminal completion and rejects a model error', async () => {
+    const sessions = (sm as unknown as { sessions: Map<string, unknown> }).sessions
+    const managed = {
+      id: 'test-sess',
+      workspace: { id: 'ws_test', rootPath: tmpRoot },
+      messages: [
+        { id: 'model-error', role: 'error', content: 'No API key found for "xai-auth"', timestamp: 2 },
+      ],
+    }
+    sessions.set('test-sess', managed)
+    ;(sm as unknown as { persistSession: unknown }).persistSession = () => {}
+    ;(sm as unknown as { sendMessage: unknown }).sendMessage = async (
+      _sessionId: string,
+      _message: string,
+      _attachments: unknown,
+      _storedAttachments: unknown,
+      _options: unknown,
+      _existingMessageId: unknown,
+      _isAuthRetry: unknown,
+      onAck: ((messageId: string) => void) | undefined,
+    ) => {
+      onAck?.('automation-user')
+      setImmediate(() => {
+        ;(sm as unknown as {
+          emitSessionComplete: (event: { sessionId: string; workspaceId: string; reason: 'error' }) => void
+        }).emitSessionComplete({ sessionId: 'test-sess', workspaceId: 'ws_test', reason: 'error' })
+      })
+    }
+
+    await expect(sm.executePromptAutomation({
+      workspaceId: 'ws_test',
+      workspaceRootPath: tmpRoot,
+      prompt: 'run automation',
+    })).rejects.toThrow('No API key found for "xai-auth"')
+  })
 })
 
 describe('executePromptAutomation session reuse', () => {

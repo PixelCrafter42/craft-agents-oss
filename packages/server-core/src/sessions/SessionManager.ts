@@ -84,7 +84,7 @@ import { restoreFiles } from '@craft-agent/shared/utils/bundle-files'
 import { getCredentialManager } from '@craft-agent/shared/credentials'
 import { CraftMcpClient, McpClientPool, McpPoolServer } from '@craft-agent/shared/mcp'
 import { type Session, type SessionEvent, type FileAttachment, type SendMessageOptions, type UnreadSummary, type RemoteSessionTransferPayload, type ImportRemoteSessionTransferResult, RPC_CHANNELS, generateMessageId } from '@craft-agent/shared/protocol'
-import { messageToStored, storedToMessage, type Message, type StoredAttachment, type ToolDisplayMeta, type TokenUsage } from '@craft-agent/core/types'
+import { messageToStored, storedToMessage, type ErrorCode, type Message, type StoredAttachment, type ToolDisplayMeta, type TokenUsage } from '@craft-agent/core/types'
 import type { AgentEventUsage } from '@craft-agent/core/types'
 import { formatPathsToRelative, formatToolInputPaths, perf, encodeIconToDataUrlAsync, getEmojiIcon, resetSummarizationClient, resolveToolIcon, readFileAttachment, selectSpreadMessages, normalizePath } from '@craft-agent/shared/utils'
 import { loadAllSkills, loadSkillBySlug, invalidateSkillsCache, type LoadedSkill } from '@craft-agent/shared/skills'
@@ -101,7 +101,7 @@ import { ensureLabelsExist, ensureTaskItemLabel } from '@craft-agent/shared/labe
 import { loadStatusConfig } from '@craft-agent/shared/statuses/storage'
 import { AutomationSystem, createPromptHistoryEntry, appendAutomationHistoryEntry, matcherMatches, getReusableAutomationSessionId, setReusableAutomationSessionId, clearReusableAutomationSessionId, type AutomationSystemMetadataSnapshot, type AutomationMessagingTarget, type AutomationWebhookReceiveInput, type AutomationWebhookReceiveResult } from '@craft-agent/shared/automations'
 import { buildBackendRuntimeSignature, buildBackendRuntimeUpdate, buildRestartRequiredSignature, filterAttachmentsForModelInput } from './runtime-config'
-import { buildModelFallbackSequence, isModelFallbackEligibleError, modelFallbackKey, type ResolvedModelFallbackCandidate } from './model-fallback'
+import { buildModelFallbackSequence, isModelFallbackEligibleError, modelFallbackKey, shouldAttemptAuthRefreshBeforeFallback, type ResolvedModelFallbackCandidate } from './model-fallback'
 
 // Import from server-core domain utilities
 import { sanitizeForTitle, shouldActivateBrowserOverlay, normalizeBrowserToolName, rollbackFailedBranchCreation, releaseBrowserOwnershipOnForcedStop } from '@craft-agent/server-core/domain'
@@ -966,6 +966,10 @@ interface ManagedSession {
     inProgress?: boolean
     suppressGeneration?: number
   }
+  // Provider error events are sometimes followed by a normal SDK `complete`.
+  // Track the terminal error for this turn so completion consumers (tasks,
+  // automations) receive reason=error instead of a false success.
+  turnTerminalError?: string
   // Whether this session is hidden from session list (e.g., mini edit sessions)
   hidden?: boolean
   branchFromMessageId?: string
@@ -6483,6 +6487,7 @@ export class SessionManager implements ISessionManager {
     managed.lastMessageAt = Date.now()
     this.setProcessing(managed, true)
     managed.streamingText = ''
+    managed.turnTerminalError = undefined
     managed.processingGeneration++
     managed.turnStartFinalMessageId = this.getLastFinalAssistantMessageId(managed.messages)
 
@@ -6615,6 +6620,15 @@ export class SessionManager implements ISessionManager {
       if (stopAbortedTaskDispatch()) return
       sessionLog.error('Error creating agent:', error)
       const parsedError = this.parseAgentErrorForCurrentBackend(managed, error)
+      if (
+        this.shouldAttemptAuthRetry(managed, parsedError.code) &&
+        this.attemptAuthRetry(sessionId, managed, managed.workspace.id, parsedError.code)
+      ) {
+        sendSpan.mark('agent.create.auth_retry')
+        sendSpan.setMetadata('auth_error', parsedError.code)
+        sendSpan.end()
+        return
+      }
       if (await this.tryStartModelFallback(sessionId, managed, parsedError)) {
         sendSpan.mark('agent.create.model_fallback')
         sendSpan.setMetadata('fallback_error', parsedError.code)
@@ -6877,7 +6891,7 @@ export class SessionManager implements ISessionManager {
 
           sendSpan.mark('chat.complete')
           sendSpan.end()
-          this.onProcessingStopped(sessionId, 'complete')
+          this.onProcessingStopped(sessionId, managed.turnTerminalError ? 'error' : 'complete')
           return  // Exit function, skip finally block (onProcessingStopped handles cleanup)
         }
 
@@ -7132,6 +7146,22 @@ Please continue the conversation naturally from where we left off.
     })
   }
 
+  private hasRetryableTurnPayload(managed: ManagedSession): boolean {
+    return managed.lastSentMessage !== undefined ||
+      (managed.lastSentAttachments?.length ?? 0) > 0 ||
+      (managed.lastSentStoredAttachments?.length ?? 0) > 0
+  }
+
+  private shouldAttemptAuthRetry(managed: ManagedSession, errorCode: ErrorCode | undefined): boolean {
+    const workspaceConfig = loadWorkspaceConfig(managed.workspace.rootPath)
+    const context = resolveBackendContext({
+      sessionConnectionSlug: managed.llmConnection,
+      workspaceDefaultConnectionSlug: workspaceConfig?.defaults?.defaultLlmConnection,
+      managedModel: managed.model,
+    })
+    return shouldAttemptAuthRefreshBeforeFallback(errorCode, context.connection?.authType)
+  }
+
   private getNextModelFallbackCandidate(managed: ManagedSession): ResolvedModelFallbackCandidate | null {
     const state = managed.modelFallbackState
     if (!state) return null
@@ -7160,7 +7190,7 @@ Please continue the conversation naturally from where we left off.
     error: Pick<AgentError, 'code' | 'title' | 'message'>,
   ): Promise<boolean> {
     if (!isModelFallbackEligibleError(error.code)) return false
-    if (!managed.lastSentMessage) return false
+    if (!this.hasRetryableTurnPayload(managed)) return false
 
     const state = managed.modelFallbackState
     const userMessageId = state?.userMessageId
@@ -7193,7 +7223,7 @@ Please continue the conversation naturally from where we left off.
     const previousConnectionSlug = previousContext.connection?.slug ?? managed.llmConnection
     const previousModel = previousContext.resolvedModel ?? managed.model
     const switchingConnection = previousConnectionSlug !== candidate.connectionSlug
-    const retryMessage = managed.lastSentMessage
+    const retryMessage = managed.lastSentMessage ?? ''
     const retryAttachments = managed.lastSentAttachments
     const retryStoredAttachments = managed.lastSentStoredAttachments
     const retryOptions = managed.lastSentOptions
@@ -7301,7 +7331,7 @@ Please continue the conversation naturally from where we left off.
     workspaceId: string,
     failureErrorCode?: string,
   ): boolean {
-    if (managed.authRetryAttempted || !managed.lastSentMessage) return false
+    if (managed.authRetryAttempted || !this.hasRetryableTurnPayload(managed)) return false
 
     sessionLog.info(`Auth error detected, attempting token refresh and retry for session ${sessionId}`)
     managed.authRetryAttempted = true
@@ -7326,12 +7356,12 @@ Please continue the conversation naturally from where we left off.
         managed.agent = null
 
         // 3. Retry the message
-        const retryMessage = managed.lastSentMessage
+        const retryMessage = managed.lastSentMessage ?? ''
         const retryAttachments = managed.lastSentAttachments
         const retryStoredAttachments = managed.lastSentStoredAttachments
         const retryOptions = managed.lastSentOptions
 
-        if (retryMessage) {
+        if (this.hasRetryableTurnPayload(managed)) {
           sessionLog.info(`[auth-retry] Retrying message for session ${sessionId}`)
           this.setProcessing(managed, false)
 
@@ -9103,6 +9133,12 @@ Please continue the conversation naturally from where we left off.
         }
 
         const parsedPlainError = this.parseAgentErrorForCurrentBackend(managed, new Error(event.message))
+        if (
+          this.shouldAttemptAuthRetry(managed, parsedPlainError.code) &&
+          this.attemptAuthRetry(sessionId, managed, workspaceId, parsedPlainError.code)
+        ) {
+          break
+        }
         if (await this.tryStartModelFallback(sessionId, managed, parsedPlainError)) {
           break
         }
@@ -9114,6 +9150,7 @@ Please continue the conversation naturally from where we left off.
           content: event.message,
           timestamp: this.monotonic()
         }
+        managed.turnTerminalError = event.message
         managed.messages.push(errorMessage)
         this.sendEvent({ type: 'error', sessionId, error: event.message, timestamp: errorMessage.timestamp }, workspaceId)
         break
@@ -9141,10 +9178,10 @@ Please continue the conversation naturally from where we left off.
         // 1. Resetting the summarization client cache
         // 2. Destroying the agent (new agent's postInit() refreshes the token)
         // 3. Retrying the message
-        const isAuthError = event.error.code === 'invalid_api_key' ||
-          event.error.code === 'expired_oauth_token'
-
-        if (isAuthError && this.attemptAuthRetry(sessionId, managed, workspaceId, event.error.code)) {
+        if (
+          this.shouldAttemptAuthRetry(managed, event.error.code) &&
+          this.attemptAuthRetry(sessionId, managed, workspaceId, event.error.code)
+        ) {
           // Don't add error message or send to renderer - we're handling it via retry
           break
         }
@@ -9167,6 +9204,7 @@ Please continue the conversation naturally from where we left off.
           errorOriginal: event.error.originalError,
           errorCanRetry: event.error.canRetry,
         }
+        managed.turnTerminalError = typedErrorMessage.content
         managed.messages.push(typedErrorMessage)
         // Send typed_error event with full structure for renderer to handle
         this.sendEvent({
@@ -9737,9 +9775,17 @@ Please continue the conversation naturally from where we left off.
     // until the entire turn (including tool calls) finishes and trips the 30s
     // client timeout (craft-agents-oss#943). The session streams live either
     // way; a background failure surfaces in the session UI and is logged here.
-    const sendPrompt = () => this.sendMessage(sessionId, prompt, undefined, undefined, {
-      skillSlugs: resolved?.skillSlugs,
-    })
+    let promptAccepted = false
+    const sendPrompt = () => this.sendMessage(
+      sessionId,
+      prompt,
+      undefined,
+      undefined,
+      { skillSlugs: resolved?.skillSlugs },
+      undefined,
+      undefined,
+      () => { promptAccepted = true },
+    )
 
     if (waitForCompletion === false) {
       void this.withAutomationTargetLock(sessionId, sendPrompt).catch((err) => {
@@ -9751,7 +9797,36 @@ Please continue the conversation naturally from where we left off.
       return { sessionId }
     }
 
-    await this.withAutomationTargetLock(sessionId, sendPrompt)
+    await this.withAutomationTargetLock(sessionId, async () => {
+      let completionEvent: SessionCompletionEvent | undefined
+      let resolveCompletion!: (event: SessionCompletionEvent) => void
+      const completionPromise = new Promise<SessionCompletionEvent>((resolve) => {
+        resolveCompletion = resolve
+      })
+      const unsubscribe = this.onSessionComplete((event) => {
+        if (promptAccepted && event.sessionId === sessionId) {
+          completionEvent = event
+          resolveCompletion(event)
+        }
+      })
+
+      try {
+        await sendPrompt()
+        if (promptAccepted && !completionEvent) {
+          completionEvent = await completionPromise
+        }
+
+        if (completionEvent && completionEvent.reason !== 'complete') {
+          const managed = this.sessions.get(sessionId)
+          const errorMessage = managed
+            ? [...managed.messages].reverse().find(message => message.role === 'error')?.content
+            : undefined
+          throw new Error(errorMessage || `Automation session ended with ${completionEvent.reason}`)
+        }
+      } finally {
+        unsubscribe()
+      }
+    })
 
     return { sessionId }
   }

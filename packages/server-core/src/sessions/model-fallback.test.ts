@@ -4,6 +4,7 @@ import {
   buildModelFallbackSequence,
   isModelFallbackEligibleError,
   modelFallbackKey,
+  shouldAttemptAuthRefreshBeforeFallback,
 } from './model-fallback'
 
 function connection(overrides: Partial<LlmConnection>): LlmConnection {
@@ -123,5 +124,13 @@ describe('model fallback resolver', () => {
     expect(isModelFallbackEligibleError('queued_message_replay_failed')).toBe(false)
     expect(isModelFallbackEligibleError('sdk_binary_missing')).toBe(false)
     expect(isModelFallbackEligibleError('sdk_cwd_missing')).toBe(false)
+  })
+
+  it('refreshes missing credentials only for OAuth connections before fallback', () => {
+    expect(shouldAttemptAuthRefreshBeforeFallback('invalid_credentials', 'oauth')).toBe(true)
+    expect(shouldAttemptAuthRefreshBeforeFallback('invalid_credentials', 'api_key')).toBe(false)
+    expect(shouldAttemptAuthRefreshBeforeFallback('invalid_api_key', 'api_key')).toBe(true)
+    expect(shouldAttemptAuthRefreshBeforeFallback('expired_oauth_token', 'oauth')).toBe(true)
+    expect(shouldAttemptAuthRefreshBeforeFallback('rate_limited', 'oauth')).toBe(false)
   })
 })

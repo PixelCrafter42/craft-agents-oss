@@ -647,6 +647,21 @@ describe('PiEventAdapter', () => {
       expect(events[0].error.code).toBe('invalid_api_key');
     });
 
+    it('should emit typed_error for subscription OAuth credentials missing from Pi auth storage', () => {
+      const events = collect(adapter.adaptEvent({
+        type: 'message_end',
+        message: {
+          role: 'assistant',
+          stopReason: 'error',
+          errorMessage: 'No API key found for "xai-auth"',
+        },
+      } as any));
+
+      expect(events).toHaveLength(1);
+      expect(events[0].type).toBe('typed_error');
+      expect(events[0].error.code).toBe('invalid_credentials');
+    });
+
     it('should emit typed_error for billing/402 errors', () => {
       const events = collect(adapter.adaptEvent({
         type: 'message_end',
