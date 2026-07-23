@@ -677,7 +677,7 @@ describe('PiEventAdapter', () => {
       expect(events[0].error.code).toBe('billing_error');
     });
 
-    it('should emit typed_error for rate limit errors', () => {
+    it('should buffer retryable rate limit errors until agent_end decides whether to retry', () => {
       const events = collect(adapter.adaptEvent({
         type: 'message_end',
         message: {
@@ -687,9 +687,17 @@ describe('PiEventAdapter', () => {
         },
       } as any));
 
-      expect(events).toHaveLength(1);
-      expect(events[0].type).toBe('typed_error');
-      expect(events[0].error.code).toBe('rate_limited');
+      expect(events).toHaveLength(0);
+
+      const terminalEvents = collect(adapter.adaptEvent({
+        type: 'agent_end',
+        messages: [],
+        willRetry: false,
+      } as any));
+      expect(terminalEvents).toHaveLength(2);
+      expect(terminalEvents[0].type).toBe('typed_error');
+      expect(terminalEvents[0].error.code).toBe('rate_limited');
+      expect(terminalEvents[1]).toEqual({ type: 'complete' });
     });
 
     it('should not emit error without errorMessage even if stopReason is error', () => {
@@ -1181,6 +1189,132 @@ describe('PiEventAdapter', () => {
       expect(events).toHaveLength(0);
     });
 
+    it('holds the queue across a retryable transport error and delivers the recovered reply', () => {
+      collect(adapter.adaptEvent({ type: 'turn_start' } as any));
+
+      collect(adapter.adaptEvent({
+        type: 'message_update',
+        assistantMessageEvent: {
+          type: 'text_delta',
+          delta: 'Trying the request...',
+        },
+      } as any));
+
+      const failedMessageEvents = collect(adapter.adaptEvent({
+        type: 'message_end',
+        sdkMessageId: 'failed-attempt',
+        message: {
+          role: 'assistant',
+          stopReason: 'error',
+          errorMessage: 'WebSocket closed 1006 Connection ended',
+          content: 'Trying the request...',
+        },
+      } as any));
+
+      // Finalize the failed attempt's streamed draft as commentary, but do not
+      // surface a terminal error while Pi still intends to retry.
+      expect(failedMessageEvents).toEqual([expect.objectContaining({
+        type: 'text_complete',
+        text: 'Trying the request...',
+        isIntermediate: true,
+      })]);
+
+      const retryingAgentEnd = collect(adapter.adaptEvent({
+        type: 'agent_end',
+        messages: [],
+        willRetry: true,
+      } as any));
+      expect(retryingAgentEnd).toHaveLength(0);
+      expect(adapter.shouldCompleteQueue(true)).toBe(false);
+
+      const retryStart = collect(adapter.adaptEvent({
+        type: 'auto_retry_start',
+        attempt: 1,
+        maxAttempts: 3,
+        delayMs: 1000,
+        errorMessage: 'WebSocket closed 1006 Connection ended',
+      } as any));
+      expect(retryStart).toEqual([{
+        type: 'status',
+        message: 'Retrying (attempt 1/3)...',
+      }]);
+
+      collect(adapter.adaptEvent({ type: 'turn_end' } as any));
+      collect(adapter.adaptEvent({ type: 'turn_start' } as any));
+      const recoveredMessage = collect(adapter.adaptEvent({
+        type: 'message_end',
+        message: {
+          role: 'assistant',
+          stopReason: 'stop',
+          content: 'Recovered answer',
+        },
+      } as any));
+      expect(recoveredMessage).toEqual([expect.objectContaining({
+        type: 'text_complete',
+        text: 'Recovered answer',
+        isIntermediate: false,
+      })]);
+
+      expect(collect(adapter.adaptEvent({
+        type: 'auto_retry_end',
+        success: true,
+        attempt: 1,
+      } as any))).toHaveLength(0);
+
+      const finalAgentEnd = collect(adapter.adaptEvent({
+        type: 'agent_end',
+        messages: [],
+        willRetry: false,
+      } as any));
+      expect(finalAgentEnd).toEqual([{ type: 'complete' }]);
+      expect(adapter.shouldCompleteQueue(true)).toBe(true);
+
+      const allEvents = [
+        ...failedMessageEvents,
+        ...retryingAgentEnd,
+        ...retryStart,
+        ...recoveredMessage,
+        ...finalAgentEnd,
+      ];
+      expect(allEvents.filter(event => event.type === 'error' || event.type === 'typed_error')).toHaveLength(0);
+    });
+
+    it('drains a retry held during backoff when Pi cancels without another agent_end', () => {
+      collect(adapter.adaptEvent({
+        type: 'message_end',
+        message: {
+          role: 'assistant',
+          stopReason: 'error',
+          errorMessage: 'WebSocket closed 1006 Connection ended',
+        },
+      } as any));
+      collect(adapter.adaptEvent({
+        type: 'agent_end',
+        messages: [],
+        willRetry: true,
+      } as any));
+      collect(adapter.adaptEvent({
+        type: 'auto_retry_start',
+        attempt: 1,
+        maxAttempts: 3,
+        delayMs: 1000,
+        errorMessage: 'WebSocket closed 1006 Connection ended',
+      } as any));
+
+      const events = collect(adapter.adaptEvent({
+        type: 'auto_retry_end',
+        success: false,
+        attempt: 1,
+        finalError: 'Retry cancelled',
+      } as any));
+
+      expect(events[0].type).toBe('typed_error');
+      expect(events[0].error.code).toBe('network_error');
+      expect(events[1]).toEqual({ type: 'complete' });
+      expect(adapter.shouldCompleteQueue(false)).toBe(true);
+      expect(adapter.shouldCompleteQueue(false)).toBe(false);
+    });
+
     it('should emit nothing for queue_update', () => {
       const events = collect(adapter.adaptEvent({
         type: 'queue_update',
@@ -1373,7 +1507,7 @@ describe('PiEventAdapter', () => {
       }
     });
 
-    it('non-overflow regression: rate-limit error preserves existing behavior', () => {
+    it('non-overflow regression: exhausted rate-limit error surfaces at terminal agent_end', () => {
       collect(adapter.adaptEvent({ type: 'turn_start' } as any));
 
       const events = collect(adapter.adaptEvent({
@@ -1385,13 +1519,17 @@ describe('PiEventAdapter', () => {
         },
       } as any));
 
-      // Rate-limit yields a typed_error (not held) — overflow state stays 'none'
-      // so a subsequent agent_end completes the queue normally.
-      expect(events).toHaveLength(1);
-      expect(events[0].type).toMatch(/^(error|typed_error)$/);
+      // Pi classifies rate limits as retryable, so the adapter buffers the
+      // error until AgentSession says its retry budget is exhausted.
+      expect(events).toHaveLength(0);
 
-      const agentEndEvents = collect(adapter.adaptEvent({ type: 'agent_end' } as any));
-      expect(agentEndEvents).toMatchObject([{ type: 'complete' }]);
+      const agentEndEvents = collect(adapter.adaptEvent({
+        type: 'agent_end',
+        messages: [],
+        willRetry: false,
+      } as any));
+      expect(agentEndEvents[0].type).toMatch(/^(error|typed_error)$/);
+      expect(agentEndEvents[1]).toMatchObject({ type: 'complete' });
       expect(adapter.shouldCompleteQueue(true)).toBe(true);
     });
 

@@ -891,6 +891,10 @@ export class PiAgent extends BaseAgent {
         const msg = error instanceof Error ? error.message : String(error);
         this.debug(`Token refresh failed: ${msg}`);
         this.onBackendAuthRequired?.(`Token refresh failed: ${msg}`);
+        // Callers that await a pre-spawn refresh must not continue by injecting
+        // the known-expired access token into a new subprocess. Fire-and-forget
+        // retry paths already attach their own catch handlers.
+        throw error instanceof Error ? error : new Error(msg);
       }
     })();
 

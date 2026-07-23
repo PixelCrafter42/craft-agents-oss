@@ -89,7 +89,10 @@ const MIME_EXT_FALLBACK: Record<string, string> = {
   'image/webp': '.webp',
   'image/heic': '.heic',
   'application/pdf': '.pdf',
-  'audio/ogg': '.ogg',
+  // Telegram native voice messages are Ogg/Opus and conventionally use .oga.
+  // Keeping that extension prevents downstream attachment readers from
+  // mistaking an extension-less voice download for UTF-8 text.
+  'audio/ogg': '.oga',
   'audio/mpeg': '.mp3',
   'audio/mp4': '.m4a',
   'video/mp4': '.mp4',
@@ -584,7 +587,7 @@ export class TelegramAdapter implements PlatformAdapter {
         raw: ctx.message,
       }
 
-      await this.messageHandler(msg)
+      this.dispatchIncomingMessage(msg)
     })
 
     // Attachment handlers — photos, documents, voice, video, audio.
@@ -635,6 +638,7 @@ export class TelegramAdapter implements PlatformAdapter {
       await this.emitAttachmentMessage(ctx, {
         type: 'voice',
         fileId: voice.file_id,
+        fileName: `voice-${ctx.message.message_id}.oga`,
         fileSize: voice.file_size,
         mimeType: voice.mime_type ?? 'audio/ogg',
       })
@@ -874,7 +878,22 @@ export class TelegramAdapter implements PlatformAdapter {
       raw: ctx.message,
     }
 
-    await this.messageHandler(msg)
+    this.dispatchIncomingMessage(msg)
+  }
+
+  /**
+   * Hand an accepted update to the gateway without keeping grammY's polling
+   * loop blocked for the entire agent turn. grammY processes polling updates
+   * sequentially, while the gateway handler resolves only after the model and
+   * tools finish, so awaiting it here prevents the bot from fetching later
+   * messages whenever a turn takes a long time.
+   */
+  private dispatchIncomingMessage(msg: IncomingMessage): void {
+    const handler = this.messageHandler
+    if (!handler) return
+    void handler(msg).catch((err) => {
+      this.log.error('[telegram] inbound message handler failed:', describeError(err))
+    })
   }
 
   /**

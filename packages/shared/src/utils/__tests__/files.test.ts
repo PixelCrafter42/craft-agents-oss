@@ -28,6 +28,10 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe('getFileType — audio support', () => {
+  test('Telegram native voice note .oga → audio', () => {
+    expect(getFileType('voice.oga')).toBe('audio')
+  })
+
   test('voice note .ogg → audio (regression for default-to-text fallthrough)', () => {
     expect(getFileType('voice.ogg')).toBe('audio')
   })
@@ -57,6 +61,10 @@ describe('getFileType — audio support', () => {
 })
 
 describe('getMimeType — audio support', () => {
+  test('oga → audio/ogg', () => {
+    expect(getMimeType('voice.oga')).toBe('audio/ogg')
+  })
+
   test('ogg → audio/ogg', () => {
     expect(getMimeType('voice.ogg')).toBe('audio/ogg')
   })
@@ -71,6 +79,22 @@ describe('getMimeType — audio support', () => {
 })
 
 describe('readFileAttachment — audio fixture', () => {
+  test('preserves Telegram .oga bytes instead of decoding them as UTF-8 text', () => {
+    const dir = makeTmp()
+    const path = join(dir, 'voice.oga')
+    const bytes = Buffer.from([
+      0x4f, 0x67, 0x67, 0x53, 0x00, 0x02, 0xff, 0xfe, 0x80, 0x00, 0xc3, 0x28,
+    ])
+    writeFileSync(path, bytes)
+
+    const att = readFileAttachment(path)
+    expect(att).not.toBeNull()
+    expect(att?.type).toBe('audio')
+    expect(att?.mimeType).toBe('audio/ogg')
+    expect(att?.base64).toBe(bytes.toString('base64'))
+    expect(att?.text).toBeUndefined()
+  })
+
   test('returns an audio attachment with base64 populated', () => {
     const dir = makeTmp()
     const path = join(dir, 'voice.ogg')

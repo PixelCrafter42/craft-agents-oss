@@ -6148,6 +6148,10 @@ export class SessionManager implements ISessionManager {
         }
 
         await writeFile(storedPath, contents)
+        // Callers outside Electron (for example Telegram/Lark gateways) do not
+        // pre-store attachments. Expose the durable copy to the model so tools
+        // such as ASR can read the exact bytes after the temp download is gone.
+        attachment.storedPath = storedPath
 
         let thumbnailBase64 = attachment.thumbnailBase64
         let thumbnailPath: string | undefined

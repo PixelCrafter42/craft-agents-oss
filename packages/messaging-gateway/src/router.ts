@@ -67,6 +67,13 @@ const MIME_EXT_FALLBACK: Record<string, string> = {
   'image/svg+xml': '.svg',
   'image/x-icon': '.ico',
   'application/pdf': '.pdf',
+  'audio/ogg': '.oga',
+  'audio/mpeg': '.mp3',
+  'audio/mp4': '.m4a',
+  'audio/aac': '.aac',
+  'audio/wav': '.wav',
+  'audio/flac': '.flac',
+  'audio/webm': '.weba',
 }
 
 const IMAGE_EXTENSIONS = new Set([
@@ -83,6 +90,19 @@ const IMAGE_EXTENSIONS = new Set([
   '.svg',
   '.ico',
 ])
+
+const AUDIO_MIME_BY_EXTENSION: Record<string, string> = {
+  '.ogg': 'audio/ogg',
+  '.oga': 'audio/ogg',
+  '.opus': 'audio/ogg',
+  '.mp3': 'audio/mpeg',
+  '.m4a': 'audio/mp4',
+  '.aac': 'audio/aac',
+  '.wav': 'audio/wav',
+  '.flac': 'audio/flac',
+  '.weba': 'audio/webm',
+  '.webm': 'audio/webm',
+}
 
 export interface RouterDeps {
   /** Reads the workspace's current MessagingConfig. Called per-message
@@ -184,6 +204,36 @@ function buildImageAttachmentFromLocalPath(a: IncomingAttachment): FileAttachmen
     path: a.localPath,
     name: nameWithExtension(sourceName, ext),
     mimeType: imageMimeType,
+    size: stats.size,
+    base64: buffer.toString('base64'),
+  }
+}
+
+function buildAudioAttachmentFromLocalPath(a: IncomingAttachment): FileAttachment | null {
+  if (!a.localPath || !existsSync(a.localPath)) return null
+
+  const localExt = extname(a.localPath).toLowerCase()
+  const metadataMime = normalizeMimeType(a.mimeType)
+  const audioMimeType =
+    (metadataMime?.startsWith('audio/') ? metadataMime : undefined) ??
+    (a.type === 'voice' ? 'audio/ogg' : AUDIO_MIME_BY_EXTENSION[localExt])
+  if (!audioMimeType && a.type !== 'audio') return null
+
+  const stats = statSync(a.localPath)
+  if (!stats.isFile()) return null
+  if (stats.size > MAX_ROUTED_ATTACHMENT_BYTES) {
+    throw new Error(`File too large: ${basename(a.localPath)} (${Math.round(stats.size / 1024 / 1024)}MB > 20MB limit)`)
+  }
+
+  const mimeType = audioMimeType ?? 'application/octet-stream'
+  const ext = MIME_EXT_FALLBACK[mimeType] || localExt || '.bin'
+  const sourceName = a.fileName || basename(a.localPath)
+  const buffer = readFileSync(a.localPath)
+  return {
+    type: 'audio',
+    path: a.localPath,
+    name: nameWithExtension(sourceName, ext),
+    mimeType,
     size: stats.size,
     base64: buffer.toString('base64'),
   }
@@ -359,10 +409,11 @@ export class Router {
     const built: FileAttachment[] = []
     for (const a of msg.attachments) {
       if (!a.localPath) continue
-      const imageAttachment = buildImageAttachmentFromLocalPath(a)
-      const att = imageAttachment ?? (readFileAttachment(a.localPath) as FileAttachment | null)
+      const specializedAttachment =
+        buildImageAttachmentFromLocalPath(a) ?? buildAudioAttachmentFromLocalPath(a)
+      const att = specializedAttachment ?? (readFileAttachment(a.localPath) as FileAttachment | null)
       if (!att) continue
-      if (!imageAttachment && a.fileName) att.name = a.fileName
+      if (!specializedAttachment && a.fileName) att.name = a.fileName
       built.push(att)
     }
     return built.length > 0 ? built : undefined

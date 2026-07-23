@@ -820,7 +820,8 @@ export async function testBackendConnection(args: {
  * Validate an LLM connection by dispatching to provider-specific validation.
  *
  * - Anthropic/compat/Bedrock/Vertex: validates via Claude Agent SDK (query with maxTurns:1)
- * - OpenAI/Copilot/Pi: returns success (these providers validate on connect, no pre-flight check available)
+ * - xAI OAuth: rotates and persists the refresh token so revoked credentials fail immediately
+ * - Other OpenAI/Copilot/Pi providers: validate on connect when no pre-flight check is available
  *
  * For more thorough provider-specific validation (model list checks, OAuth refresh, etc.),
  * see the IPC handler in apps/electron/src/main/ipc.ts.

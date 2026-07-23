@@ -21,6 +21,77 @@ function createConfig(): BackendConfig {
 }
 
 describe('PiAgent subprocess error handling', () => {
+  it('keeps the subprocess event queue open across Pi provider auto-retry', () => {
+    const agent = new PiAgent(createConfig())
+
+    const enqueued: any[] = []
+    let completeCount = 0
+    ;(agent as any).eventQueue.enqueue = (event: any) => {
+      enqueued.push(event)
+    }
+    ;(agent as any).eventQueue.complete = () => {
+      completeCount++
+    }
+
+    ;(agent as any).handleLine(JSON.stringify({
+      type: 'event',
+      event: {
+        type: 'message_end',
+        message: {
+          role: 'assistant',
+          stopReason: 'error',
+          errorMessage: 'WebSocket closed 1006 Connection ended',
+        },
+      },
+    }))
+    ;(agent as any).handleLine(JSON.stringify({
+      type: 'event',
+      event: { type: 'agent_end', messages: [], willRetry: true },
+    }))
+
+    expect(completeCount).toBe(0)
+    expect(enqueued.filter((event) => event.type === 'error' || event.type === 'typed_error')).toHaveLength(0)
+
+    ;(agent as any).handleLine(JSON.stringify({
+      type: 'event',
+      event: {
+        type: 'auto_retry_start',
+        attempt: 1,
+        maxAttempts: 3,
+        delayMs: 1000,
+        errorMessage: 'WebSocket closed 1006 Connection ended',
+      },
+    }))
+    ;(agent as any).handleLine(JSON.stringify({
+      type: 'event',
+      event: {
+        type: 'message_end',
+        message: {
+          role: 'assistant',
+          stopReason: 'stop',
+          content: 'Recovered answer',
+        },
+      },
+    }))
+    ;(agent as any).handleLine(JSON.stringify({
+      type: 'event',
+      event: { type: 'auto_retry_end', success: true, attempt: 1 },
+    }))
+    ;(agent as any).handleLine(JSON.stringify({
+      type: 'event',
+      event: { type: 'agent_end', messages: [], willRetry: false },
+    }))
+
+    expect(completeCount).toBe(1)
+    expect(enqueued).toEqual([
+      { type: 'status', message: 'Retrying (attempt 1/3)...' },
+      expect.objectContaining({ type: 'text_complete', text: 'Recovered answer' }),
+      { type: 'complete' },
+    ])
+
+    agent.destroy()
+  })
+
   it('maps raw HTML subprocess errors to typed proxy_error events', () => {
     const agent = new PiAgent(createConfig())
 

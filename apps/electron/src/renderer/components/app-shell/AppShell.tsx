@@ -668,6 +668,7 @@ function AppShellContent({
     if (!sessionFilter) return null
     switch (sessionFilter.kind) {
       case 'allSessions': return 'allSessions'
+      case 'unread': return 'unread'
       case 'flagged': return 'flagged'
       case 'archived': return 'archived'
       case 'state': return `state:${sessionFilter.stateId}`
@@ -1626,6 +1627,7 @@ function AppShellContent({
 
   // Count sessions by todo state (scoped to workspace)
   const isMetaDone = (s: SessionMeta) => s.sessionStatus === 'done' || s.sessionStatus === 'cancelled'
+  const unreadCount = activeSessionMetas.filter(s => s.hasUnread).length
   const flaggedCount = activeSessionMetas.filter(s => s.isFlagged).length
   const archivedCount = workspaceSessionMetas.filter(s => s.isArchived).length
 
@@ -1708,6 +1710,9 @@ function AppShellContent({
       case 'allSessions':
         // "All Sessions" - shows active (non-archived) sessions
         result = activeSessionMetas
+        break
+      case 'unread':
+        result = activeSessionMetas.filter(s => s.hasUnread === true)
         break
       case 'flagged':
         result = activeSessionMetas.filter(s => s.isFlagged)
@@ -1953,6 +1958,10 @@ function AppShellContent({
 
   const handleAllSessionsClick = useCallback(() => {
     navigate(routes.view.allSessions())
+  }, [])
+
+  const handleUnreadClick = useCallback(() => {
+    navigate(routes.view.unread())
   }, [])
 
   const handleFlaggedClick = useCallback(() => {
@@ -2312,6 +2321,7 @@ function AppShellContent({
     }
     result.push({ id: 'nav:flagged', type: 'nav', action: handleFlaggedClick })
     result.push({ id: 'nav:archived', type: 'nav', action: handleArchivedClick })
+    result.push({ id: 'nav:unread', type: 'nav', action: handleUnreadClick })
 
     // 2. Labels section header + regular label tree for keyboard nav
     result.push({ id: 'nav:labels', type: 'nav', action: () => handleLabelClick('__all__') })
@@ -2334,7 +2344,7 @@ function AppShellContent({
     result.push({ id: 'nav:whats-new', type: 'nav', action: handleWhatsNewClick })
 
     return result
-  }, [handleAllSessionsClick, handleFlaggedClick, handleArchivedClick, handleSessionStatusClick, effectiveSessionStatuses, handleLabelClick, labelConfigs, labelTree, viewConfigs, handleViewClick, handleSourcesClick, handleSkillsClick, handleAutomationsClick, handleSettingsClick, handleWhatsNewClick])
+  }, [handleAllSessionsClick, handleUnreadClick, handleFlaggedClick, handleArchivedClick, handleSessionStatusClick, effectiveSessionStatuses, handleLabelClick, labelConfigs, labelTree, viewConfigs, handleViewClick, handleSourcesClick, handleSkillsClick, handleAutomationsClick, handleSettingsClick, handleWhatsNewClick])
 
   // Toggle folder expanded state
   const handleToggleFolder = React.useCallback((path: string) => {
@@ -2481,6 +2491,8 @@ function AppShellContent({
     if (!sessionFilter) return t("sidebar.allSessions")
 
     switch (sessionFilter.kind) {
+      case 'unread':
+        return t("sidebar.groupByUnread")
       case 'flagged':
         return t("sidebar.flagged")
       case 'state': {
@@ -2711,6 +2723,14 @@ function AppShellContent({
                           onClick: handleArchivedClick,
                         },
                       ],
+                    },
+                    {
+                      id: "nav:unread",
+                      title: t("sidebar.groupByUnread"),
+                      label: String(unreadCount),
+                      icon: MailOpen,
+                      variant: sessionFilter?.kind === 'unread' ? "default" as const : "ghost" as const,
+                      onClick: handleUnreadClick,
                     },
                     // Labels: navigable header (shows all labeled sessions) + hierarchical tree (drag-and-drop reorder + re-parent)
                     {

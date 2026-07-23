@@ -562,6 +562,10 @@ export interface FileAttachment {
   text?: string
   size: number
   thumbnailBase64?: string
+  /** Durable session attachment path exposed to agent tools after storage. */
+  storedPath?: string
+  /** Converted markdown path for supported office attachments. */
+  markdownPath?: string
 }
 
 export interface SessionFile {

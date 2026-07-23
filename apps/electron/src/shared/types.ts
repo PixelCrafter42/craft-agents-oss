@@ -876,6 +876,7 @@ export type RightSidebarPanel =
  */
 export type SessionFilter =
   | { kind: 'allSessions' }
+  | { kind: 'unread' }
   | { kind: 'flagged' }
   | { kind: 'state'; stateId: string }
   | { kind: 'label'; labelId: string }

@@ -1,4 +1,5 @@
 import type { ProviderDriver, DriverTestConnectionArgs } from '../driver-types.ts';
+import { refreshXaiTokens } from '../../../../auth/xai-oauth.ts';
 import type { ModelDefinition } from '../../../../config/models.ts';
 import { getAllPiModels, getPiModelsForAuthProvider, isDeprecatedClaudeOpus46Model } from '../../../../config/models-pi.ts';
 import { getPiProviderBaseUrl } from '../../../../config/models-pi.ts';
@@ -315,5 +316,38 @@ export const piDriver: ProviderDriver = {
     }
     return testAnthropicCompatible(args.apiKey, baseUrl, bareModel, args.timeoutMs);
   },
-  validateStoredConnection: async () => ({ success: true }),
+  validateStoredConnection: async ({ slug, connection, credentialManager }) => {
+    // Most Pi providers do not expose a cheap pre-flight validation path. xAI is
+    // different: its rotating OAuth refresh token is the durable credential, so
+    // merely checking that the encrypted record contains one produces a false
+    // positive after xAI revokes it. Force a refresh for explicit validation and
+    // persist the entire rotated credential set before reporting success.
+    if (connection.authType !== 'oauth' || connection.piAuthProvider !== 'xai-auth') {
+      return { success: true };
+    }
+
+    const stored = await credentialManager.getLlmOAuth(slug);
+    if (!stored?.refreshToken) {
+      return {
+        success: false,
+        error: 'No xAI OAuth refresh token found. Please re-authenticate.',
+      };
+    }
+
+    try {
+      const tokens = await refreshXaiTokens(stored.refreshToken);
+      await credentialManager.setLlmOAuth(slug, {
+        accessToken: tokens.accessToken,
+        refreshToken: tokens.refreshToken || stored.refreshToken,
+        expiresAt: tokens.expiresAt,
+        idToken: tokens.idToken || stored.idToken,
+      });
+      return { success: true };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  },
 };

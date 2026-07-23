@@ -17,7 +17,7 @@ import type {
   AgentSessionEvent,
 } from '@earendil-works/pi-coding-agent';
 import type { AssistantMessage, AssistantMessageEvent } from '@earendil-works/pi-ai';
-import { isContextOverflow } from '@earendil-works/pi-ai';
+import { isContextOverflow, isRetryableAssistantError } from '@earendil-works/pi-ai';
 import { BaseEventAdapter } from '../base-event-adapter.ts';
 import { PI_TOOL_NAME_MAP } from './constants.ts';
 import { toolMetadataStore } from '../../../interceptor-common.ts';
@@ -60,6 +60,8 @@ type ExternalUsageEvent = {
 };
 
 type PiEvent = PiAgentEvent | AgentSessionEvent | ExternalUsageEvent;
+
+type CraftErrorEvent = Extract<CraftAgentEvent, { type: 'error' | 'typed_error' }>;
 
 type PiUsage = {
   input: number;
@@ -137,6 +139,18 @@ export class PiEventAdapter extends BaseEventAdapter {
   private onFallbackEvent: ((event: CraftAgentEvent) => void) | null = null;
   private onFallbackComplete: (() => void) | null = null;
 
+  // ============================================================
+  // Provider auto-retry state
+  // ============================================================
+  //
+  // Pi emits message_end(error) and agent_end before its session wrapper starts
+  // an automatic retry. AgentSession enriches that agent_end with
+  // `willRetry: true`. Do not surface the transient error or close Craft's
+  // event queue in that case: the recovered message arrives in a subsequent
+  // agent run that belongs to the same Craft turn.
+  private retryRecoveryActive: boolean = false;
+  private pendingRetryableError: CraftErrorEvent | null = null;
+
   constructor() {
     super('pi-event');
   }
@@ -173,7 +187,7 @@ export class PiEventAdapter extends BaseEventAdapter {
       this.pendingQueueComplete = false;
       return true;
     }
-    return isAgentEnd && this.overflowState === 'none';
+    return isAgentEnd && this.overflowState === 'none' && !this.retryRecoveryActive;
   }
 
   /**
@@ -185,6 +199,8 @@ export class PiEventAdapter extends BaseEventAdapter {
     this.overflowState = 'none';
     this.heldOverflowError = null;
     this.pendingQueueComplete = false;
+    this.retryRecoveryActive = false;
+    this.pendingRetryableError = null;
   }
 
   private armOverflowFallbackTimer(): void {
@@ -297,6 +313,21 @@ export class PiEventAdapter extends BaseEventAdapter {
           // Recovered turn just finished — fall through to normal completion.
           this.overflowState = 'none';
         }
+
+        // Pi's AgentSession decides whether a transient provider/transport
+        // failure will be retried only after the underlying agent run ends.
+        // Keep the Craft iterator open so the retry's events are not enqueued
+        // into a closed queue (the cause of lost Telegram replies).
+        if ((event as Extract<AgentSessionEvent, { type: 'agent_end' }>).willRetry === true) {
+          this.retryRecoveryActive = true;
+          break;
+        }
+
+        this.retryRecoveryActive = false;
+        if (this.pendingRetryableError) {
+          yield this.pendingRetryableError;
+          this.pendingRetryableError = null;
+        }
         if (this.lastUsage) {
           const inputTokens = this.lastUsage.input + (this.lastUsage.cacheRead || 0);
           const costUsd = this.lastUsage.cost?.total;
@@ -383,6 +414,8 @@ export class PiEventAdapter extends BaseEventAdapter {
             this.overflowState === 'none' &&
             isContextOverflow(event.message as AssistantMessage, this.contextWindow)
           ) {
+            this.pendingRetryableError = null;
+            this.retryRecoveryActive = false;
             this.overflowState = 'held';
             this.heldOverflowError = msg.errorMessage;
             break;
@@ -392,13 +425,45 @@ export class PiEventAdapter extends BaseEventAdapter {
           // can trigger its auth-retry pipeline (refresh token + resend).
           const parsed = parseError(new Error(msg.errorMessage));
           const isClassified = parsed.code !== 'unknown_error';
-          if (isClassified) {
-            yield { type: 'typed_error', error: parsed };
+          const errorEvent: CraftErrorEvent = isClassified
+            ? { type: 'typed_error', error: parsed }
+            : { type: 'error', message: msg.errorMessage };
+
+          if (isRetryableAssistantError(event.message as AssistantMessage)) {
+            this.pendingRetryableError = errorEvent;
+
+            // A failed stream can have already emitted text deltas. Finalize
+            // that partial text as intermediate commentary so the renderer
+            // does not append the recovered attempt to a stale draft.
+            const partialText = this.extractTextFromMessage(event.message);
+            if (partialText && this.hasStreamedDeltas) {
+              const mTurnId = this.messageSubTurnId || this.nextSubTurnId('m');
+              yield {
+                type: 'text_complete',
+                text: partialText,
+                isIntermediate: true,
+                turnId: mTurnId,
+                sdkMessageId,
+              };
+            }
+            this.hasStreamedDeltas = false;
+            this.messageSubTurnId = null;
           } else {
-            yield { type: 'error', message: msg.errorMessage };
+            // Non-retryable failures (auth, billing, invalid requests, etc.)
+            // keep their existing immediate handoff to SessionManager so its
+            // auth refresh and safe model-fallback pipelines can run.
+            this.pendingRetryableError = null;
+            this.retryRecoveryActive = false;
+            yield errorEvent;
           }
           break;
         }
+
+        // Any successful assistant message proves that a pending provider
+        // retry recovered. Discard the buffered error before the final
+        // agent_end completes the Craft turn.
+        this.pendingRetryableError = null;
+        this.retryRecoveryActive = false;
 
         // Extract text content from the final assistant message
         const textContent = this.extractTextFromMessage(event.message);
@@ -642,6 +707,7 @@ export class PiEventAdapter extends BaseEventAdapter {
 
       case 'auto_retry_start': {
         const retryEvent = event as Extract<AgentSessionEvent, { type: 'auto_retry_start' }>;
+        this.retryRecoveryActive = true;
         yield {
           type: 'status',
           message: `Retrying (attempt ${retryEvent.attempt}/${retryEvent.maxAttempts})...`,
@@ -651,8 +717,25 @@ export class PiEventAdapter extends BaseEventAdapter {
 
       case 'auto_retry_end': {
         const retryEndEvent = event as Extract<AgentSessionEvent, { type: 'auto_retry_end' }>;
-        if (!retryEndEvent.success && retryEndEvent.finalError) {
-          yield { type: 'error', message: `Retry failed: ${retryEndEvent.finalError}` };
+        if (retryEndEvent.success) {
+          this.retryRecoveryActive = false;
+          this.pendingRetryableError = null;
+        } else if (retryEndEvent.finalError) {
+          if (this.retryRecoveryActive) {
+            // A retry cancelled during backoff has no second agent_end. Drain
+            // the held turn here; exhausted retries normally reach the
+            // terminal agent_end path above first.
+            yield this.pendingRetryableError ?? {
+              type: 'error',
+              message: `Retry failed: ${retryEndEvent.finalError}`,
+            };
+            yield { type: 'complete' };
+            this.pendingQueueComplete = true;
+            this.retryRecoveryActive = false;
+            this.pendingRetryableError = null;
+          } else {
+            yield { type: 'error', message: `Retry failed: ${retryEndEvent.finalError}` };
+          }
         }
         break;
       }

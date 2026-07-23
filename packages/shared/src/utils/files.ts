@@ -99,6 +99,7 @@ const OFFICE_EXTENSIONS: Record<string, string> = {
 // Audio file extensions (forwarded as base64; backends decide how to handle)
 const AUDIO_EXTENSIONS: Record<string, string> = {
   '.ogg': 'audio/ogg',
+  '.oga': 'audio/ogg',
   '.opus': 'audio/ogg',
   '.mp3': 'audio/mpeg',
   '.m4a': 'audio/mp4',

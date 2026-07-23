@@ -546,6 +546,8 @@ export function NavigationProvider({
         switch (filter.kind) {
           case 'allSessions':
             return session.isArchived !== true
+          case 'unread':
+            return session.hasUnread === true && session.isArchived !== true
           case 'flagged':
             return session.isFlagged === true && session.isArchived !== true
           case 'archived':
@@ -1216,6 +1218,9 @@ export function NavigationProvider({
     switch (filter.kind) {
       case 'allSessions':
         navigate(routes.view.allSessions(sessionId))
+        break
+      case 'unread':
+        navigate(routes.view.unread(sessionId))
         break
       case 'flagged':
         navigate(routes.view.flagged(sessionId))

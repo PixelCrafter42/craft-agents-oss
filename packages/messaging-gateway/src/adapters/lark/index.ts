@@ -10,6 +10,7 @@ import { writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { extname, join } from 'node:path'
 import { randomBytes, randomUUID } from 'node:crypto'
+import type { Readable } from 'node:stream'
 import * as lark from '@larksuiteoapi/node-sdk'
 import type {
   AdapterCapabilities,
@@ -39,6 +40,7 @@ const STREAM_MAX_ELEMENT_CHARS = 28_000
 const STREAM_MAX_DURATION_MS = 9 * 60 * 1000
 const EPHEMERAL_CONTEXT_TTL_MS = 10 * 60 * 1000
 const MAX_EPHEMERAL_CONTEXTS = 512
+const ATTACHMENT_ONLY_MESSAGE_TYPES = new Set(['audio', 'image', 'file', 'video', 'media', 'sticker'])
 
 const NOOP_LOGGER: MessagingLogger = {
   info: () => {},
@@ -85,9 +87,57 @@ function toLarkSendOptions(opts?: SendOptions): lark.SendOptions | undefined {
   }
 }
 
-function extensionForResource(resource: lark.ResourceDescriptor): string {
+const EXTENSION_BY_MIME: Record<string, string> = {
+  'image/jpeg': '.jpg',
+  'image/png': '.png',
+  'image/gif': '.gif',
+  'image/webp': '.webp',
+  'audio/opus': '.opus',
+  'audio/ogg': '.oga',
+  'audio/mpeg': '.mp3',
+  'audio/wav': '.wav',
+  'video/mp4': '.mp4',
+  'video/quicktime': '.mov',
+  'application/pdf': '.pdf',
+}
+
+function normalizeMimeType(value: string | undefined): string | undefined {
+  const normalized = value?.split(';', 1)[0]?.trim().toLowerCase()
+  return normalized && normalized !== 'application/octet-stream' ? normalized : undefined
+}
+
+function responseHeader(headers: unknown, name: string): string | undefined {
+  if (!headers || typeof headers !== 'object') return undefined
+  const headerRecord = headers as Record<string, unknown> & { get?: (name: string) => unknown }
+  const fromGetter = typeof headerRecord.get === 'function' ? headerRecord.get(name) : undefined
+  if (typeof fromGetter === 'string') return fromGetter
+  const target = name.toLowerCase()
+  for (const [key, value] of Object.entries(headerRecord)) {
+    if (key.toLowerCase() === target && typeof value === 'string') return value
+  }
+  return undefined
+}
+
+async function readResourceBuffer(stream: Readable): Promise<Buffer> {
+  const chunks: Buffer[] = []
+  let total = 0
+  for await (const chunk of stream) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+    total += buffer.byteLength
+    if (total > MAX_ATTACHMENT_BYTES) {
+      stream.destroy()
+      throw new Error(`attachment exceeds ${MAX_ATTACHMENT_BYTES} bytes`)
+    }
+    chunks.push(buffer)
+  }
+  return Buffer.concat(chunks, total)
+}
+
+function extensionForResource(resource: lark.ResourceDescriptor, mimeType?: string): string {
   const existing = extname(resource.fileName ?? '')
   if (existing) return existing
+  const fromMime = mimeType ? EXTENSION_BY_MIME[mimeType] : undefined
+  if (fromMime) return fromMime
   switch (resource.type) {
     case 'image': return '.jpg'
     case 'audio': return '.opus'
@@ -97,14 +147,22 @@ function extensionForResource(resource: lark.ResourceDescriptor): string {
   }
 }
 
-function mimeForFilename(filename: string, type: lark.ResourceDescriptor['type']): string | undefined {
+function mimeForFilename(
+  filename: string,
+  type: lark.ResourceDescriptor['type'],
+  responseMimeType?: string,
+): string | undefined {
+  if (responseMimeType) return responseMimeType
   const ext = extname(filename).toLowerCase()
   const byExt: Record<string, string> = {
     '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.gif': 'image/gif',
-    '.webp': 'image/webp', '.opus': 'audio/opus', '.ogg': 'audio/ogg', '.mp3': 'audio/mpeg',
+    '.webp': 'image/webp', '.opus': 'audio/opus', '.ogg': 'audio/ogg', '.oga': 'audio/ogg', '.mp3': 'audio/mpeg',
     '.wav': 'audio/wav', '.mp4': 'video/mp4', '.mov': 'video/quicktime', '.pdf': 'application/pdf',
   }
-  return byExt[ext] ?? (type === 'image' || type === 'sticker' ? 'image/jpeg' : undefined)
+  return byExt[ext] ??
+    (type === 'image' || type === 'sticker' ? 'image/jpeg' : undefined) ??
+    (type === 'audio' ? 'audio/opus' : undefined) ??
+    (type === 'video' ? 'video/mp4' : undefined)
 }
 
 function incomingType(resource: lark.ResourceDescriptor): IncomingAttachment['type'] {
@@ -609,9 +667,11 @@ export class LarkAdapter implements PlatformAdapter {
     if (!this.messageHandler) return
     const attachments: IncomingAttachment[] = []
     for (const resource of message.resources) {
-      const attachment = await this.downloadResource(resource)
+      const attachment = await this.downloadResource(message.messageId, resource)
       if (attachment) attachments.push(attachment)
     }
+
+    const attachmentOnlyMessage = ATTACHMENT_ONLY_MESSAGE_TYPES.has(message.rawContentType)
 
     const incoming: IncomingMessage = {
       platform: 'lark',
@@ -619,7 +679,7 @@ export class LarkAdapter implements PlatformAdapter {
       messageId: message.messageId,
       senderId: message.senderId,
       senderName: message.senderName,
-      text: message.content,
+      text: attachments.length > 0 && attachmentOnlyMessage ? '' : message.content,
       ...(attachments.length > 0 ? { attachments } : {}),
       ...(message.replyToMessageId ? { replyToMessageId: message.replyToMessageId } : {}),
       chatType: message.chatType === 'p2p' ? 'direct' : 'group',
@@ -631,17 +691,40 @@ export class LarkAdapter implements PlatformAdapter {
     await this.messageHandler(incoming)
   }
 
-  private async downloadResource(resource: lark.ResourceDescriptor): Promise<IncomingAttachment | null> {
+  private async downloadResource(
+    messageId: string,
+    resource: lark.ResourceDescriptor,
+  ): Promise<IncomingAttachment | null> {
     const channel = this.channel
     if (!channel) return null
     try {
       const resourceType: lark.ResourceType =
         resource.type === 'image' || resource.type === 'sticker' ? 'image' : 'file'
-      const file = await channel.downloadResource(resource.fileKey, resourceType)
-      if (file.byteLength > MAX_ATTACHMENT_BYTES) {
-        throw new Error(`attachment exceeds ${MAX_ATTACHMENT_BYTES} bytes`)
+      let file: Buffer
+      let responseMimeType: string | undefined
+      if (resource.type === 'sticker') {
+        // Feishu's message-resource API explicitly excludes stickers; their
+        // image keys continue to use the generic image endpoint.
+        file = await channel.downloadResource(resource.fileKey, 'image')
+        if (file.byteLength > MAX_ATTACHMENT_BYTES) {
+          throw new Error(`attachment exceeds ${MAX_ATTACHMENT_BYTES} bytes`)
+        }
+      } else {
+        // Incoming file_v3/img_v3 keys are scoped to their source message. The
+        // generic files/images endpoints used by LarkChannel.downloadResource()
+        // only address uploaded resources and reject these message-scoped keys.
+        const response = await channel.rawClient.im.v1.messageResource.get({
+          params: { type: resourceType },
+          path: { message_id: messageId, file_key: resource.fileKey },
+        })
+        const declaredSize = Number(responseHeader(response.headers, 'content-length'))
+        if (Number.isFinite(declaredSize) && declaredSize > MAX_ATTACHMENT_BYTES) {
+          throw new Error(`attachment exceeds ${MAX_ATTACHMENT_BYTES} bytes`)
+        }
+        file = await readResourceBuffer(response.getReadableStream())
+        responseMimeType = normalizeMimeType(responseHeader(response.headers, 'content-type'))
       }
-      const extension = extensionForResource(resource)
+      const extension = extensionForResource(resource, responseMimeType)
       const filename = resource.fileName || `${resource.type}-${randomBytes(4).toString('hex')}${extension}`
       const localPath = join(tmpdir(), `lark-${randomBytes(8).toString('hex')}${extension}`)
       writeFileSync(localPath, file)
@@ -649,7 +732,7 @@ export class LarkAdapter implements PlatformAdapter {
         type: incomingType(resource),
         fileId: resource.fileKey,
         fileName: filename,
-        mimeType: mimeForFilename(filename, resource.type),
+        mimeType: mimeForFilename(filename, resource.type, responseMimeType),
         fileSize: file.byteLength,
         localPath,
       }

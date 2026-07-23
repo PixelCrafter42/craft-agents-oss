@@ -107,6 +107,21 @@ describe('sessionMatchesCurrentFilter entity filters', () => {
 })
 
 describe('sessionMatchesCurrentFilter unread filter', () => {
+  it('matches unread active sessions in the first-class unread view', () => {
+    expect(sessionMatchesCurrentFilter(
+      makeSession('unread', { hasUnread: true }),
+      { kind: 'unread' },
+    )).toBe(true)
+    expect(sessionMatchesCurrentFilter(
+      makeSession('read', { hasUnread: false }),
+      { kind: 'unread' },
+    )).toBe(false)
+    expect(sessionMatchesCurrentFilter(
+      makeSession('archived-unread', { hasUnread: true, isArchived: true }),
+      { kind: 'unread' },
+    )).toBe(false)
+  })
+
   it('keeps only explicitly unread sessions when unread-only is enabled', () => {
     expect(sessionMatchesCurrentFilter(makeSession('unread', { hasUnread: true }), undefined, {
       unreadOnly: true,

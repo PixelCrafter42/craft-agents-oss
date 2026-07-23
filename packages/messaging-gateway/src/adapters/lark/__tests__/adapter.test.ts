@@ -1,7 +1,21 @@
-import { describe, expect, it } from 'bun:test'
+import { afterEach, describe, expect, it } from 'bun:test'
+import { readFileSync, unlinkSync } from 'node:fs'
+import { Readable } from 'node:stream'
 import * as lark from '@larksuiteoapi/node-sdk'
 import { LarkAdapter } from '../index'
 import type { ButtonPress, IncomingMessage } from '../../../types'
+
+const downloadedTempPaths: string[] = []
+
+afterEach(() => {
+  for (const path of downloadedTempPaths.splice(0)) {
+    try {
+      unlinkSync(path)
+    } catch {
+      // best-effort temp cleanup
+    }
+  }
+})
 
 function connectedAdapter(channel: object): LarkAdapter {
   const adapter = new LarkAdapter()
@@ -279,6 +293,98 @@ describe('LarkAdapter — Channel/CardKit integration', () => {
       replyToMessageId: 'om_parent',
     })
     expect(messages[0]?.threadId).toBeUndefined()
+  })
+
+  it('downloads native audio and images through the message-resource API', async () => {
+    const messages: IncomingMessage[] = []
+    const calls: Array<{
+      params: { type: string }
+      path: { message_id: string; file_key: string }
+    }> = []
+    const voiceBytes = Buffer.from([
+      0x4f, 0x67, 0x67, 0x53, 0x00, 0x02, 0xff, 0xfe, 0x80, 0x00, 0xc3, 0x28,
+    ])
+    const pngBytes = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=',
+      'base64',
+    )
+    const adapter = connectedAdapter({
+      rawClient: {
+        im: {
+          v1: {
+            messageResource: {
+              get: async (payload: typeof calls[number]) => {
+                calls.push(payload)
+                const isImage = payload.params.type === 'image'
+                const bytes = isImage ? pngBytes : voiceBytes
+                return {
+                  headers: { 'content-type': isImage ? 'image/png' : 'audio/opus' },
+                  getReadableStream: () => Readable.from([
+                    bytes.subarray(0, 5),
+                    bytes.subarray(5),
+                  ]),
+                }
+              },
+            },
+          },
+        },
+      },
+    })
+    adapter.onMessage(async (message) => { messages.push(message) })
+
+    await (adapter as any).handleIncomingMessage({
+      messageId: 'om_source',
+      chatId: 'oc_chat',
+      chatType: 'p2p',
+      senderId: 'ou_user',
+      content: '<audio key="file_v3_voice" duration="6s"/>',
+      rawContentType: 'audio',
+      resources: [
+        { type: 'audio', fileKey: 'file_v3_voice', durationMs: 6000 },
+        { type: 'image', fileKey: 'img_v3_screenshot' },
+      ],
+      mentions: [],
+      mentionAll: false,
+      mentionedBot: false,
+      createTime: 123,
+    })
+
+    expect(calls).toEqual([
+      {
+        params: { type: 'file' },
+        path: { message_id: 'om_source', file_key: 'file_v3_voice' },
+      },
+      {
+        params: { type: 'image' },
+        path: { message_id: 'om_source', file_key: 'img_v3_screenshot' },
+      },
+    ])
+    expect(messages).toHaveLength(1)
+    expect(messages[0]?.text).toBe('')
+    expect(messages[0]?.attachments).toHaveLength(2)
+
+    const [voice, image] = messages[0]!.attachments!
+    expect(voice).toMatchObject({
+      type: 'audio',
+      fileId: 'file_v3_voice',
+      mimeType: 'audio/opus',
+      fileSize: voiceBytes.byteLength,
+    })
+    expect(voice?.fileName).toMatch(/^audio-[a-f0-9]+\.opus$/)
+    expect(image).toMatchObject({
+      type: 'photo',
+      fileId: 'img_v3_screenshot',
+      mimeType: 'image/png',
+      fileSize: pngBytes.byteLength,
+    })
+    expect(image?.fileName).toMatch(/^image-[a-f0-9]+\.png$/)
+
+    for (const attachment of [voice, image]) {
+      expect(attachment?.localPath).toBeTruthy()
+      downloadedTempPaths.push(attachment!.localPath!)
+    }
+    expect(readFileSync(voice!.localPath!)).toEqual(voiceBytes)
+    expect(readFileSync(image!.localPath!)).toEqual(pngBytes)
   })
 
   it('keeps plain messaging available and reports degraded when CardKit permission is missing', async () => {

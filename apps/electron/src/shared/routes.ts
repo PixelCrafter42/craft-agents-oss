@@ -98,6 +98,10 @@ export const routes = {
     allSessions: (sessionId?: string) =>
       sessionId ? `allSessions/session/${sessionId}` as const : 'allSessions' as const,
 
+    /** Unread sessions view (sessions navigator, unread filter) */
+    unread: (sessionId?: string) =>
+      sessionId ? `unread/session/${sessionId}` as const : 'unread' as const,
+
     /** Flagged view (sessions navigator, flagged filter) */
     flagged: (sessionId?: string) =>
       sessionId ? `flagged/session/${sessionId}` as const : 'flagged' as const,

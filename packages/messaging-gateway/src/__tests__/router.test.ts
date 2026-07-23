@@ -225,6 +225,52 @@ describe('Router', () => {
     expect(fileAttachments[0]?.text).toBeUndefined()
   })
 
+  it('forwards Telegram native voice as byte-exact audio instead of UTF-8 text', async () => {
+    const { router, sessionManager } = makeRouter()
+    const voicePath = join(fileDir, 'telegram-file.oga')
+    const voiceBytes = Buffer.from([
+      0x4f, 0x67, 0x67, 0x53, 0x00, 0x02, 0xff, 0xfe, 0x80, 0x00, 0xc3, 0x28,
+    ])
+    writeFileSync(voicePath, voiceBytes)
+
+    await router.route(
+      makeFakeAdapter(),
+      baseMsg({
+        text: '',
+        attachments: [
+          {
+            type: 'voice',
+            fileId: 'telegram-voice-file',
+            fileName: 'voice-123.oga',
+            mimeType: 'audio/ogg',
+            fileSize: voiceBytes.byteLength,
+            localPath: voicePath,
+          },
+        ],
+      }),
+    )
+
+    const args = sessionManager.sendMessage.mock.calls[0]!
+    const fileAttachments = args[2] as Array<{
+      type: string
+      name: string
+      mimeType: string
+      size: number
+      base64?: string
+      text?: string
+    }>
+
+    expect(fileAttachments).toHaveLength(1)
+    expect(fileAttachments[0]).toMatchObject({
+      type: 'audio',
+      name: 'voice-123.oga',
+      mimeType: 'audio/ogg',
+      size: voiceBytes.byteLength,
+      base64: voiceBytes.toString('base64'),
+    })
+    expect(fileAttachments[0]?.text).toBeUndefined()
+  })
+
   it('drops attachments that have no localPath', async () => {
     const { router, sessionManager } = makeRouter()
     await router.route(
