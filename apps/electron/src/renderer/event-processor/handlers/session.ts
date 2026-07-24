@@ -547,6 +547,11 @@ export function handleUserMessage(
     // - 'processing' → isQueued = false (queued message is now actually running)
     // - 'accepted'   → isQueued = false (Pi steer path: agent has the message)
     //
+    // A queued message is re-stamped by SessionManager when replay starts so it
+    // sorts after the prior turn's final assistant response. Apply that canonical
+    // timestamp on the processing transition; otherwise the already-mounted
+    // optimistic bubble keeps its queue-time timestamp until the session reloads.
+    //
     // We deliberately do NOT swap `m.id` to the backend's canonical id here.
     // ChatDisplay's `getTurnKey` keys user-message bubbles by id, and a swap
     // would unmount/remount the UserMessageBubble — wiping its local timer
@@ -557,6 +562,7 @@ export function handleUserMessage(
       if (i === existingIndex) {
         return {
           ...m,
+          ...(status === 'processing' ? { timestamp: message.timestamp } : {}),
           isPending: false,
           isQueued: status === 'queued',
         }

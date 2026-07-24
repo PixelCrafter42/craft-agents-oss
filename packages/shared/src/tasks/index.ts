@@ -6,6 +6,7 @@
  * in packages/server-core/src/tasks/ and builds on these primitives.
  */
 export * from './schema.ts';
+export * from './slug.ts';
 export * from './refs.ts';
 export * from './validate.ts';
 export * from './storage.ts';

@@ -137,6 +137,8 @@ export type {
   SendAgentMessageResult,
   ResolvedLabelsResult,
   ResolvedStatusResult,
+  CreateTaskInput,
+  CreateTaskResult,
   MessagingPlatform,
   MessagingFilePlatform,
   ListMessagingSessionsOptions,

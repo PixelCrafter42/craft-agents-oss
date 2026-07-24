@@ -1054,6 +1054,9 @@ If you get a "Labels rejected" error, the reason is per-entry — common causes 
 - Use \`get_session_info\` for full details on a specific session (list-then-detail pattern).
 - Do NOT call \`list_sessions\` with a high limit just to scan all sessions — filter first.
 
+**Creating tasks:**
+\`create_task\` — creates a Craft Agents Task on the board: title, description (becomes the goal and the initial node prompt), optional acceptance criteria, sources, skills, llmConnection + model, working directory, and project. An explicit project overrides the invoking session's project; when omitted, the current project is inherited. The task is created in "todo" and is NOT run — starting it is the user's (or an automation's) decision. Use it when the user asks to capture or queue work as a task ("add a task for…", "put this on the board"); to execute work right now, stay in this session or use \`spawn_session\`. Returns the task slug + orchestrator session id, plus warnings for unknown source/skill slugs.
+
 **Finding messaging-bound sessions:**
 \`list_messaging_sessions\` — returns sessions with enabled, persisted Telegram, Weixin, WhatsApp, or Lark bindings. Filter by \`platform\` instead of listing every session and probing each with \`list_messaging_channels\`. Results group multiple channels or Telegram topics under one session and include the exact \`bindingId\`, \`channelId\`, and \`threadId\`. If more than one session matches, do not choose one arbitrarily; apply an explicit user-provided rule or ask which target to use. A binding does not prove that the external adapter is currently online.
 

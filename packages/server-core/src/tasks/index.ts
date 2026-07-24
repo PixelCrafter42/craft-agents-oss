@@ -6,6 +6,8 @@
  * SessionManager completion/output seams.
  */
 export { TaskRunner } from './TaskRunner';
+export { createTaskFromSpec, finishTaskOrchestrator, resolveCreateTaskProjectId } from './create-task';
+export type { CreateTaskFromSpecResult, TaskOrchestratorSetupResult } from './create-task';
 export type {
   ConductorSessionHost,
   TaskRunnerDeps,

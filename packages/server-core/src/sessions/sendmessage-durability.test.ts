@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
+import { pathToFileURL } from 'url'
 import { getSessionFilePath } from '@craft-agent/shared/sessions/storage'
 import { SessionManager, createManagedSession } from './SessionManager.ts'
 
@@ -114,53 +115,116 @@ describe('sendMessage durability', () => {
   })
 
   it('tracks a steered mid-stream message as the fallback retry target', async () => {
-    const sessionId = 'durability-steered-fallback'
-    const managed = buildSession(sessionId)
-    managed.isProcessing = true
-    managed.activeMessagingOriginId = 'origin-active'
-    managed.messages.push(
-      { id: 'prev-user', role: 'user', content: 'previous message', timestamp: 1 } as never,
-      { id: 'prev-tool', role: 'tool', content: 'side effect already happened', timestamp: 2 } as never,
-    )
-    managed.modelFallbackState = {
-      attemptedKeys: new Set<string>(),
-      userMessageId: 'prev-user',
-      inProgress: false,
+    const configRoot = mkdtempSync(join(tmpdir(), 'sm-durability-config-'))
+    const sessionManagerModule = pathToFileURL(join(import.meta.dir, 'SessionManager.ts')).href
+    try {
+      mkdirSync(configRoot, { recursive: true })
+      writeFileSync(join(configRoot, 'config.json'), JSON.stringify({
+        activeSessionId: null,
+        defaultLlmConnection: 'steer-test',
+        llmConnections: [{
+          slug: 'steer-test',
+          name: 'Steer Test',
+          providerType: 'pi',
+          authType: 'api_key',
+          createdAt: Date.now(),
+          midStreamBehavior: 'steer',
+        }],
+      }, null, 2), 'utf-8')
+
+      const probe = Bun.spawnSync([
+        process.execPath,
+        '--eval',
+        `
+          const { SessionManager, createManagedSession } = await import(${JSON.stringify(sessionManagerModule)});
+          const sessionId = 'durability-steered-fallback';
+          const tmpRoot = process.env.TEST_WORKSPACE_ROOT;
+          const sm = new SessionManager();
+          const workspace = {
+            id: 'ws_test',
+            name: 'Test Workspace',
+            rootPath: tmpRoot,
+            createdAt: Date.now(),
+          };
+          const managed = createManagedSession(
+            { id: sessionId, name: 'durability test', llmConnection: 'steer-test' },
+            workspace,
+            { messagesLoaded: true },
+          );
+          sm.sessions.set(sessionId, managed);
+          managed.isProcessing = true;
+          managed.activeMessagingOriginId = 'origin-active';
+          managed.messages.push(
+            { id: 'prev-user', role: 'user', content: 'previous message', timestamp: 1 },
+            { id: 'prev-tool', role: 'tool', content: 'side effect already happened', timestamp: 2 },
+          );
+          managed.modelFallbackState = {
+            attemptedKeys: new Set(),
+            userMessageId: 'prev-user',
+            inProgress: false,
+          };
+          managed.lastSentMessage = 'previous message';
+
+          const redirectedMessages = [];
+          managed.agent = {
+            redirect(message) {
+              redirectedMessages.push(message);
+              return true;
+            },
+          };
+
+          const ackedMessageIds = [];
+          await sm.sendMessage(
+            sessionId,
+            'steered message',
+            undefined,
+            undefined,
+            { messagingOriginId: 'origin-steer' },
+            undefined,
+            undefined,
+            (messageId) => {
+              ackedMessageIds.push(messageId);
+            },
+          );
+
+          const ackedMessageId = ackedMessageIds[0];
+          console.log(JSON.stringify({
+            redirectedMessages,
+            ackedMessageCount: ackedMessageIds.length,
+            messageQueueLength: managed.messageQueue.length,
+            lastSentMessage: managed.lastSentMessage,
+            activeMessagingOriginId: managed.activeMessagingOriginId,
+            lastSentMessagingOriginId: managed.lastSentOptions?.messagingOriginId,
+            fallbackUserMessageId: managed.modelFallbackState?.userMessageId,
+            hasModelOutputAfterUser: sm.hasModelOutputAfterUser(managed, ackedMessageId),
+            ackedMessageId,
+          }));
+        `,
+      ], {
+        env: {
+          ...process.env,
+          CRAFT_CONFIG_DIR: configRoot,
+          TEST_WORKSPACE_ROOT: tmpRoot,
+        },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      })
+
+      if (probe.exitCode !== 0) {
+        throw new Error(`steer probe failed:\n${probe.stderr.toString()}`)
+      }
+      const result = JSON.parse(probe.stdout.toString().trim().split('\n').at(-1) ?? '{}')
+
+      expect(result.redirectedMessages).toEqual(['steered message'])
+      expect(result.ackedMessageCount).toBe(1)
+      expect(result.messageQueueLength).toBe(0)
+      expect(result.lastSentMessage).toBe('steered message')
+      expect(result.activeMessagingOriginId).toBe('origin-active')
+      expect(result.lastSentMessagingOriginId).toBe('origin-active')
+      expect(result.fallbackUserMessageId).toBe(result.ackedMessageId)
+      expect(result.hasModelOutputAfterUser).toBe(false)
+    } finally {
+      rmSync(configRoot, { recursive: true, force: true })
     }
-    managed.lastSentMessage = 'previous message'
-
-    const redirectedMessages: string[] = []
-    managed.agent = {
-      redirect(message: string) {
-        redirectedMessages.push(message)
-        return true
-      },
-    } as never
-
-    const ackedMessageIds: string[] = []
-    await sm.sendMessage(
-      sessionId,
-      'steered message',
-      undefined,
-      undefined,
-      { messagingOriginId: 'origin-steer' },
-      undefined,
-      undefined,
-      (messageId) => {
-        ackedMessageIds.push(messageId)
-      },
-    )
-
-    expect(redirectedMessages).toEqual(['steered message'])
-    expect(ackedMessageIds).toHaveLength(1)
-    expect(managed.messageQueue).toHaveLength(0)
-    expect(managed.lastSentMessage).toBe('steered message')
-    expect(managed.activeMessagingOriginId).toBe('origin-active')
-    expect(managed.lastSentOptions?.messagingOriginId).toBe('origin-active')
-    const ackedMessageId = ackedMessageIds[0]
-    expect(managed.modelFallbackState?.userMessageId).toBe(ackedMessageId)
-    expect((sm as unknown as {
-      hasModelOutputAfterUser: typeof SessionManager.prototype['hasModelOutputAfterUser']
-    }).hasModelOutputAfterUser(managed, ackedMessageId!)).toBe(false)
   })
 })

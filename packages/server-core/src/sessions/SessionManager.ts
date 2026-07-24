@@ -21,6 +21,7 @@ import {
   type PostInitResult,
 } from '@craft-agent/shared/agent/backend'
 import { getLlmConnection, getLlmConnections, getDefaultLlmConnection, getDefaultThinkingLevel, getLlmModelFallbackSettings, getModelDisplayName, resetManagedAnthropicAuthEnvVars, resolveMidStreamBehavior, getPersistedUiLanguage, resolveTitleLanguageName } from '@craft-agent/shared/config'
+import type { MidStreamBehavior } from '@craft-agent/shared/config'
 import { PrivilegedExecutionBroker } from '@craft-agent/server-core/services'
 import { isValidWorkingDirectory } from '../utils/path-validation'
 import { InitGate } from '@craft-agent/server-core/domain'
@@ -75,6 +76,8 @@ import {
 } from '@craft-agent/shared/sessions'
 import { appendUsageRecords, estimateUsageCost, readUsageRecords, type UsageRecordV1 } from '@craft-agent/shared/usage'
 import { loadWorkspaceSources, loadAllSources, getSourcesBySlugs, isSourceUsable, type LoadedSource, type McpServerConfig, getSourcesNeedingAuth, getSourceCredentialManager, getSourceServerBuilder, type SourceWithCredential, isApiOAuthProvider, hasRenewEndpoint, SERVER_BUILD_ERRORS, TokenRefreshManager, createTokenGetter, markSourceAuthenticated, createSourceCookieCredentialValue } from '@craft-agent/shared/sources'
+import { listTaskSlugs, parseTaskSpec, uniqueTaskSlug } from '@craft-agent/shared/tasks'
+import { createTaskFromSpec, resolveCreateTaskProjectId } from '../tasks'
 import { ConfigWatcher, type ConfigWatcherCallbacks } from '@craft-agent/shared/config'
 import { getValidClaudeOAuthToken } from '@craft-agent/shared/auth'
 import { resolveAuthEnvVars } from '@craft-agent/shared/config'
@@ -1230,6 +1233,25 @@ export interface SessionCompletionEvent {
   finalText?: string
   /** The session's cumulative token usage, so the Conductor can meter token_budget without re-fetching. */
   tokenUsage?: TokenUsage
+}
+
+export interface MidStreamDeliveryOutcome {
+  shouldQueue: boolean
+  wasInterrupted: boolean
+}
+
+/**
+ * Translate backend delivery into queue/interruption semantics. Queue mode never
+ * aborts the active turn; a failed steer does, and must annotate the replay.
+ */
+export function resolveMidStreamDeliveryOutcome(
+  behavior: MidStreamBehavior,
+  steered: boolean,
+): MidStreamDeliveryOutcome {
+  return {
+    shouldQueue: !steered,
+    wasInterrupted: behavior === 'steer' && !steered,
+  }
 }
 
 export class SessionManager implements ISessionManager {
@@ -4619,6 +4641,57 @@ export class SessionManager implements ISessionManager {
         setSessionStatusFn: async (sessionId: string | undefined, status: string) => {
           await this.setSessionStatus(sessionId ?? managed.id, status as SessionStatus)
         },
+        // create_task — create a Task (board card + task.yaml + orchestrator session)
+        // WITHOUT running it. Spec building happens here (not in session-tools-core,
+        // which must stay dependency-free of @craft-agent/shared); the creation flow
+        // itself is createTaskFromSpec, shared verbatim with the tasks:create RPC.
+        createTaskFn: async (input) => {
+          const ws = managed.workspace
+          // Match spawn_session: an explicit project wins, otherwise keep newly
+          // captured work in the project that owns the invoking session.
+          const projectId = resolveCreateTaskProjectId(input.projectId, managed.projectId)
+          // Slug is derived from the title and must never overwrite an existing task
+          // (unlike the TaskEditor, where re-saving the same slug is the edit flow).
+          const slug = uniqueTaskSlug(input.title, new Set(listTaskSlugs(ws.rootPath)))
+
+          // Fail-soft reference checks: unknown slugs warn, they don't block creation
+          // (matching the finish() philosophy in the tasks:create handler).
+          const warnings: string[] = []
+          if (input.sources?.length) {
+            const available = new Set(loadWorkspaceSources(ws.rootPath).map(s => s.config.slug))
+            const missing = input.sources.filter(s => !available.has(s))
+            if (missing.length) warnings.push(`Unknown sources (kept in the spec, but they don't exist in this workspace): ${missing.join(', ')}`)
+          }
+          if (input.skills?.length) {
+            // loadAllSkills matches dispatch-time [skill:slug] resolution (global + workspace).
+            const available = new Set(loadAllSkills(ws.rootPath).map(s => s.slug))
+            const missing = input.skills.filter(s => !available.has(s))
+            if (missing.length) warnings.push(`Unknown skills (kept in the spec, but they don't exist in this workspace): ${missing.join(', ')}`)
+          }
+
+          // A spec requires ≥1 node; synthesize the single executable node from the
+          // description. Multi-node DAG authoring stays with the TaskEditor/generate flow.
+          const parsed = parseTaskSpec({
+            id: slug,
+            title: input.title,
+            goal: input.description,
+            ...(input.acceptanceCriteria ? { acceptance_criteria: input.acceptanceCriteria } : {}),
+            ...(projectId ? { project: projectId } : {}),
+            ...(input.workingDirectory ? { cwd: input.workingDirectory } : {}),
+            ...(input.sources?.length ? { sources: input.sources } : {}),
+            ...(input.skills?.length ? { skills: input.skills } : {}),
+            ...(input.model || input.llmConnection
+              ? { defaults: { ...(input.model ? { model: input.model } : {}), ...(input.llmConnection ? { llmConnection: input.llmConnection } : {}) } }
+              : {}),
+            nodes: [{ id: 'main', title: input.title, prompt: input.description }],
+          })
+          if (!parsed.success) {
+            throw new Error(`Invalid task spec: ${parsed.error.issues.map(i => i.message).join('; ')}`)
+          }
+
+          const created = await createTaskFromSpec(this, ws.id, ws.rootPath, parsed.data)
+          return { ...created, warnings: [...warnings, ...created.warnings] }
+        },
         getSessionInfoFn: (sessionId?: string) => {
           const targetId = sessionId ?? managed.id
           const session = this.sessions.get(targetId)
@@ -6361,6 +6434,8 @@ export class SessionManager implements ISessionManager {
       }
       managed.messages.push(userMessage)
 
+      const delivery = resolveMidStreamDeliveryOutcome(behavior, steered)
+
       if (steered) {
         this.ensureModelFallbackState(managed, userMessage.id, false)
         managed.lastSentMessage = message
@@ -6377,17 +6452,22 @@ export class SessionManager implements ISessionManager {
         type: 'user_message',
         sessionId,
         message: userMessage,
-        status: steered ? 'accepted' : 'queued',
+        status: delivery.shouldQueue ? 'queued' : 'accepted',
         optimisticMessageId: options?.optimisticMessageId
       }, managed.workspace.id)
 
-      if (!steered) {
+      if (delivery.shouldQueue) {
         // Push for FIFO replay on next onProcessingStopped tick. Same shape
         // for both queue-direct (current turn still running) and
         // queue-after-abort (backend already aborted) — the replay path in
         // processNextQueuedMessage is identical.
         managed.messageQueue.push({ message, attachments, storedAttachments: displayStoredAttachments, options, messageId: userMessage.id, optimisticMessageId: options?.optimisticMessageId })
-        managed.wasInterrupted = true
+        // Only claim interruption when a steer attempt actually aborted the
+        // in-flight turn. In 'queue' mode the current turn runs to natural
+        // completion, so the replayed turn must NOT inject the "previous response
+        // was interrupted" reminder (it would falsely tell the model its own
+        // complete answer was cut off → confusion).
+        if (delivery.wasInterrupted) managed.wasInterrupted = true
       }
 
       this.persistSession(managed)
@@ -7641,6 +7721,11 @@ Please continue the conversation naturally from where we left off.
       if (existingMessage) {
         // Clear isQueued flag and persist - prevents re-queueing if crash during processing
         existingMessage.isQueued = false
+        // Re-stamp so this replayed message sorts AFTER the previous turn's
+        // finalized assistant reply. It was created mid-stream (an earlier
+        // timestamp) while queued; groupMessagesByTurn sorts by timestamp, so
+        // without this the prior turn's completed response would render BELOW it.
+        existingMessage.timestamp = this.monotonic()
         this.persistSession(managed)
 
         this.sendEvent({

@@ -34,6 +34,7 @@ import { debug } from '../utils/debug.ts';
 import { guardLargeResult } from '../utils/large-response.ts';
 import { SourceActivationDrainController } from './source-activation-drain.ts';
 import { resolveKeepBackgroundTasksAlive, createPushableInputStream, type PushableInputStream } from './backend/claude/persistent-input.ts';
+import { classifyClaudeTaskNotification } from './backend/claude/task-notification.ts';
 import {
   getSessionPlansDir,
   getLastPlanFilePath,
@@ -675,31 +676,42 @@ export class ClaudeAgent extends BaseAgent {
    * Convert a between-turns background SDK message to an AgentEvent and emit it
    * via `onBackgroundEvent`. Only terminal task notifications are forwarded (the
    * important signal — completion/failure); progress ticks between turns are
-   * cosmetic (the UI derives elapsed from startTime). Standalone mapper so it
-   * doesn't disturb the turn-scoped event adapter. Mirrors event-adapter.ts:544.
+   * cosmetic (the UI derives elapsed from startTime). Uses the same notification
+   * classifier as the turn-scoped event adapter so validation cannot drift.
    */
   private routeBackgroundMessage(message: SDKMessage): void {
+    const classification = classifyClaudeTaskNotification(message);
+    if (classification.kind === 'valid') {
+      this.onBackgroundEvent?.({
+        type: 'task_completed',
+        taskId: classification.notification.taskId,
+        status: classification.notification.status,
+        ...(classification.notification.outputFile ? { outputFile: classification.notification.outputFile } : {}),
+        ...(classification.notification.summary ? { summary: classification.notification.summary } : {}),
+      });
+      return;
+    }
+
     const msg = message as unknown as {
       type?: string;
       subtype?: string;
-      task_id?: string;
       status?: string;
-      output_file?: string;
-      summary?: string;
     };
-    if (msg?.type === 'system' && msg.subtype === 'task_notification' && msg.task_id) {
-      const status: 'completed' | 'failed' | 'stopped' =
-        msg.status === 'failed' || msg.status === 'stopped' ? msg.status : 'completed';
-      this.onBackgroundEvent?.({
-        type: 'task_completed',
-        taskId: msg.task_id,
-        status,
-        ...(msg.output_file ? { outputFile: msg.output_file } : {}),
-        ...(msg.summary ? { summary: msg.summary } : {}),
+    if (classification.kind === 'missing-task-id') {
+      // This malformed terminal notification is the one dropped-message shape
+      // that can strand a task chip. Keep the warning metadata-only.
+      console.warn('[bg-lifecycle] task_notification missing task_id', {
+        type: msg?.type,
+        subtype: msg?.subtype,
+        status: msg?.status,
       });
-    } else {
-      this.debug(`[bg-lifecycle] dropping unexpected between-turns message: ${msg?.type}/${msg?.subtype ?? ''}`);
+      return;
     }
+
+    // Progress and other between-turn SDK traffic is expected and intentionally
+    // ignored; keep it at debug level so normal background work does not flood
+    // warning logs and hide the malformed notification above.
+    this.debug(`[bg-lifecycle] dropping expected between-turns message: ${msg?.type}/${msg?.subtype ?? ''}`);
   }
 
   /** Wire the between-turns background-event sink (SessionManager forwards to registry/renderer). */
