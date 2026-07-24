@@ -271,6 +271,38 @@ describe('PiEventAdapter', () => {
       expect((events[0] as { sdkTurnAnchor?: string }).sdkTurnAnchor).toBeUndefined();
     });
 
+    it('should prefer the runtime Pi model context window in usage events', () => {
+      adapter.setContextWindow(200_000);
+      collect(adapter.adaptEvent({ type: 'turn_start' } as any));
+      const events = collect(adapter.adaptEvent({
+        type: 'message_end',
+        contextWindow: 1_000_000,
+        message: {
+          role: 'assistant',
+          stopReason: 'stop',
+          content: 'Done',
+          usage: {
+            input: 420_000,
+            output: 1_000,
+            cacheRead: 1_000,
+            cacheWrite: 0,
+            totalTokens: 422_000,
+          },
+        },
+      } as any));
+
+      expect(events).toContainEqual({
+        type: 'usage_update',
+        usage: {
+          inputTokens: 421_000,
+          contextWindow: 1_000_000,
+        },
+      });
+
+      const completeEvents = collect(adapter.adaptEvent({ type: 'agent_end' } as any));
+      expect(completeEvents[0].usage?.contextWindow).toBe(1_000_000);
+    });
+
     it('should forward pi_turn_anchor events as Craft AgentEvents', () => {
       const events = collect(adapter.adaptEvent({
         type: 'pi_turn_anchor',

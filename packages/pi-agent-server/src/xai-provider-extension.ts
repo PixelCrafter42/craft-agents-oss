@@ -5,12 +5,22 @@ import { fileURLToPath } from 'node:url';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { streamSimpleOpenAIResponses } from '@earendil-works/pi-ai/compat';
 import type { Api, Context, Model, SimpleStreamOptions } from '@earendil-works/pi-ai';
-import { refreshXaiTokens } from '../../shared/src/auth/xai-oauth.ts';
 
 const XAI_PROVIDER_ID = 'xai-auth';
 const XAI_API_BASE_URL = 'https://api.x.ai/v1';
 const XAI_CLI_BASE_URL = 'https://cli-chat-proxy.grok.com/v1';
 const XAI_GROK_CLIENT_VERSION = '0.2.16';
+
+export interface XaiOAuthCredential {
+  access: string;
+  refresh: string;
+  expires: number;
+  idToken?: string;
+}
+
+export type XaiOAuthRefreshHandler = (
+  credentials: XaiOAuthCredential,
+) => Promise<XaiOAuthCredential>;
 
 const XAI_MODELS = [
   {
@@ -373,32 +383,39 @@ function streamSimpleXaiResponses(model: Model<Api>, context: Context, options?:
   } as SimpleStreamOptions);
 }
 
-export default function xaiProviderExtension(pi: ExtensionAPI): void {
-  pi.registerProvider(XAI_PROVIDER_ID, {
-    name: 'xAI (OAuth)',
-    baseUrl: XAI_API_BASE_URL,
-    api: 'xai-responses',
-    models: XAI_MODELS as any,
-    authHeader: true,
-    streamSimple: streamSimpleXaiResponses as any,
-    oauth: {
+export function createXaiProviderExtension(
+  refreshCredentials: XaiOAuthRefreshHandler,
+): (pi: ExtensionAPI) => void {
+  return (pi: ExtensionAPI): void => {
+    pi.registerProvider(XAI_PROVIDER_ID, {
       name: 'xAI (OAuth)',
-      usesCallbackServer: true,
-      async login() {
-        throw new Error('Use Craft Agents Settings to connect xAI / Grok.');
+      baseUrl: XAI_API_BASE_URL,
+      api: 'xai-responses',
+      models: XAI_MODELS as any,
+      authHeader: true,
+      streamSimple: streamSimpleXaiResponses as any,
+      oauth: {
+        name: 'xAI (OAuth)',
+        usesCallbackServer: true,
+        async login() {
+          throw new Error('Use Craft Agents Settings to connect xAI / Grok.');
+        },
+        refreshToken(credentials: XaiOAuthCredential) {
+          // Craft's main process owns refresh serialization and durable storage.
+          // Keeping the network exchange out of this per-session subprocess
+          // prevents multiple Pi sessions from replaying the same rotating token.
+          return refreshCredentials(credentials);
+        },
+        getApiKey(credentials: XaiOAuthCredential) {
+          return credentials.access;
+        },
       },
-      async refreshToken(credentials: { refresh: string; access: string; expires: number }) {
-        const tokens = await refreshXaiTokens(credentials.refresh);
-        return {
-          access: tokens.accessToken,
-          refresh: tokens.refreshToken || credentials.refresh,
-          expires: tokens.expiresAt ?? credentials.expires,
-          ...(tokens.idToken ? { idToken: tokens.idToken } : {}),
-        };
-      },
-      getApiKey(credentials: { access: string }) {
-        return credentials.access;
-      },
-    },
-  } as any);
+    } as any);
+  };
+}
+
+export default function xaiProviderExtension(pi: ExtensionAPI): void {
+  createXaiProviderExtension(async () => {
+    throw new Error('xAI OAuth refresh requires the Craft main-process credential bridge.');
+  })(pi);
 }

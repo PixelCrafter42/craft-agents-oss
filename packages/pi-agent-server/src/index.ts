@@ -81,7 +81,10 @@ import { resolveSearchProvider } from './tools/search/resolve-provider.ts';
 import { createSearchTool } from './tools/search/create-search-tool.ts';
 import { allowCraftMetadataProperties, stripCraftMetadata } from './craft-metadata-schema.ts';
 import { applySystemPromptOverride } from './system-prompt-override.ts';
-import xaiProviderExtension from './xai-provider-extension.ts';
+import {
+  createXaiProviderExtension,
+  type XaiOAuthCredential,
+} from './xai-provider-extension.ts';
 
 // ============================================================
 // Types — JSONL Protocol
@@ -90,7 +93,7 @@ import xaiProviderExtension from './xai-provider-extension.ts';
 /** Credential union used in init and token_update messages */
 type PiCredential =
   | { type: 'api_key'; key: string }
-  | { type: 'oauth'; access: string; refresh: string; expires: number }
+  | { type: 'oauth'; access: string; refresh: string; expires: number; idToken?: string }
   | { type: 'iam'; accessKeyId: string; secretAccessKey: string; region?: string; sessionToken?: string };
 
 /** Custom endpoint protocol — determines which streaming adapter Pi SDK uses */
@@ -151,6 +154,13 @@ type InboundMessage =
   | RuntimeConfigUpdateMessage
   | { type: 'steer'; message: string }
   | { type: 'token_update'; piAuth: { provider: string; credential: PiCredential } }
+  | {
+      type: 'oauth_refresh_result';
+      requestId: string;
+      success: boolean;
+      credential?: Extract<PiCredential, { type: 'oauth' }>;
+      errorMessage?: string;
+    }
   | { type: 'shutdown' };
 
 /** Proxy tool definition from main process */
@@ -171,6 +181,11 @@ type EnrichedToolExecutionStartEvent = Extract<AgentSessionEvent, { type: 'tool_
   toolMetadata?: ToolExecutionMetadata;
 };
 
+type EnrichedMessageEndEvent = Extract<AgentSessionEvent, { type: 'message_end' }> & {
+  sdkMessageId?: string;
+  contextWindow?: number;
+};
+
 interface ExternalUsageEvent {
   type: 'external_usage';
   provider: string;
@@ -178,7 +193,11 @@ interface ExternalUsageEvent {
   usage: Omit<XaiToolUsage, 'provider' | 'model'>;
 }
 
-type OutboundAgentEvent = AgentSessionEvent | EnrichedToolExecutionStartEvent | ExternalUsageEvent;
+type OutboundAgentEvent =
+  | AgentSessionEvent
+  | EnrichedMessageEndEvent
+  | EnrichedToolExecutionStartEvent
+  | ExternalUsageEvent;
 
 /** Messages to main process (stdout) */
 interface OutboundReady { type: 'ready'; sessionId: string | null; callbackPort: number }
@@ -227,6 +246,12 @@ interface OutboundRuntimeConfigUpdateResult {
   errorMessage?: string;
 }
 interface OutboundSessionIdUpdate { type: 'session_id_update'; sessionId: string }
+interface OutboundOAuthRefreshRequest {
+  type: 'oauth_refresh_request';
+  requestId: string;
+  provider: 'xai-auth';
+  expectedRefreshToken: string;
+}
 interface OutboundError { type: 'error'; message: string; code?: string }
 
 type OutboundMessage =
@@ -242,6 +267,7 @@ type OutboundMessage =
   | OutboundSetAutoCompactionResult
   | OutboundRuntimeConfigUpdateResult
   | OutboundSessionIdUpdate
+  | OutboundOAuthRefreshRequest
   | OutboundError;
 
 // ============================================================
@@ -262,6 +288,13 @@ let currentUserMessage = '';
 // Pending promises for async handshakes
 const pendingPreToolUse = new Map<string, { resolve: (response: { action: string; input?: Record<string, unknown>; reason?: string }) => void }>();
 const pendingToolExecutions = new Map<string, { resolve: (result: { content: string; isError: boolean }) => void }>();
+const pendingOAuthRefreshes = new Map<string, {
+  resolve: (credential: XaiOAuthCredential) => void;
+  reject: (error: Error) => void;
+  timeout: ReturnType<typeof setTimeout>;
+}>();
+
+const OAUTH_REFRESH_BRIDGE_TIMEOUT_MS = 30_000;
 
 // Pending session MCP tool calls for completion detection
 const pendingSessionToolCalls = new Map<string, { toolName: string; arguments: Record<string, unknown> }>();
@@ -295,6 +328,47 @@ let callbackPort = 0;
 function send(msg: OutboundMessage): void {
   const line = JSON.stringify(msg);
   process.stdout.write(line + '\n');
+}
+
+function requestXaiOAuthRefresh(
+  credentials: XaiOAuthCredential,
+): Promise<XaiOAuthCredential> {
+  const requestId = `oauth-refresh-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      pendingOAuthRefreshes.delete(requestId);
+      reject(new Error('Timed out waiting for Craft to refresh xAI OAuth credentials.'));
+    }, OAUTH_REFRESH_BRIDGE_TIMEOUT_MS);
+
+    pendingOAuthRefreshes.set(requestId, { resolve, reject, timeout });
+    send({
+      type: 'oauth_refresh_request',
+      requestId,
+      provider: 'xai-auth',
+      expectedRefreshToken: credentials.refresh,
+    });
+  });
+}
+
+function handleOAuthRefreshResult(
+  msg: Extract<InboundMessage, { type: 'oauth_refresh_result' }>,
+): void {
+  const pending = pendingOAuthRefreshes.get(msg.requestId);
+  if (!pending) {
+    debugLog(`No pending OAuth refresh for requestId: ${msg.requestId}`);
+    return;
+  }
+
+  pendingOAuthRefreshes.delete(msg.requestId);
+  clearTimeout(pending.timeout);
+
+  if (!msg.success || !msg.credential) {
+    pending.reject(new Error(msg.errorMessage || 'xAI OAuth refresh failed.'));
+    return;
+  }
+
+  pending.resolve(msg.credential);
 }
 
 function debugLog(message: string): void {
@@ -542,7 +616,7 @@ async function registerXaiProviderIfNeeded(
     authStorage,
     modelRegistry,
     resourceLoaderOptions: {
-      extensionFactories: [xaiProviderExtension],
+      extensionFactories: [createXaiProviderExtension(requestXaiOAuthRefresh)],
     },
   });
 
@@ -1206,6 +1280,16 @@ function handleSessionEvent(event: AgentSessionEvent): void {
     }
 
     if (msg?.role === 'assistant' && piSession) {
+      const sdkMessageId = (msg as { id?: string }).id;
+      const contextWindow = (piSession.model as { contextWindow?: number } | undefined)?.contextWindow;
+      if (sdkMessageId || (typeof contextWindow === 'number' && contextWindow > 0)) {
+        forwardedEvent = {
+          ...(event as Record<string, unknown>),
+          ...(sdkMessageId ? { sdkMessageId } : {}),
+          ...(typeof contextWindow === 'number' && contextWindow > 0 ? { contextWindow } : {}),
+        } as unknown as EnrichedMessageEndEvent;
+      }
+
       // CRITICAL: do NOT read `getLeafId()` here.
       //
       // The Pi SDK fires `message_end` synchronously BEFORE calling
@@ -1223,13 +1307,7 @@ function handleSessionEvent(event: AgentSessionEvent): void {
       // any subsequent SDK event is dispatched, so the follow-up
       // `pi_turn_anchor` event is delivered to the main process in the right
       // order (after this `message_end`, before the next event).
-      const sdkMessageId = (msg as { id?: string }).id;
       if (sdkMessageId) {
-        forwardedEvent = {
-          ...(event as Record<string, unknown>),
-          sdkMessageId,
-        } as unknown as OutboundAgentEvent;
-
         const sessionManagerSnapshot = piSession.sessionManager;
         queueMicrotask(() => {
           // Defensive: session may have been disposed between the message_end
@@ -1730,6 +1808,12 @@ function handleShutdown(): void {
   }
   pendingToolExecutions.clear();
 
+  for (const [, pending] of pendingOAuthRefreshes) {
+    clearTimeout(pending.timeout);
+    pending.reject(new Error('Server shutting down'));
+  }
+  pendingOAuthRefreshes.clear();
+
   process.exit(0);
 }
 
@@ -1816,6 +1900,10 @@ async function processMessage(msg: InboundMessage): Promise<void> {
       } else {
         debugLog('token_update received but no authStorage initialized');
       }
+      break;
+
+    case 'oauth_refresh_result':
+      handleOAuthRefreshResult(msg);
       break;
 
     case 'shutdown':

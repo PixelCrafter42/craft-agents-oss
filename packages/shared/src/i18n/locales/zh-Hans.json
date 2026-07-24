@@ -1022,7 +1022,7 @@
   "settings.messaging.lark.appSecretLabel": "App Secret",
   "settings.messaging.lark.appSecretPlaceholder": "开发者后台提供的 32 位密钥",
   "settings.messaging.lark.authCreate": "一键配置",
-  "settings.messaging.lark.authDescription": "使用飞书或 Lark 扫码，即可创建机器人并授予所需权限；已有应用也可以用同一流程修复权限。",
+  "settings.messaging.lark.authDescription": "使用飞书或 Lark 扫码，然后选择已有应用或创建新应用，并授予所需权限。",
   "settings.messaging.lark.authError": "无法完成 Lark 授权",
   "settings.messaging.lark.authExpired": "授权链接已过期，请生成新链接后继续。",
   "settings.messaging.lark.authOpen": "打开授权链接",

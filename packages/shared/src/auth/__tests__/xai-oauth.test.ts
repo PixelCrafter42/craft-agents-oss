@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it } from 'bun:test'
-import { exchangeXaiTokens, prepareXaiOAuth, refreshXaiTokens } from '../xai-oauth.ts'
+import {
+  exchangeXaiTokens,
+  prepareXaiOAuth,
+  refreshStoredXaiTokens,
+  refreshXaiTokens,
+  type XaiOAuthCredentialStore,
+  type XaiTokens,
+} from '../xai-oauth.ts'
 import { XAI_OAUTH_CONFIG } from '../xai-oauth-config.ts'
 
 const originalFetch = globalThis.fetch
@@ -98,5 +105,126 @@ describe('xAI OAuth', () => {
     expect(new URLSearchParams(bodies[0]).get('grant_type')).toBe('refresh_token')
     expect(tokens.refreshToken).toBe('existing-refresh')
     expect(tokens.accessToken).toBe('new-access')
+  })
+
+  it('serializes stored refreshes and persists the rotated token once', async () => {
+    let stored: XaiTokens = {
+      accessToken: 'expired-access',
+      refreshToken: 'refresh-0',
+      expiresAt: 0,
+      idToken: 'existing-id',
+    }
+    let tokenRequests = 0
+    let writes = 0
+    const credentialStore: XaiOAuthCredentialStore = {
+      getLlmOAuth: async () => stored,
+      setLlmOAuth: async (_slug, credentials) => {
+        writes++
+        stored = credentials
+      },
+    }
+
+    globalThis.fetch = (async (url) => {
+      if (String(url) === XAI_OAUTH_CONFIG.DISCOVERY_URL) {
+        return jsonResponse({
+          authorization_endpoint: 'https://auth.x.ai/oauth/authorize',
+          token_endpoint: 'https://auth.x.ai/oauth/token',
+        })
+      }
+      tokenRequests++
+      return jsonResponse({
+        access_token: 'access-1',
+        refresh_token: 'refresh-1',
+        expires_in: 3600,
+      })
+    }) as typeof fetch
+
+    const [first, second] = await Promise.all([
+      refreshStoredXaiTokens(credentialStore, 'xai-grok', 'refresh-0'),
+      refreshStoredXaiTokens(credentialStore, 'xai-grok', 'refresh-0'),
+    ])
+
+    expect(tokenRequests).toBe(1)
+    expect(writes).toBe(1)
+    expect(first.refreshToken).toBe('refresh-1')
+    expect(second.refreshToken).toBe('refresh-1')
+    expect(stored).toMatchObject({
+      accessToken: 'access-1',
+      refreshToken: 'refresh-1',
+      idToken: 'existing-id',
+    })
+  })
+
+  it('adopts a newer stored token instead of replaying a stale refresh token', async () => {
+    const stored: XaiTokens = {
+      accessToken: 'access-1',
+      refreshToken: 'refresh-1',
+      expiresAt: Date.now() + 60_000,
+    }
+    let fetchCalls = 0
+    let writes = 0
+    const credentialStore: XaiOAuthCredentialStore = {
+      getLlmOAuth: async () => stored,
+      setLlmOAuth: async () => {
+        writes++
+      },
+    }
+    globalThis.fetch = (async () => {
+      fetchCalls++
+      throw new Error('stale refresh must not reach xAI')
+    }) as unknown as typeof fetch
+
+    const result = await refreshStoredXaiTokens(
+      credentialStore,
+      'xai-grok',
+      'refresh-0',
+    )
+
+    expect(result).toEqual(stored)
+    expect(fetchCalls).toBe(0)
+    expect(writes).toBe(0)
+  })
+
+  it('does not overwrite a newer login that lands while refresh is in flight', async () => {
+    const before: XaiTokens = {
+      accessToken: 'access-0',
+      refreshToken: 'refresh-0',
+      expiresAt: 0,
+    }
+    const newerLogin: XaiTokens = {
+      accessToken: 'access-login',
+      refreshToken: 'refresh-login',
+      expiresAt: Date.now() + 60_000,
+    }
+    let reads = 0
+    let writes = 0
+    const credentialStore: XaiOAuthCredentialStore = {
+      getLlmOAuth: async () => (++reads === 1 ? before : newerLogin),
+      setLlmOAuth: async () => {
+        writes++
+      },
+    }
+    globalThis.fetch = (async (url) => {
+      if (String(url) === XAI_OAUTH_CONFIG.DISCOVERY_URL) {
+        return jsonResponse({
+          authorization_endpoint: 'https://auth.x.ai/oauth/authorize',
+          token_endpoint: 'https://auth.x.ai/oauth/token',
+        })
+      }
+      return jsonResponse({
+        access_token: 'access-refreshed-old-grant',
+        refresh_token: 'refresh-refreshed-old-grant',
+        expires_in: 3600,
+      })
+    }) as typeof fetch
+
+    const result = await refreshStoredXaiTokens(
+      credentialStore,
+      'xai-grok',
+      'refresh-0',
+    )
+
+    expect(result).toEqual(newerLogin)
+    expect(writes).toBe(0)
   })
 })

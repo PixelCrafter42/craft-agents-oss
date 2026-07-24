@@ -56,7 +56,7 @@ import { getCredentialManager } from '../credentials/manager.ts';
 
 // ChatGPT OAuth token refresh (used when Pi routes ChatGPT auth)
 import { refreshChatGptTokens } from '../auth/chatgpt-oauth.ts';
-import { refreshXaiTokens } from '../auth/xai-oauth.ts';
+import { refreshStoredXaiTokens } from '../auth/xai-oauth.ts';
 
 // Session-scoped tool callbacks (for SubmitPlan, source auth, etc.)
 import {
@@ -120,6 +120,22 @@ export const PI_BACKEND_SESSION_TOOL_NAMES = new Set<string>([
   'spawn_session',
   'browser_tool',
 ]);
+
+type PiOAuthCredential = {
+  type: 'oauth';
+  access: string;
+  refresh: string;
+  expires: number;
+  idToken?: string;
+};
+
+type PiAuth = {
+  provider: string;
+  credential:
+    | { type: 'api_key'; key: string }
+    | PiOAuthCredential
+    | { type: 'iam'; accessKeyId: string; secretAccessKey: string; region?: string; sessionToken?: string };
+};
 
 function hasPiPackageDocs(packageDir: string): boolean {
   return existsSync(join(packageDir, 'docs', 'skills.md'));
@@ -397,9 +413,11 @@ export class PiAgent extends BaseAgent {
   }
   private tokenRefreshInProgress: Promise<void> | null = null;
 
-  // Global mutex: keyed by connectionSlug so multiple PiAgent instances
-  // sharing the same connection don't race concurrent token refreshes.
+  // Global mutex and live-instance registry are scoped by workspace + connection.
+  // This both serializes refreshes and lets a rotated credential be pushed to
+  // every live subprocess before another session can reuse the old token.
   private static globalRefreshMutex: Map<string, Promise<void>> = new Map();
+  private static liveInstances: Map<string, Set<PiAgent>> = new Map();
 
   // ============================================================
   // Constructor
@@ -437,9 +455,49 @@ export class PiAgent extends BaseAgent {
       () => this.eventQueue.complete(),
     );
 
+    this.registerLiveInstance();
+
     if (!config.isHeadless) {
       this.startConfigWatcher();
     }
+  }
+
+  private credentialCoordinationKey(): string {
+    return `${this.config.workspace.id}\u0000${this.config.connectionSlug || 'pi'}`;
+  }
+
+  private registerLiveInstance(): void {
+    const key = this.credentialCoordinationKey();
+    let instances = PiAgent.liveInstances.get(key);
+    if (!instances) {
+      instances = new Set();
+      PiAgent.liveInstances.set(key, instances);
+    }
+    instances.add(this);
+  }
+
+  private unregisterLiveInstance(key = this.credentialCoordinationKey()): void {
+    const instances = PiAgent.liveInstances.get(key);
+    if (!instances) return;
+    instances.delete(this);
+    if (instances.size === 0) {
+      PiAgent.liveInstances.delete(key);
+    }
+  }
+
+  private async broadcastCurrentPiAuth(): Promise<PiAuth | null> {
+    const piAuth = await this.getPiAuth();
+    if (!piAuth) return null;
+
+    const instances = PiAgent.liveInstances.get(this.credentialCoordinationKey());
+    if (!instances) return piAuth;
+
+    for (const agent of instances) {
+      if (!agent.subprocess) continue;
+      if (getBackendRuntime(agent.config).piAuthProvider !== piAuth.provider) continue;
+      agent.send({ type: 'token_update', piAuth });
+    }
+    return piAuth;
   }
 
   /**
@@ -696,13 +754,7 @@ export class PiAgent extends BaseAgent {
    * credentials. Providers with provider-owned refresh/endpoint behavior
    * (Copilot and xAI) receive the full OAuth credential shape.
    */
-  private async getPiAuth(): Promise<{
-    provider: string;
-    credential:
-      | { type: 'api_key'; key: string }
-      | { type: 'oauth'; access: string; refresh: string; expires: number }
-      | { type: 'iam'; accessKeyId: string; secretAccessKey: string; region?: string; sessionToken?: string }
-  } | null> {
+  private async getPiAuth(): Promise<PiAuth | null> {
     const piAuthProvider = getBackendRuntime(this.config).piAuthProvider;
     if (!piAuthProvider) return null;
 
@@ -724,6 +776,7 @@ export class PiAgent extends BaseAgent {
                 access: oauth.accessToken,
                 refresh: oauth.refreshToken,
                 expires: oauth.expiresAt ?? 0,
+                ...(oauth.idToken ? { idToken: oauth.idToken } : {}),
               },
             };
           }
@@ -815,26 +868,20 @@ export class PiAgent extends BaseAgent {
    * Refresh OAuth tokens and push updated credentials to the running subprocess.
    * Handles Copilot (Pi SDK), xAI, and ChatGPT Plus token refresh.
    */
-  private async refreshAndPushTokens(): Promise<void> {
+  private async refreshAndPushTokens(expectedRefreshToken?: string): Promise<void> {
     if (this.config.authType !== 'oauth') return;
 
     const slug = this.config.connectionSlug || 'pi';
+    const coordinationKey = this.credentialCoordinationKey();
 
-    // Global mutex — if another PiAgent instance on the same connection slug
-    // is already refreshing, just wait for that to finish and push the
-    // (now-fresh) credentials to our subprocess.
-    const existing = PiAgent.globalRefreshMutex.get(slug);
+    // Global mutex — if another PiAgent instance in this workspace is already
+    // refreshing the same connection, wait for it and broadcast the result.
+    const existing = PiAgent.globalRefreshMutex.get(coordinationKey);
     if (existing) {
       this.debug(`Waiting on existing refresh for slug "${slug}"`);
       await existing;
-      // The other instance refreshed the credential store — push to our subprocess
-      if (this.subprocess) {
-        const piAuth = await this.getPiAuth();
-        if (piAuth) {
-          this.send({ type: 'token_update', piAuth });
-          this.debug('Pushed credentials refreshed by sibling instance');
-        }
-      }
+      await this.broadcastCurrentPiAuth();
+      this.debug('Pushed credentials refreshed by sibling instance');
       return;
     }
 
@@ -846,7 +893,7 @@ export class PiAgent extends BaseAgent {
       if (!stored?.refreshToken) {
         this.debug('No refresh token available — re-auth required');
         this.onBackendAuthRequired?.('No refresh token — please sign in again');
-        return;
+        throw new Error('No refresh token — please sign in again');
       }
 
       try {
@@ -860,13 +907,11 @@ export class PiAgent extends BaseAgent {
             expiresAt: newCreds.expires,
           });
         } else if (piAuthProvider === 'xai-auth') {
-          const newTokens = await refreshXaiTokens(stored.refreshToken);
-          await credentialManager.setLlmOAuth(slug, {
-            accessToken: newTokens.accessToken,
-            idToken: newTokens.idToken,
-            refreshToken: newTokens.refreshToken,
-            expiresAt: newTokens.expiresAt,
-          });
+          await refreshStoredXaiTokens(
+            credentialManager,
+            slug,
+            expectedRefreshToken,
+          );
         } else {
           // ChatGPT Plus: use existing refresh utility
           const newTokens = await refreshChatGptTokens(stored.refreshToken);
@@ -879,14 +924,10 @@ export class PiAgent extends BaseAgent {
         }
         this.debug('Token refresh successful');
 
-        // Push refreshed credentials to running subprocess
-        if (this.subprocess) {
-          const piAuth = await this.getPiAuth();
-          if (piAuth) {
-            this.send({ type: 'token_update', piAuth });
-            this.debug('Pushed refreshed credentials to subprocess');
-          }
-        }
+        // xAI refresh tokens rotate. Update every live subprocess sharing this
+        // workspace connection before another session can present the old one.
+        await this.broadcastCurrentPiAuth();
+        this.debug('Pushed refreshed credentials to live subprocesses');
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
         this.debug(`Token refresh failed: ${msg}`);
@@ -900,15 +941,15 @@ export class PiAgent extends BaseAgent {
 
     // Store in both instance and global mutex
     this.tokenRefreshInProgress = refreshPromise;
-    PiAgent.globalRefreshMutex.set(slug, refreshPromise);
+    PiAgent.globalRefreshMutex.set(coordinationKey, refreshPromise);
 
     try {
       await refreshPromise;
     } finally {
       this.tokenRefreshInProgress = null;
       // Only clear global if it's still our promise (no newer refresh started)
-      if (PiAgent.globalRefreshMutex.get(slug) === refreshPromise) {
-        PiAgent.globalRefreshMutex.delete(slug);
+      if (PiAgent.globalRefreshMutex.get(coordinationKey) === refreshPromise) {
+        PiAgent.globalRefreshMutex.delete(coordinationKey);
       }
     }
   }
@@ -991,6 +1032,14 @@ export class PiAgent extends BaseAgent {
       case 'event':
         // Pi SDK event -- forward through PiEventAdapter
         this.handleSubprocessEvent(msg.event as Record<string, unknown>);
+        break;
+
+      case 'oauth_refresh_request':
+        this.handleSubprocessOAuthRefreshRequest(msg as {
+          requestId: string;
+          provider: string;
+          expectedRefreshToken: string;
+        });
         break;
 
       case 'pre_tool_use_request':
@@ -1164,6 +1213,52 @@ export class PiAgent extends BaseAgent {
       default:
         this.debug(`Unknown subprocess message type: ${type}`);
     }
+  }
+
+  private handleSubprocessOAuthRefreshRequest(msg: {
+    requestId: string;
+    provider: string;
+    expectedRefreshToken: string;
+  }): void {
+    void (async () => {
+      try {
+        const configuredProvider = getBackendRuntime(this.config).piAuthProvider;
+        if (
+          msg.provider !== 'xai-auth' ||
+          configuredProvider !== 'xai-auth' ||
+          this.config.authType !== 'oauth'
+        ) {
+          throw new Error(`Rejected OAuth refresh request for provider "${msg.provider}".`);
+        }
+        if (!msg.expectedRefreshToken) {
+          throw new Error('xAI OAuth refresh request did not include a refresh token.');
+        }
+
+        await this.refreshAndPushTokens(msg.expectedRefreshToken);
+        const piAuth = await this.getPiAuth();
+        if (
+          piAuth?.provider !== 'xai-auth' ||
+          piAuth.credential.type !== 'oauth'
+        ) {
+          throw new Error('No refreshed xAI OAuth credential is available.');
+        }
+
+        this.send({
+          type: 'oauth_refresh_result',
+          requestId: msg.requestId,
+          success: true,
+          credential: piAuth.credential,
+        });
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        this.send({
+          type: 'oauth_refresh_result',
+          requestId: msg.requestId,
+          success: false,
+          errorMessage,
+        });
+      }
+    })();
   }
 
   /**
@@ -2434,7 +2529,10 @@ export class PiAgent extends BaseAgent {
   }
 
   override setWorkspace(workspace: Workspace): void {
+    const previousCoordinationKey = this.credentialCoordinationKey();
+    this.unregisterLiveInstance(previousCoordinationKey);
     super.setWorkspace(workspace);
+    this.registerLiveInstance();
     this.piSessionId = null;
     this._sessionToolContext = null;
     this.killSubprocess();
@@ -2448,6 +2546,7 @@ export class PiAgent extends BaseAgent {
   }
 
   destroy(): void {
+    this.unregisterLiveInstance();
     this.stopConfigWatcher();
 
     // Unregister session-scoped tool callbacks
@@ -2462,6 +2561,7 @@ export class PiAgent extends BaseAgent {
   }
 
   async disposeForRestart(): Promise<void> {
+    this.unregisterLiveInstance();
     this.stopConfigWatcher();
 
     if (this.config.session?.id) {

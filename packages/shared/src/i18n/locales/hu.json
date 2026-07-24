@@ -1022,7 +1022,7 @@
   "settings.messaging.lark.appSecretLabel": "App Secret",
   "settings.messaging.lark.appSecretPlaceholder": "32 karakteres titkos kulcs az Open Platform-ról",
   "settings.messaging.lark.authCreate": "Egykattintásos beállítás",
-  "settings.messaging.lark.authDescription": "Olvasd be Feishuval vagy Larkkal a bot létrehozásához és az engedélyek megadásához.",
+  "settings.messaging.lark.authDescription": "Olvasd be Feishuval vagy Larkkal, majd válassz egy meglévő alkalmazást, vagy hozz létre egy újat a szükséges engedélyekkel.",
   "settings.messaging.lark.authError": "A Lark engedélyezése nem fejezhető be",
   "settings.messaging.lark.authExpired": "Az engedélyezési hivatkozás lejárt. Hozz létre újat.",
   "settings.messaging.lark.authOpen": "Engedélyezési hivatkozás megnyitása",

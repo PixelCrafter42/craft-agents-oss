@@ -13,11 +13,14 @@ This file accumulates release notes for the next unreleased version. PRs that ad
 ## Improvements
 
 - **Feishu and Lark AI-native conversations** — Feishu/Lark now use the official Channel and CardKit stack for reconnect-safe long connections, one-card streaming progress, Schema 2.0 Markdown, contextual and private group replies, richer media, secure approval callbacks, and one-click app creation or permission repair with graceful plain-message fallback.
+- **Visible context usage across app and connectors** — The chat input now shows a compact percentage ring based on the model's full context window, while messaging connector `/status` replies report the same percentage for the bound conversation.
 
 ## Bug Fixes
 
+- **Feishu/Lark QR setup can reuse existing apps** — The one-click authorization page now lets operators select an existing app or create a new one instead of always forcing app creation. Disabling the connector also preserves its saved credentials; only Disconnect clears them.
 - **OAuth fallback handles missing subscription credentials and attachment-only messages** — Missing OAuth credentials now refresh before model fallback, image-only turns can retry without requiring text, and failed automation turns are recorded as failures instead of successful dispatches.
 - **xAI connection validation detects revoked refresh tokens** — Validating an xAI/Grok connection now performs a real OAuth refresh, securely persists rotated credentials, and fails immediately when re-authentication is required instead of reporting a stale stored token as valid and discovering the problem only after a conversation starts.
+- **xAI sessions stay signed in across token rotation** — Runtime OAuth refresh now runs once in the main process, persists xAI's rotated refresh token, and updates every live conversation sharing that connection so restarts and concurrent sessions no longer force daily re-authentication.
 - **Telegram native voice messages remain valid audio** — Telegram microphone voice notes now stay byte-exact Ogg/Opus attachments, use the `.oga` audio type, and expose their durable session path so agents can pass them to ASR tools without CRC or unexpected-EOF failures.
 - **Telegram keeps receiving during long agent turns** — Incoming updates no longer wait for the current model and tool run to finish before polling continues, preventing later messages from appearing stuck behind a slow conversation.
 - **Feishu/Lark message media downloads correctly** — Native voice notes, images, videos, and files now use the message-scoped resource API, preserve binary bytes and media metadata, and reach session attachments instead of appearing only as `file_v3` or `img_v3` placeholder text.

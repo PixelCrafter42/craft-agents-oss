@@ -1022,7 +1022,7 @@
   "settings.messaging.lark.appSecretLabel": "App Secret",
   "settings.messaging.lark.appSecretPlaceholder": "32-stelliges Geheimnis von der Open Platform",
   "settings.messaging.lark.authCreate": "Ein-Klick-Einrichtung",
-  "settings.messaging.lark.authDescription": "Mit Feishu oder Lark scannen, um den Bot zu erstellen und die nötigen Berechtigungen zu erteilen.",
+  "settings.messaging.lark.authDescription": "Mit Feishu oder Lark scannen und anschließend eine vorhandene App auswählen oder eine neue mit den nötigen Berechtigungen erstellen.",
   "settings.messaging.lark.authError": "Lark-Autorisierung konnte nicht abgeschlossen werden",
   "settings.messaging.lark.authExpired": "Dieser Autorisierungslink ist abgelaufen. Erstelle einen neuen Link.",
   "settings.messaging.lark.authOpen": "Autorisierungslink öffnen",

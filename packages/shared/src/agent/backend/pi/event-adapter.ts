@@ -405,6 +405,18 @@ export class PiEventAdapter extends BaseEventAdapter {
         const sdkMessageId = (event as { sdkMessageId?: string }).sdkMessageId ?? msg?.id;
         if (msg?.role !== 'assistant') break;
 
+        // The subprocess resolves the effective Pi model through Pi's own model
+        // registry. Prefer that runtime value over Craft's static fallback so
+        // dynamic/custom models report their real context limit to the UI.
+        const runtimeContextWindow = (event as { contextWindow?: unknown }).contextWindow;
+        if (
+          typeof runtimeContextWindow === 'number' &&
+          Number.isFinite(runtimeContextWindow) &&
+          runtimeContextWindow > 0
+        ) {
+          this.contextWindow = runtimeContextWindow;
+        }
+
         // Surface API errors — Pi SDK sets stopReason: 'error' and errorMessage on failures
         if (msg.stopReason === 'error' && msg.errorMessage) {
           // Context overflow: hand recovery to the SDK's _runAutoCompaction

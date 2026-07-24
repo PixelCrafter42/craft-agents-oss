@@ -9,11 +9,12 @@
  * /menu          — show interactive Telegram-style menu
  * /skills        — list Craft skills available to the bound session
  * /use <skill>   — invoke a Craft skill for the bound session
- * /status        — show current binding
+ * /status        — show current binding and context usage
  * /stop          — abort the current agent run
  */
 
 import type { Workspace } from '@craft-agent/core/types'
+import { calculateContextUsagePercent } from '@craft-agent/core/utils'
 import type { ISessionManager } from '@craft-agent/server-core/handlers'
 import type { Session } from '@craft-agent/shared/protocol'
 import { loadAllSkills, loadSkillBySlug, type LoadedSkill } from '@craft-agent/shared/skills'
@@ -1495,8 +1496,15 @@ export class Commands {
     const name = session?.name || binding.sessionId.slice(0, 8)
     const mode = binding.config.approvalChannel
     const responseMode = binding.config.responseMode
+    const contextPercent = calculateContextUsagePercent(
+      session?.tokenUsage?.inputTokens,
+      session?.tokenUsage?.contextWindow,
+    )
+    const contextLine = contextPercent === null
+      ? 'Context: unavailable'
+      : `Context: ${contextPercent}%`
 
-    const text = `Bound to "${name}"\nApproval: ${mode}\nResponse mode: ${responseMode}`
+    const text = `Bound to "${name}"\n${contextLine}\nApproval: ${mode}\nResponse mode: ${responseMode}`
     if (await this.trySendEphemeral(adapter, msg, text)) return
     await adapter.sendText(msg.channelId, text, replyOpts)
   }
@@ -1532,7 +1540,7 @@ export class Commands {
       '/skills — list Craft skills for this session\n' +
       '/use <skill> <prompt> — run with a Craft skill\n' +
       '/unbind — disconnect this chat\n' +
-      '/status — show current binding\n' +
+      '/status — show current binding and context usage\n' +
       '/stop — abort current agent run\n' +
       '/help — show this message'
     if (await this.trySendEphemeral(adapter, msg, text)) return

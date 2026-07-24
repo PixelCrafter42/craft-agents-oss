@@ -347,6 +347,39 @@ describe('Commands', () => {
     expect(adapter.commandMenus[0]?.commands.map((command) => command.command)).toEqual(['menu', 'pair'])
   })
 
+  it('shows the bound session context percentage in /status', async () => {
+    const session = makeSession('sess-1', 'Context session', 100)
+    session.tokenUsage = {
+      inputTokens: 124_000,
+      outputTokens: 0,
+      totalTokens: 124_000,
+      contextTokens: 124_000,
+      costUsd: 0,
+      contextWindow: 200_000,
+    }
+    const store = makeStore()
+    store.bind('ws1', 'sess-1', 'telegram', 'chan-1')
+    const commands = new Commands(makeSessionManager([session]), store, 'ws1')
+    const adapter = makeAdapter('telegram', true)
+
+    await commands.handleCommand(adapter, makeMessage('/status', 'telegram'))
+
+    expect(adapter.sent.at(-1)).toContain('Bound to "Context session"')
+    expect(adapter.sent.at(-1)).toContain('Context: 62%')
+  })
+
+  it('makes missing context measurements explicit in /status', async () => {
+    const session = makeSession('sess-1', 'New session', 100)
+    const store = makeStore()
+    store.bind('ws1', 'sess-1', 'whatsapp', 'chan-1')
+    const commands = new Commands(makeSessionManager([session]), store, 'ws1')
+    const adapter = makeAdapter('whatsapp', false)
+
+    await commands.handleCommand(adapter, makeMessage('/status'))
+
+    expect(adapter.sent.at(-1)).toContain('Context: unavailable')
+  })
+
   it('opens a skill detail menu from an inline menu button and uses the next text message with that skill', async () => {
     const sessions = [makeSession('sess-1', 'Telegram session', 100)]
     const sentMessages: CapturedSessionMessage[] = []

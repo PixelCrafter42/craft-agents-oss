@@ -201,7 +201,7 @@ export interface IMessagingGatewayRegistry {
     domain: 'lark' | 'feishu'
   }): Promise<void>
 
-  /** Start one-click Lark/Feishu app creation or repair. Secrets remain server-side. */
+  /** Start one-click Lark/Feishu app selection, creation, or repair. Secrets remain server-side. */
   beginLarkRegistration(
     workspaceId: string,
     input?: {
@@ -215,7 +215,7 @@ export interface IMessagingGatewayRegistry {
 
   cancelLarkRegistration(workspaceId: string, attemptId?: string): void
 
-  /** Disable a platform for a workspace, preserving WhatsApp auth state unless forgotten separately. */
+  /** Disable a platform while preserving reusable WhatsApp, Weixin, or Lark auth state. */
   disconnectPlatform(workspaceId: string, platform: string): Promise<void>
 
   /** Disable a platform and forget its local auth/device state when supported. */

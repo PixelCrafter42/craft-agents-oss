@@ -1022,7 +1022,7 @@
   "settings.messaging.lark.appSecretLabel": "App Secret",
   "settings.messaging.lark.appSecretPlaceholder": "Open Platformからの32文字のシークレット",
   "settings.messaging.lark.authCreate": "ワンクリック設定",
-  "settings.messaging.lark.authDescription": "Feishu または Lark でスキャンしてボットを作成し、必要な権限を付与します。",
+  "settings.messaging.lark.authDescription": "Feishu または Lark でスキャンし、既存のアプリを選択するか、必要な権限を付与した新しいアプリを作成します。",
   "settings.messaging.lark.authError": "Lark の認証を完了できませんでした",
   "settings.messaging.lark.authExpired": "認証リンクの有効期限が切れました。新しいリンクを作成してください。",
   "settings.messaging.lark.authOpen": "認証リンクを開く",

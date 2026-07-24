@@ -18,6 +18,16 @@ export interface XaiTokens {
   idToken?: string;
 }
 
+export interface XaiOAuthCredentialStore {
+  getLlmOAuth(connectionSlug: string): Promise<{
+    accessToken: string;
+    refreshToken?: string;
+    expiresAt?: number;
+    idToken?: string;
+  } | null>;
+  setLlmOAuth(connectionSlug: string, credentials: XaiTokens): Promise<void>;
+}
+
 export interface XaiPreparedFlow {
   authUrl: string;
   state: string;
@@ -39,6 +49,11 @@ interface XaiTokenResponse {
   error?: string;
   error_description?: string;
 }
+
+const storedRefreshes = new WeakMap<
+  object,
+  Map<string, Promise<XaiTokens>>
+>();
 
 function generateState(): string {
   return randomBytes(32).toString('hex');
@@ -189,4 +204,73 @@ export async function refreshXaiTokens(
 
   onStatus?.('xAI tokens refreshed successfully');
   return normalizeTokenResponse(JSON.parse(text) as XaiTokenResponse, refreshToken);
+}
+
+/**
+ * Refresh and persist a stored xAI credential as one serialized operation.
+ *
+ * xAI rotates refresh tokens, so every caller that owns a durable Craft
+ * connection must share this path. The optional expected token lets a Pi
+ * subprocess report which credential it observed; if another session or the
+ * Settings validator already rotated it, the newer stored credential is
+ * returned instead of replaying the stale token.
+ */
+export async function refreshStoredXaiTokens(
+  credentialStore: XaiOAuthCredentialStore,
+  connectionSlug: string,
+  expectedRefreshToken?: string,
+): Promise<XaiTokens> {
+  const storeKey = credentialStore as object;
+  let storeRefreshes = storedRefreshes.get(storeKey);
+  if (!storeRefreshes) {
+    storeRefreshes = new Map();
+    storedRefreshes.set(storeKey, storeRefreshes);
+  }
+
+  const inFlight = storeRefreshes.get(connectionSlug);
+  if (inFlight) {
+    return inFlight;
+  }
+
+  const refreshPromise = (async (): Promise<XaiTokens> => {
+    const stored = await credentialStore.getLlmOAuth(connectionSlug);
+    if (!stored?.refreshToken) {
+      throw new Error('No xAI OAuth refresh token found. Please re-authenticate.');
+    }
+
+    // A different caller already rotated the credential after this subprocess
+    // took its snapshot. Returning the current pair avoids refresh-token reuse,
+    // which can revoke the entire active token family.
+    if (expectedRefreshToken && stored.refreshToken !== expectedRefreshToken) {
+      return stored;
+    }
+
+    const refreshTokenUsed = stored.refreshToken;
+    const refreshed = await refreshXaiTokens(refreshTokenUsed);
+    const latest = await credentialStore.getLlmOAuth(connectionSlug);
+    if (!latest?.refreshToken) {
+      throw new Error('xAI OAuth credentials changed while refreshing. Please retry.');
+    }
+    if (latest.refreshToken !== refreshTokenUsed) {
+      return latest;
+    }
+
+    const next: XaiTokens = {
+      accessToken: refreshed.accessToken,
+      refreshToken: refreshed.refreshToken || refreshTokenUsed,
+      expiresAt: refreshed.expiresAt,
+      idToken: refreshed.idToken || latest.idToken,
+    };
+    await credentialStore.setLlmOAuth(connectionSlug, next);
+    return next;
+  })();
+
+  storeRefreshes.set(connectionSlug, refreshPromise);
+  try {
+    return await refreshPromise;
+  } finally {
+    if (storeRefreshes.get(connectionSlug) === refreshPromise) {
+      storeRefreshes.delete(connectionSlug);
+    }
+  }
 }

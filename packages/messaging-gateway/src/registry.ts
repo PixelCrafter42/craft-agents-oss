@@ -1003,7 +1003,10 @@ export class MessagingGatewayRegistry implements IMessagingGatewayRegistry {
       source: 'craft-agents',
       domain: region === 'lark' ? 'accounts.larksuite.com' : 'accounts.feishu.cn',
       larkDomain: 'accounts.larksuite.com',
-      ...(existingAppId ? { appId: existingAppId } : { createOnly: true }),
+      // With neither appId nor createOnly, the official authorization page
+      // lets the operator choose an existing app or create a new one. Passing
+      // appId remains the targeted "repair current app" flow.
+      ...(existingAppId ? { appId: existingAppId } : {}),
       appPreset: {
         name: 'Craft Agent',
         desc: 'Craft Agents AI assistant for Feishu and Lark',
@@ -1145,7 +1148,12 @@ export class MessagingGatewayRegistry implements IMessagingGatewayRegistry {
       platforms: nextPlatforms,
     })
 
-    if (platform !== 'whatsapp' && platform !== 'weixin') {
+    // Device-backed platforms keep their local auth state when disabled.
+    // Lark should behave the same way: "Disable" must retain the saved App
+    // ID/Secret so the existing app can be repaired or re-enabled later.
+    // Telegram has no separate forget flow, so disconnecting still removes
+    // its token here.
+    if (platform === 'telegram') {
       await this.opts.credentialManager
         .delete({ type: 'messaging_bearer', workspaceId, name: platform })
         .catch(() => {})
@@ -1163,6 +1171,11 @@ export class MessagingGatewayRegistry implements IMessagingGatewayRegistry {
   async forgetPlatform(workspaceId: string, platform: string): Promise<void> {
     if (!isKnownPlatform(platform)) return
     await this.disconnectPlatform(workspaceId, platform)
+    if (platform === 'lark') {
+      await this.opts.credentialManager
+        .delete({ type: 'messaging_bearer', workspaceId, name: platform })
+        .catch(() => {})
+    }
     if (platform === 'whatsapp') {
       const authDir = this.getWhatsAppAuthStateDir(workspaceId)
       try {

@@ -201,7 +201,7 @@ describe('MessagingGatewayRegistry binding lookup provider', () => {
 })
 
 describe('MessagingGatewayRegistry Lark one-click registration', () => {
-  it('returns a short-lived QR result and stores credentials only after authorization', async () => {
+  it('lets the authorization page choose an existing or new app and stores credentials only after authorization', async () => {
     let options!: Parameters<typeof registerLarkApp>[0]
     let complete!: (value: Awaited<ReturnType<typeof registerLarkApp>>) => void
     const register = ((input: Parameters<typeof registerLarkApp>[0]) => {
@@ -223,7 +223,8 @@ describe('MessagingGatewayRegistry Lark one-click registration', () => {
     const begin = await registry.beginLarkRegistration('ws-lark')
     expect(begin.verificationUrl).toBe('https://accounts.example/verify')
     expect(begin.expiresAt).toBeGreaterThan(Date.now())
-    expect(options.createOnly).toBe(true)
+    expect(options.createOnly).toBeUndefined()
+    expect(options.appId).toBeUndefined()
     expect(options.addons?.callbacks?.items).toContain('card.action.trigger')
     expect(saved).toHaveLength(0)
 
@@ -302,6 +303,41 @@ describe('MessagingGatewayRegistry Lark one-click registration', () => {
     expect(saved).toEqual(['cli_current'])
     expect(registry.getLarkRegistrationStatus('ws-lark', expired.attemptId).state).toBe('cancelled')
     expect(registry.getLarkRegistrationStatus('ws-lark', current.attemptId).state).toBe('connected')
+  })
+})
+
+describe('MessagingGatewayRegistry Lark disconnect lifecycle', () => {
+  it('keeps credentials when disabled and deletes them only when forgotten', async () => {
+    const deletedNames: string[] = []
+    const credentials = makeStubCredentialManager()
+    credentials.delete = async ({ name }) => {
+      deletedNames.push(name ?? '')
+      return true
+    }
+    const registry = new MessagingGatewayRegistry({
+      sessionManager: makeStubSessionManager(),
+      credentialManager: credentials,
+      getMessagingDir: (workspaceId: string) => join(dir, workspaceId, 'messaging'),
+    })
+    const workspaceId = 'ws-lark'
+    await registry.updateConfig(workspaceId, {
+      enabled: true,
+      platforms: {
+        lark: { enabled: true, domain: 'feishu' },
+      },
+    })
+
+    await registry.disconnectPlatform(workspaceId, 'lark')
+
+    expect(deletedNames).toEqual([])
+    expect(registry.getConfig(workspaceId)?.platforms.lark).toEqual({
+      enabled: false,
+      domain: 'feishu',
+    })
+
+    await registry.forgetPlatform(workspaceId, 'lark')
+
+    expect(deletedNames).toEqual(['lark'])
   })
 })
 

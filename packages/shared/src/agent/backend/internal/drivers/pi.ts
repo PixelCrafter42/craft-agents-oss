@@ -1,5 +1,5 @@
 import type { ProviderDriver, DriverTestConnectionArgs } from '../driver-types.ts';
-import { refreshXaiTokens } from '../../../../auth/xai-oauth.ts';
+import { refreshStoredXaiTokens } from '../../../../auth/xai-oauth.ts';
 import type { ModelDefinition } from '../../../../config/models.ts';
 import { getAllPiModels, getPiModelsForAuthProvider, isDeprecatedClaudeOpus46Model } from '../../../../config/models-pi.ts';
 import { getPiProviderBaseUrl } from '../../../../config/models-pi.ts';
@@ -335,13 +335,7 @@ export const piDriver: ProviderDriver = {
     }
 
     try {
-      const tokens = await refreshXaiTokens(stored.refreshToken);
-      await credentialManager.setLlmOAuth(slug, {
-        accessToken: tokens.accessToken,
-        refreshToken: tokens.refreshToken || stored.refreshToken,
-        expiresAt: tokens.expiresAt,
-        idToken: tokens.idToken || stored.idToken,
-      });
+      await refreshStoredXaiTokens(credentialManager, slug, stored.refreshToken);
       return { success: true };
     } catch (error) {
       return {

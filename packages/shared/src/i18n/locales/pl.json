@@ -1022,7 +1022,7 @@
   "settings.messaging.lark.appSecretLabel": "App Secret",
   "settings.messaging.lark.appSecretPlaceholder": "32-znakowy sekret z Open Platform",
   "settings.messaging.lark.authCreate": "Konfiguracja jednym kliknięciem",
-  "settings.messaging.lark.authDescription": "Zeskanuj w Feishu lub Lark, aby utworzyć bota i nadać wymagane uprawnienia.",
+  "settings.messaging.lark.authDescription": "Zeskanuj kod w Feishu lub Lark, a następnie wybierz istniejącą aplikację albo utwórz nową z wymaganymi uprawnieniami.",
   "settings.messaging.lark.authError": "Nie udało się ukończyć autoryzacji Lark",
   "settings.messaging.lark.authExpired": "Link autoryzacyjny wygasł. Utwórz nowy, aby kontynuować.",
   "settings.messaging.lark.authOpen": "Otwórz link autoryzacyjny",
