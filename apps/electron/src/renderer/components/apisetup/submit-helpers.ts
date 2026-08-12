@@ -3,6 +3,29 @@ import type { CustomEndpointApi, CustomEndpointConfig } from '@config/llm-connec
 export type PresetKey = string
 
 /**
+ * Providers whose model catalog contains per-model API protocols/base URLs.
+ * Their endpoint must stay SDK-managed instead of being flattened into one
+ * user-supplied custom endpoint (OpenCode Go mixes Messages and Chat Completions).
+ */
+export const PI_SDK_MANAGED_ENDPOINT_PROVIDERS: ReadonlySet<string> = new Set([
+  'opencode-go',
+])
+
+export function isPiSdkManagedEndpointProvider(provider: string): boolean {
+  return PI_SDK_MANAGED_ENDPOINT_PROVIDERS.has(provider)
+}
+
+/**
+ * SDK-managed providers submit an explicit empty string so editing a former
+ * custom connection clears its persisted fixed base URL. Other providers keep
+ * the existing optional-URL behavior.
+ */
+export function resolveBaseUrlForSubmit(provider: string, baseUrl: string): string | undefined {
+  if (isPiSdkManagedEndpointProvider(provider)) return ''
+  return baseUrl.trim() || undefined
+}
+
+/**
  * Preset keys that are regional variants of a canonical Pi auth provider.
  * The Pi SDK recognizes both 'minimax' and 'minimax-cn' as separate providers
  * with distinct base URLs (api.minimax.io vs api.minimaxi.com), so only

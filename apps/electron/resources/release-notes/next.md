@@ -12,6 +12,7 @@ This file accumulates release notes for the next unreleased version. PRs that ad
 
 ## Improvements
 
+- **OpenCode Go provider preset** — Add an OpenCode Go connection with native per-model protocol and endpoint routing, model tier selection, provider branding, validation, and `OPENCODE_API_KEY` CLI support.
 - **Feishu and Lark AI-native conversations** — Feishu/Lark now use the official Channel and CardKit stack for reconnect-safe long connections, one-card streaming progress, Schema 2.0 Markdown, contextual and private group replies, richer media, secure approval callbacks, and one-click app creation or permission repair with graceful plain-message fallback.
 - **Visible context usage across app and connectors** — The chat input now shows a compact percentage ring based on the model's full context window, while messaging connector `/status` replies report the same percentage for the bound conversation.
 

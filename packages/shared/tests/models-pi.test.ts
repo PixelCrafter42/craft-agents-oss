@@ -36,4 +36,14 @@ describe('models-pi filtering', () => {
     expect(ids).toContain('pi/deepseek-v4-flash');
     expect(ids).toContain('pi/deepseek-v4-pro');
   });
+
+  it('exposes OpenCode Go with its mixed-protocol model catalog', () => {
+    const providers = getPiApiKeyProviders();
+    expect(providers.some(provider => provider.key === 'opencode-go' && provider.label === 'OpenCode Go')).toBe(true);
+
+    const models = getPiModelsForAuthProvider('opencode-go');
+    const ids = models.map(model => model.id);
+    expect(ids).toContain('pi/qwen3.7-max');
+    expect(ids).toContain('pi/deepseek-v4-flash');
+  });
 });

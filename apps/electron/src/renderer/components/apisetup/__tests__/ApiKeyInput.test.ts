@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'bun:test'
 import {
+  isPiSdkManagedEndpointProvider,
+  resolveBaseUrlForSubmit,
   resolveCustomEndpointPayload,
   resolvePiAuthProviderForSubmit,
   resolvePresetStateForBaseUrlChange,
@@ -58,6 +60,25 @@ describe('resolvePiAuthProviderForSubmit', () => {
 
   it('passes through non-custom presets unchanged', () => {
     expect(resolvePiAuthProviderForSubmit('google', 'anthropic')).toBe('google')
+  })
+})
+
+describe('Pi SDK-managed endpoints', () => {
+  it('keeps OpenCode Go on its native provider path so models can select their own protocol', () => {
+    expect(isPiSdkManagedEndpointProvider('opencode-go')).toBe(true)
+    expect(resolveBaseUrlForSubmit('opencode-go', '')).toBe('')
+    expect(resolveBaseUrlForSubmit('custom', '')).toBeUndefined()
+    expect(resolvePiAuthProviderForSubmit('opencode-go', 'anthropic')).toBe('opencode-go')
+    expect(resolveCustomEndpointPayload({
+      activePreset: 'opencode-go',
+      baseUrl: '',
+      customApi: 'openai-completions',
+      brandedOpenAiCompatPresets: new Set(),
+      fallbackPiAuthProvider: 'opencode-go',
+    })).toEqual({
+      customEndpoint: undefined,
+      piAuthProvider: 'opencode-go',
+    })
   })
 })
 

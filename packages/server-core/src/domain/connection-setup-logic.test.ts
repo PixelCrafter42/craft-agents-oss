@@ -5,6 +5,7 @@ import {
   setupTestRequiresApiKey,
   resolveCustomEndpointSetup,
   createBuiltInConnection,
+  piAuthProviderDisplayName,
 } from './connection-setup-logic'
 
 describe('validateSetupTestInput', () => {
@@ -26,6 +27,12 @@ describe('validateSetupTestInput', () => {
       baseUrl: 'https://example.com/v1',
       piAuthProvider: 'openai',
     })).toEqual({ valid: true })
+  })
+})
+
+describe('Pi provider display names', () => {
+  it('labels OpenCode Go connections', () => {
+    expect(piAuthProviderDisplayName('opencode-go')).toBe('OpenCode Go')
   })
 })
 

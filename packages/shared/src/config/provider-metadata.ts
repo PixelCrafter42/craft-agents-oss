@@ -51,6 +51,10 @@ const PROVIDER_METADATA: Record<string, ProviderMetadata> = {
     name: 'OpenRouter',
     dashboardUrl: 'https://openrouter.ai/settings',
   },
+  'opencode-go': {
+    name: 'OpenCode Go',
+    dashboardUrl: 'https://opencode.ai/zen',
+  },
   groq: {
     name: 'Groq',
     statusPageUrl: 'https://status.groq.com',

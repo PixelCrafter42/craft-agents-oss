@@ -25,6 +25,8 @@ import { cn } from "@/lib/utils"
 import { Check, ChevronDown, Eye, EyeOff, Loader2 } from "lucide-react"
 import { pickTierDefaults, resolveTierModels, type PiModelInfo } from "./tier-models"
 import {
+  isPiSdkManagedEndpointProvider,
+  resolveBaseUrlForSubmit,
   resolveCustomEndpointPayload,
   resolvePiAuthProviderForSubmit,
   resolvePresetStateForBaseUrlChange,
@@ -111,6 +113,7 @@ const ANTHROPIC_PRESETS: Preset[] = [
   { key: 'minimax-global', label: 'Minimax Global', url: 'https://api.minimax.io/anthropic', placeholder: 'Paste your key here...' },
   { key: 'minimax-cn', label: 'Minimax CN', url: 'https://api.minimaxi.com/anthropic', placeholder: 'Paste your key here...' },
   { key: 'kimi-coding', label: 'Kimi (Coding)', url: 'https://api.kimi.com/coding', placeholder: 'sk-kimi-...' },
+  { key: 'opencode-go', label: 'OpenCode Go', url: '', placeholder: 'Paste your key here...' },
   { key: 'vercel-ai-gateway', label: 'Vercel AI Gateway', url: 'https://ai-gateway.vercel.sh', placeholder: 'Paste your key here...' },
   { key: 'manifest', label: 'Manifest', url: 'https://app.manifest.build/v1', placeholder: 'mnfst_...' },
   { key: 'custom', label: 'Custom', url: '', placeholder: 'Paste your key here...' },
@@ -230,6 +233,7 @@ export function ApiKeyInput({
   // Hide endpoint/model fields for providers with well-known endpoints handled by the SDK
   const DEFAULT_ENDPOINT_PROVIDERS = new Set(['anthropic', 'openai', 'pi', 'google'])
   const isDefaultProviderPreset = DEFAULT_ENDPOINT_PROVIDERS.has(activePreset)
+  const isPiSdkManagedEndpoint = isPiSdkManagedEndpointProvider(activePreset)
 
   // Provider-specific placeholders from the active preset
   const activePresetObj = presets.find(p => p.key === activePreset)
@@ -347,7 +351,7 @@ export function ApiKeyInput({
       const models: string[] = [bestModel, defaultModel, cheapModel]
       onSubmit({
         apiKey: apiKey.trim(),
-        baseUrl: baseUrl.trim() || undefined,
+        baseUrl: resolveBaseUrlForSubmit(activePreset, baseUrl),
         connectionDefaultModel: bestModel,
         models,
         piAuthProvider: effectivePiAuthProvider,
@@ -410,7 +414,7 @@ export function ApiKeyInput({
 
     onSubmit({
       apiKey: apiKey.trim(),
-      baseUrl: isUsingDefaultEndpoint ? undefined : effectiveBaseUrl,
+      baseUrl: resolveBaseUrlForSubmit(activePreset, isUsingDefaultEndpoint ? '' : effectiveBaseUrl),
       connectionDefaultModel: parsedModels[0],
       models: parsedModels.length > 0 ? parsedModels : undefined,
       piAuthProvider: resolvedPiAuthProvider,
@@ -493,7 +497,7 @@ export function ApiKeyInput({
           </DropdownMenu>
         </div>
         {/* Base URL input - hidden for default provider presets (Anthropic/OpenAI) and Bedrock */}
-        {!isDefaultProviderPreset && !isBedrock && (
+        {!isDefaultProviderPreset && !isPiSdkManagedEndpoint && !isBedrock && (
           <div className={cn(
             "rounded-md shadow-minimal transition-colors",
             "bg-foreground-2 focus-within:bg-background"

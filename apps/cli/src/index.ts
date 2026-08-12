@@ -635,6 +635,7 @@ const PROVIDER_ENV_KEYS: Record<string, string> = {
   groq: 'GROQ_API_KEY',
   mistral: 'MISTRAL_API_KEY',
   deepseek: 'DEEPSEEK_API_KEY',
+  'opencode-go': 'OPENCODE_API_KEY',
   xai: 'XAI_API_KEY',
   cerebras: 'CEREBRAS_API_KEY',
   huggingface: 'HUGGINGFACE_API_KEY',
@@ -648,6 +649,7 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   groq: 'Groq',
   mistral: 'Mistral',
   deepseek: 'DeepSeek',
+  'opencode-go': 'OpenCode Go',
   xai: 'xAI',
   cerebras: 'Cerebras',
   huggingface: 'Hugging Face',
@@ -2019,7 +2021,7 @@ Connection:
 
 LLM Configuration (for 'run' command):
   --provider <name>      LLM provider (default: anthropic, or $LLM_PROVIDER)
-                         Supported: anthropic, openai, google, openrouter, groq, mistral, deepseek, xai, ...
+                         Supported: anthropic, openai, google, openrouter, groq, mistral, deepseek, opencode-go, xai, ...
   --model <id>           Model to use (or $LLM_MODEL)
   --api-key <key>        API key (or $LLM_API_KEY, or provider-specific e.g. $OPENAI_API_KEY)
   --base-url <url>       Custom API endpoint (or $LLM_BASE_URL)
@@ -2059,6 +2061,7 @@ Examples:
   OPENAI_API_KEY=sk-... craft-cli run --provider openai "Hello"
   GOOGLE_API_KEY=... craft-cli run --provider google --model gemini-2.0-flash "Hello"
   DEEPSEEK_API_KEY=sk-... craft-cli run --provider deepseek --model deepseek-v4-flash "Hello"
+  OPENCODE_API_KEY=... craft-cli run --provider opencode-go --model qwen3.7-max "Hello"
   echo "Analyze this code" | craft-cli run
   craft-cli ping
   craft-cli sessions

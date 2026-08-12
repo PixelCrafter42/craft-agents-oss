@@ -145,6 +145,7 @@ const PI_AUTH_PROVIDER_DOMAINS: Record<string, string> = {
   'xai-auth': 'x.ai',
   cerebras: 'cerebras.ai',
   deepseek: 'deepseek.com',
+  'opencode-go': 'opencode.ai',
   zai: 'z.ai',
 }
 

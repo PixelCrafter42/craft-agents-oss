@@ -248,6 +248,18 @@ describe('resolveApiKey', () => {
       else process.env.DEEPSEEK_API_KEY = prev
     }
   })
+
+  it('uses OPENCODE_API_KEY for the OpenCode Go provider', () => {
+    const prev = process.env.OPENCODE_API_KEY
+    process.env.OPENCODE_API_KEY = 'opencode-test-key'
+
+    try {
+      expect(resolveApiKey('opencode-go', '')).toBe('opencode-test-key')
+    } finally {
+      if (prev === undefined) delete process.env.OPENCODE_API_KEY
+      else process.env.OPENCODE_API_KEY = prev
+    }
+  })
 })
 
 describe('shouldSetupLlmConnection', () => {

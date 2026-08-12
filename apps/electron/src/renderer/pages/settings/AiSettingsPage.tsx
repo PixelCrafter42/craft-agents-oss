@@ -569,6 +569,7 @@ const PI_AUTH_PROVIDER_LABELS: Record<string, string> = {
   'openai-codex': 'OpenAI API',
   google: 'Google AI Studio',
   openrouter: 'OpenRouter',
+  'opencode-go': 'OpenCode Go',
   'azure-openai-responses': 'Azure OpenAI',
   'amazon-bedrock': 'Amazon Bedrock',
   groq: 'Groq',
