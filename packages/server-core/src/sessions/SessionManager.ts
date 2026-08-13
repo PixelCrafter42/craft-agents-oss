@@ -7967,11 +7967,24 @@ Please continue the conversation naturally from where we left off.
     const managed = this.sessions.get(sessionId)
     if (managed?.agent) {
       const requestMeta = this.pendingPermissionRequests.get(requestId)
+      if (!requestMeta || requestMeta.sessionId !== sessionId) {
+        sessionLog.warn(`Cannot respond to permission - no pending request ${requestId} for session ${sessionId}`)
+        return false
+      }
       this.pendingPermissionRequests.delete(requestId)
+
+      const emitResolved = () => {
+        this.sendEvent({
+          type: 'permission_resolved',
+          sessionId,
+          requestId,
+        }, managed.workspace.id)
+      }
 
       if (requestMeta?.resolve) {
         sessionLog.info(`Internal permission response for ${requestId}: allowed=${allowed}`)
         requestMeta.resolve(allowed)
+        emitResolved()
         return true
       }
 
@@ -7983,6 +7996,7 @@ Please continue the conversation naturally from where we left off.
           sessionLog.warn(`Admin approval rejected by broker for ${requestId}: ${brokerResult.reason}`)
           // Broker rejection should fail closed.
           managed.agent.respondToPermission(requestId, false, false)
+          emitResolved()
           return false
         }
 
@@ -7993,6 +8007,7 @@ Please continue the conversation naturally from where we left off.
 
       sessionLog.info(`Permission response for ${requestId}: allowed=${allowed}, alwaysAllow=${alwaysAllow}`)
       managed.agent.respondToPermission(requestId, allowed, alwaysAllow)
+      emitResolved()
       return true
     } else {
       sessionLog.warn(`Cannot respond to permission - no agent for session ${sessionId}`)

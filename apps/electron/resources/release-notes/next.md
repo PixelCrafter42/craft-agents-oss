@@ -13,11 +13,13 @@ This file accumulates release notes for the next unreleased version. PRs that ad
 ## Improvements
 
 - **OpenCode Go provider preset** — Add an OpenCode Go connection with native per-model protocol and endpoint routing, model tier selection, provider branding, validation, and `OPENCODE_API_KEY` CLI support.
+- **Refreshed application icon** — Craft Agents now uses the new purple mascot artwork consistently across macOS, Windows, and Linux app surfaces.
 - **Feishu and Lark AI-native conversations** — Feishu/Lark now use the official Channel and CardKit stack for reconnect-safe long connections, one-card streaming progress, Schema 2.0 Markdown, contextual and private group replies, richer media, secure approval callbacks, and one-click app creation or permission repair with graceful plain-message fallback.
 - **Visible context usage across app and connectors** — The chat input now shows a compact percentage ring based on the model's full context window, while messaging connector `/status` replies report the same percentage for the bound conversation.
 
 ## Bug Fixes
 
+- **Feishu/Lark approval cards reach Ask-mode sessions** — Allow and Deny callbacks now remain live across parallel tool activity and resolve only their matching permission request instead of being discarded as stale before the user can respond.
 - **Feishu/Lark QR setup can reuse existing apps** — The one-click authorization page now lets operators select an existing app or create a new one instead of always forcing app creation. Disabling the connector also preserves its saved credentials; only Disconnect clears them.
 - **OAuth fallback handles missing subscription credentials and attachment-only messages** — Missing OAuth credentials now refresh before model fallback, image-only turns can retry without requiring text, and failed automation turns are recorded as failures instead of successful dispatches.
 - **xAI connection validation detects revoked refresh tokens** — Validating an xAI/Grok connection now performs a real OAuth refresh, securely persists rotated credentials, and fails immediately when re-authentication is required instead of reporting a stale stored token as valid and discovering the problem only after a conversation starts.

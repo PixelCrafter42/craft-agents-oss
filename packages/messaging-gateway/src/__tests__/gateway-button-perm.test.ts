@@ -64,14 +64,14 @@ interface FakeAdapter extends PlatformAdapter {
  * Plain text sends and button taps share a `calls` log so tests can assert
  * ordering between them.
  */
-function makeFakeAdapter(): FakeAdapter {
+function makeFakeAdapter(platform: 'telegram' | 'lark' = 'telegram'): FakeAdapter {
   let buttonHandler: ((press: ButtonPress) => Promise<void>) | null = null
   let messageHandler: ((msg: IncomingMessage) => Promise<void>) | null = null
   const calls: AdapterCall[] = []
   let nextId = 100
 
   const adapter = {
-    platform: 'telegram' as const,
+    platform,
     capabilities: {
       messageEditing: true,
       inlineButtons: true,
@@ -92,17 +92,17 @@ function makeFakeAdapter(): FakeAdapter {
     sendText: mock(async (channelId: string, text: string) => {
       const messageId = String(nextId++)
       calls.push({ kind: 'sendText', channelId, text, messageId })
-      return { platform: 'telegram' as const, channelId, messageId }
+      return { platform, channelId, messageId }
     }),
     editMessage: async () => {},
     sendButtons: mock(async (channelId: string, text: string) => {
       // Button callbacks must echo the exact platform message id.
       const messageId = '1'
       calls.push({ kind: 'sendButtons', channelId, text, messageId })
-      return { platform: 'telegram' as const, channelId, messageId }
+      return { platform, channelId, messageId }
     }),
     sendTyping: async () => {},
-    sendFile: async () => ({ platform: 'telegram' as const, channelId: '', messageId: '0' }),
+    sendFile: async () => ({ platform, channelId: '', messageId: '0' }),
     clearButtons: mock(async (channelId: string, messageId: string) => {
       calls.push({ kind: 'clearButtons', channelId, messageId })
     }),
@@ -118,6 +118,7 @@ function makeFakeAdapter(): FakeAdapter {
 interface StubSessionManagerOpts {
   /** Override the boolean `respondToPermission` returns (default: true). */
   respondToPermissionReturn?: boolean
+  platform?: 'telegram' | 'lark'
 }
 
 function makeStubSessionManager(opts: StubSessionManagerOpts = {}): ISessionManager {
@@ -145,15 +146,21 @@ const OPEN_TELEGRAM_CONFIG: MessagingConfig = {
   platforms: { telegram: { enabled: true, accessMode: 'open' } },
 }
 
+const OPEN_LARK_CONFIG: MessagingConfig = {
+  enabled: true,
+  platforms: { lark: { enabled: true, accessMode: 'open' } },
+}
+
 async function makeHarness(opts: StubSessionManagerOpts = {}): Promise<Harness> {
+  const platform = opts.platform ?? 'telegram'
   const sessionManager = makeStubSessionManager(opts)
   const gateway = new MessagingGateway({
     sessionManager,
     workspaceId: 'ws-test',
     storageDir,
-    getWorkspaceConfig: () => OPEN_TELEGRAM_CONFIG,
+    getWorkspaceConfig: () => platform === 'lark' ? OPEN_LARK_CONFIG : OPEN_TELEGRAM_CONFIG,
   })
-  const adapter = makeFakeAdapter()
+  const adapter = makeFakeAdapter(platform)
   gateway.registerAdapter(adapter)
   await gateway.start()
 
@@ -162,7 +169,7 @@ async function makeHarness(opts: StubSessionManagerOpts = {}): Promise<Harness> 
   gateway.getBindingStore().bind(
     'ws-test',
     'sess-A',
-    'telegram',
+    platform,
     'chat-1',
     undefined,
     { approvalChannel: 'chat' },
@@ -245,24 +252,21 @@ describe('MessagingGateway — perm: button (#726)', () => {
     expect(acks).toHaveLength(1)
   })
 
-  it('stale tap after desktop resolves: silent no-op (no respondToPermission, no ack)', async () => {
+  it('exact resolution after desktop resolves clears only that prompt', async () => {
     const h = await makeHarness()
     await registerPrompt(h.gateway, { requestId: 'req-1' })
 
-    // Desktop resolves first → agent moves on, emitting a tool_start. The
-    // gateway sweep on this event drops the entry and clears the keyboard.
+    // Desktop resolves first and SessionManager emits the exact request id.
     h.gateway.onSessionEvent(
       'session:event',
       { to: 'workspace', workspaceId: 'ws-test' },
-      { type: 'tool_start', sessionId: 'sess-A', toolName: 'Bash' } as SessionEvent,
+      { type: 'permission_resolved', sessionId: 'sess-A', requestId: 'req-1' } as SessionEvent,
     )
     await Promise.resolve()
     await Promise.resolve()
 
     expect(h.adapter.clearButtons).toHaveBeenCalledTimes(1)
 
-    // Snapshot how many texts the renderer's progress bubble already posted
-    // for the tool_start event, so we can isolate the press-side ack count.
     const ackCountBeforePress = h.adapter.calls.filter((c) => c.kind === 'sendText').length
 
     // User now taps the (already-cleared) Telegram button.
@@ -293,25 +297,59 @@ describe('MessagingGateway — perm: button (#726)', () => {
     expect(acks).toHaveLength(0)
   })
 
-  it('superseded prompt: a new permission_request for the same session sweeps the old entry', async () => {
+  it('parallel prompts survive unrelated tool events and resolve independently', async () => {
     const h = await makeHarness()
     await registerPrompt(h.gateway, { requestId: 'req-1' })
-
-    // Agent resolved req-1 silently and is now asking for a fresh permission.
     await registerPrompt(h.gateway, { requestId: 'req-2' })
 
-    // The old req-1 keyboard was cleared; req-2's keyboard is live.
-    expect(h.adapter.clearButtons).toHaveBeenCalledTimes(1)
+    h.gateway.onSessionEvent(
+      'session:event',
+      { to: 'workspace', workspaceId: 'ws-test' },
+      { type: 'tool_result', sessionId: 'sess-A', toolName: 'Read', toolUseId: 'tool-1' } as SessionEvent,
+    )
+    h.gateway.onSessionEvent(
+      'session:event',
+      { to: 'workspace', workspaceId: 'ws-test' },
+      { type: 'permission_mode_changed', sessionId: 'sess-A', permissionMode: 'ask' } as SessionEvent,
+    )
+    await Promise.resolve()
+    await Promise.resolve()
 
-    // A late tap on req-1 is a no-op.
-    await h.adapter.fireButton(pressFor('perm:allow:req-1'))
-    expect(h.sessionManager.respondToPermission).not.toHaveBeenCalled()
+    expect(h.adapter.clearButtons).not.toHaveBeenCalled()
 
-    // A tap on req-2 is honored.
-    await h.adapter.fireButton(pressFor('perm:allow:req-2'))
+    await h.adapter.fireButton(pressFor('perm:allow:req-1', { messageId: '1' }))
     expect(h.sessionManager.respondToPermission).toHaveBeenCalledTimes(1)
+
+    await h.adapter.fireButton(pressFor('perm:allow:req-2', { messageId: '1' }))
+    expect(h.sessionManager.respondToPermission).toHaveBeenCalledTimes(2)
     const respondMock = h.sessionManager.respondToPermission as unknown as ReturnType<typeof mock>
-    expect(respondMock.mock.calls[0]?.[1]).toBe('req-2')
+    expect(respondMock.mock.calls.map((call) => call[1])).toEqual(['req-1', 'req-2'])
+  })
+
+  it('Feishu/Lark Allow callback survives a parallel tool_result and reaches SessionManager', async () => {
+    const h = await makeHarness({ platform: 'lark' })
+    await registerPrompt(h.gateway, { requestId: 'pi-perm-1' })
+
+    h.gateway.onSessionEvent(
+      'session:event',
+      { to: 'workspace', workspaceId: 'ws-test' },
+      { type: 'tool_result', sessionId: 'sess-A', toolName: 'Read', toolUseId: 'parallel-tool' } as SessionEvent,
+    )
+    await Promise.resolve()
+    await Promise.resolve()
+
+    await h.adapter.fireButton(pressFor('perm:allow:pi-perm-1', {
+      platform: 'lark',
+      senderId: 'ou_user',
+    }))
+
+    expect(h.sessionManager.respondToPermission).toHaveBeenCalledWith(
+      'sess-A',
+      'pi-perm-1',
+      true,
+      false,
+    )
+    expect(h.adapter.calls.some((call) => call.kind === 'sendText' && call.text === '✅ Allowed')).toBe(true)
   })
 
   it('malformed buttonId: silently dropped (no entry, no respondToPermission)', async () => {
@@ -329,7 +367,7 @@ describe('MessagingGateway — perm: button (#726)', () => {
     expect(acks).toHaveLength(0)
   })
 
-  it('non-permission-request events do NOT sweep entries from other sessions', async () => {
+  it('terminal events clear only prompts from their own session', async () => {
     const h = await makeHarness()
 
     // Register a second session bound to a different chat with its own prompt.
@@ -344,11 +382,11 @@ describe('MessagingGateway — perm: button (#726)', () => {
     await registerPrompt(h.gateway, { sessionId: 'sess-A', requestId: 'req-A' })
     await registerPrompt(h.gateway, { sessionId: 'sess-B', requestId: 'req-B' })
 
-    // Event for sess-A only — must not touch sess-B's keyboard.
+    // A terminal event for sess-A only must not touch sess-B's keyboard.
     h.gateway.onSessionEvent(
       'session:event',
       { to: 'workspace', workspaceId: 'ws-test' },
-      { type: 'tool_start', sessionId: 'sess-A', toolName: 'Bash' } as SessionEvent,
+      { type: 'turn_complete', sessionId: 'sess-A', reason: 'complete' } as SessionEvent,
     )
     await Promise.resolve()
     await Promise.resolve()

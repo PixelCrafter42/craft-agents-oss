@@ -194,6 +194,12 @@ export function processEvent(
     case 'permission_request':
       return handlePermissionRequest(state, event)
 
+    case 'permission_resolved':
+      // The permission dialog already removes its local pending row after a
+      // successful response. This event exists so external messaging cards
+      // can retire the exact request without guessing from unrelated tool events.
+      return { state, effects: [] }
+
     case 'credential_request':
       return handleCredentialRequest(state, event)
 

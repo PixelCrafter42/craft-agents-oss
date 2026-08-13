@@ -487,12 +487,10 @@ export class MessagingGateway {
       void this.finishPendingCompactAccept(event.sessionId)
     }
 
-    // Drop stale permission prompts for this session. The agent halts while
-    // a permission is pending, so any non-permission_request event implies
-    // the prior prompt was resolved (from the desktop, an MCP allow-list,
-    // remember-window auto-approval, etc.). Without this sweep the inline
-    // keyboard stays live in Telegram and users keep tapping stale buttons,
-    // which is the visible side of #726.
+    // Retire permission prompts from exact resolution/terminal lifecycle
+    // events. Tool events are not sufficient evidence: Pi may ask for several
+    // permissions in parallel and emit a result for one tool while the other
+    // requests are still awaiting a response.
     this.sweepStalePermissions(event)
 
     const outputBindings = this.automationOutputBindings.get(event.sessionId) ?? []
@@ -547,26 +545,31 @@ export class MessagingGateway {
   }
 
   /**
-   * Drop entries from `permissionMessages` whose requestId differs from the
-   * event's current permission request (or all of them, for non-permission
-   * events). For each dropped entry we also fire-and-forget a `clearButtons`
-   * so Telegram won't deliver any further callbacks for the stale prompt.
-   *
-   * Same-requestId `permission_request` events are preserved so a re-render
-   * (rare but possible when the renderer retries) doesn't blow away the
-   * record we'd then need to re-create.
+   * Retire the exact resolved permission card, or all cards when the session
+   * reaches a terminal lifecycle event. Never infer resolution from ordinary
+   * tool/progress/mode events because parallel permission requests can remain
+   * live while those events are emitted.
    */
   private sweepStalePermissions(event: SessionEvent): void {
     if (this.permissionMessages.size === 0) return
 
-    const eventRequestId =
-      event.type === 'permission_request'
-        ? ((event.request as { requestId?: string } | undefined)?.requestId ?? null)
+    const resolvedRequestId =
+      event.type === 'permission_resolved' && typeof event.requestId === 'string'
+        ? event.requestId
         : null
+    const terminal = new Set([
+      'complete',
+      'turn_complete',
+      'interrupted',
+      'error',
+      'typed_error',
+      'session_deleted',
+    ]).has(event.type)
+    if (!resolvedRequestId && !terminal) return
 
     for (const [requestId, records] of this.permissionMessages) {
       if (!records.some((record) => record.sessionId === event.sessionId)) continue
-      if (requestId === eventRequestId) continue
+      if (resolvedRequestId && requestId !== resolvedRequestId) continue
       this.permissionMessages.delete(requestId)
 
       for (const record of records) {

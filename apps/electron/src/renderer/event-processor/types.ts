@@ -129,6 +129,13 @@ export interface PermissionRequestEvent {
   request: PermissionRequest
 }
 
+/** Exact lifecycle signal used by messaging connectors to retire one approval card. */
+export interface PermissionResolvedEvent {
+  type: 'permission_resolved'
+  sessionId: string
+  requestId: string
+}
+
 /**
  * Sources changed event
  */
@@ -553,6 +560,7 @@ export type AgentEvent =
   | AsyncOperationEvent
   | WorkingDirectoryChangedEvent
   | WorkingDirectoryErrorEvent
+  | PermissionResolvedEvent
   | PermissionModeChangedEvent
   | SessionModelChangedEvent
   | LLMConnectionChangedEvent
